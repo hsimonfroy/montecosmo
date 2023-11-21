@@ -1,1 +1,1 @@
-# monte-cosmo
+# MonteCosmo
