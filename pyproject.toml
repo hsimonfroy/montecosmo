@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools >= 61.0"]
+requires = ["setuptools >= 64.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,5 +12,5 @@ readme = "README.md"
 requires-python = ">=3.7"
 urls = {Repository="https://github.com/hsimonfroy/montecosmo"} # Documentation=""
 
-# [tool.setuptools]
-# packages = ["montecosmo"]
+[tool.setuptools]
+packages = ["montecosmo"]
