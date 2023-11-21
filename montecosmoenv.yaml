@@ -1,0 +1,20 @@
+# If using conda/mamba, don't forget to `mamba update -n base -c conda-forge mamba`
+name: montecosmoenv
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - pip
+  - jupyterlab
+  - matplotlib
+  - ipympl
+  - numpy
+  - numpyro
+  - pip:
+    - "jax[cuda11_pip]"
+    - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    - jax-cosmo
+    - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
+    - getdist
+    - graphviz
+
