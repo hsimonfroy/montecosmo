@@ -12,22 +12,6 @@ from __main__ import __dict__
 
 
 
-#########################
-# Plot 3D from function #
-#########################
-def plot3d_func(ax, func, nb_discr=100, cube_center=0, cube_halfsize=1.5):
-    """
-    e.g.:
-        ax = plt.subplot(121, projection="3d")
-        plot3d_func(ax, my_pdf, 100)
-    """
-    x, y = np.linspace(cube_center-cube_halfsize, cube_center+cube_halfsize, nb_discr), np.linspace(cube_center-cube_halfsize, cube_center+cube_halfsize, nb_discr)
-    xx, yy = np.meshgrid(x, y)
-    xy = np.array([xx, yy]).transpose(1,2,0)
-    zz =  func(xy.reshape(-1,2)).reshape(nb_discr,nb_discr)
-    surf = ax.plot_surface(xx, yy, zz, cmap="viridis")
-
-
 
 ########################
 # Save plots interface #

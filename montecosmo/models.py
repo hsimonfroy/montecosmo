@@ -2,7 +2,7 @@ import numpyro
 import numpyro.distributions as dist
 import jax.numpy as jnp
 import jax_cosmo as jc
-from jaxpm.kernels import fftk, cic_compensation
+from jaxpm.kernels import fftk
 
 
 
@@ -57,12 +57,3 @@ def linear_pk_interp(cosmology, scale_factor=1, n_interp=256):
   return pk_fn
 
 
-def cic_compensate(mesh):
-  """
-  Compensate for CIC painting convolution.
-  Only use for computing spectra, as it can increase numerical instability if used in modeling.
-  """
-  kmesh = jnp.fft.rfftn(mesh)
-  kmesh = kmesh * cic_compensation(fftk(mesh.shape))
-  comp_mesh = jnp.fft.irfftn(kmesh)
-  return comp_mesh
