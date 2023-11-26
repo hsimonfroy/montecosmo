@@ -16,7 +16,6 @@ dependencies:
     - jax-cosmo
     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
     - getdist
-    - graphviz # from pip, not the same in conda-forge
+    - graphviz # with pip, not the same in conda-forge
     # Editable package
-    - --editable=git+https://github.com/hsimonfroy/montecosmo.git
-
+    - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
