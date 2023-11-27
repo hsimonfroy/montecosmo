@@ -121,6 +121,7 @@ def save_plots_interface(my_plot,
 ############################
 # Save variables interface #
 ############################
+# TODO: use pickle or np.savez instead of np.save
 def save_variables_as_dict(variable_names="var1, var2", output_directory="./npys/", output_name="OUTPUT", save_separately=False):
 
     # Assert output_name does not include further directories path or other improper chars
