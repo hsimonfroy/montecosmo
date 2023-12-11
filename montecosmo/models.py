@@ -4,9 +4,11 @@ import jax.numpy as jnp
 import jax_cosmo as jc
 from jaxpm.kernels import fftk
 
+import jax
 
 
-def cosmo_prior(trace_deterministic=False):
+
+def cosmo_prior(trace_reparam=False):
   """
   Defines a cosmological prior to sample from.
   """
@@ -15,7 +17,7 @@ def cosmo_prior(trace_deterministic=False):
   Omega_c = Omega_c_base * 0.2 + 0.25
   sigma8 = sigma8_base * 0.14 + 0.831
 
-  if trace_deterministic:
+  if trace_reparam:
     Omega_c = numpyro.deterministic('Omega_c', Omega_c)
     sigma8 = numpyro.deterministic('sigma8', sigma8)
 
@@ -32,7 +34,7 @@ def cosmo_prior(trace_deterministic=False):
 #     sigma8 = numpyro.sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
-def linear_field(mesh_size, box_size, pk):
+def linear_field(mesh_size, box_size, pk, trace_reparam=False):
   """
   Generate initial conditions.
   """
@@ -44,12 +46,16 @@ def linear_field(mesh_size, box_size, pk):
 
   field = jnp.fft.rfftn(field) * pkmesh**0.5
   field = jnp.fft.irfftn(field)
+
+  if trace_reparam:
+    field = numpyro.deterministic('init_mesh', field)
+
   return field
 
 
 def linear_pk_interp(cosmology, scale_factor=1, n_interp=256):
   """
-  Return a light emulation of the linear matter power spectrum
+  Return a light emulation of the linear matter power spectrum.
   """
   k = jnp.logspace(-4, 1, n_interp)
   pk = jc.power.linear_matter_power(cosmology, k, a=scale_factor)
