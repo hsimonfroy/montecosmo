@@ -43,9 +43,13 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
   pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod())
 
   field = numpyro.sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+  jax.debug.print("{a}, {b}, {c}, {d}", a=field.shape, b=pkmesh.shape, c=jnp.array(kmesh).shape, d=(kvec[0].shape, kvec[1].shape, kvec[2].shape))
 
   field = jnp.fft.rfftn(field) * pkmesh**0.5
+  jax.debug.print("FFT {a}, {b}", a=field.shape, b=pkmesh.shape)
   field = jnp.fft.irfftn(field)
+  jax.debug.print("après iFFT {a}, {b}", a=field.shape, b=pkmesh.shape)
+
 
   if trace_reparam:
     field = numpyro.deterministic('init_mesh', field)
