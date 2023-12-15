@@ -19,3 +19,5 @@ dependencies:
     - graphviz # with pip, not the same in conda-forge
     # Editable package
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
+
+# tensorflow-probability, mlflow
