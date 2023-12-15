@@ -1,78 +1,98 @@
+import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
-import jax.numpy as jnp
-import jax_cosmo as jc
-from jaxpm.kernels import fftk
+
+from montecosmo.bricks import cosmo_prior, linear_pk_interp, linear_field, lagrangian_bias, rsd
+from jaxpm.pm import lpt
+from jaxpm.painting import cic_paint
 
 
 
-def cosmo_prior(trace_reparam=False):
+def forward_model(box_size, mesh_size, scale_factor_lpt, scale_factor_obs, galaxy_density, 
+                  trace_reparam=True, trace_deterministic=False):
+  """
+  A cosmological forward model.
+  The relevant variables can be traced.
+  """
+  # Sample cosmology
+  cosmology = cosmo_prior(trace_reparam)
+
+  # Sample initial conditions
+  pk_fn = linear_pk_interp(cosmology, n_interp=256)
+  init_mesh = linear_field(mesh_size, box_size, pk_fn, trace_reparam)
+
+  # Create regular grid of particles
+  x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
+
+  # Compute Lagrangian bias expansion weights
+  lbe_weights = lagrangian_bias(init_mesh, x_part)
+  
+  # LPT displacement
+  cosmology._workspace = {}  # HACK: temporary fix
+  dx, p_part, f = lpt(cosmology, init_mesh, x_part, a=scale_factor_lpt)
+  # NOTE: lpt supposes given mesh follows linear pk at a=1, 
+  # and correct by growth factor to get forces at wanted scale factor
+  x_part = x_part + dx
+
+  if trace_deterministic: x_part = numpyro.deterministic('lpt_part', x_part)
+
+  # XXX: here N-body displacement
+  # x_part, v_part = ... PM(scale_factor_lpt -> scale_factor_obs)
+
+  # RSD displacement
+  dx_rsd = rsd(cosmology, scale_factor_obs, p_part)
+  x_part = x_part + dx_rsd
+
+  if trace_deterministic: x_part = numpyro.deterministic('rsd_part', x_part)
+
+  # CIC paint weighted by Lagrangian bias expansion
+  biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
+
+  if trace_deterministic: biased_mesh = numpyro.deterministic('biased_mesh', biased_mesh)
+
+  # Observe
+  gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+  obs_mesh = numpyro.sample('obs_mesh', dist.Poisson(gxy_intens_mesh))
+  return obs_mesh
+
+
+
+def lpt_model(box_size, mesh_size, scale_factor_lpt, scale_factor_obs, galaxy_density, 
+                  trace_reparam=True, trace_deterministic=False):
     """
-    Defines a cosmological prior to sample from.
+    A simple cosmological model, with LPT displacement and Poisson observation.
+    The relevant variables can be traced.
     """
-    Omega_c_base = numpyro.sample('Omega_c_base', dist.TruncatedNormal(0,1, low=-1))
-    sigma8_base = numpyro.sample('sigma8_base', dist.Normal(0, 1))
-    Omega_c = Omega_c_base * 0.2 + 0.25
-    sigma8 = sigma8_base * 0.14 + 0.831
+    # Sample cosmology
+    cosmology = cosmo_prior(trace_reparam)
 
-    if trace_reparam:
-        Omega_c = numpyro.deterministic('Omega_c', Omega_c)
-        sigma8 = numpyro.deterministic('sigma8', sigma8)
+    # Sample initial conditions
+    pk_fn = linear_pk_interp(cosmology, n_interp=256)
+    init_mesh = linear_field(mesh_size, box_size, pk_fn, trace_reparam)
+    
+    if trace_deterministic: init_mesh = numpyro.deterministic('init_mesh', init_mesh)
 
-    cosmo_params = {'Omega_c':Omega_c, 'sigma8':sigma8}
-    # numpyro.deterministic('cosmo_params', cosmo_params)
-    cosmology = jc.Planck15(**cosmo_params)
-    return cosmology
+    # Create regular grid of particles
+    particles_pos = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
 
-# from numpyro.infer.reparam import LocScaleReparam
-#     reparam_config = {'Omega_c': LocScaleReparam(centered=0),
-#                       'sigma8': LocScaleReparam(centered=0)}
-#     with numpyro.handlers.reparam(config=reparam_config):
-#         Omega_c = numpyro.sample('Omega_c', dist.Normal(0.25, 0.2**2))
-#         sigma8 = numpyro.sample('sigma8', dist.Normal(0.831, 0.14**2))
+    # Initial displacement with LPT
+    cosmology._workspace = {}  # FIXME: this a temporary fix
+    dx, p, f = lpt(cosmology, init_mesh, particles_pos, a=scale_factor_lpt)
+    # NOTE: lpt supposes given mesh follows linear pk at a=1, 
+    # and correct by growth factor to get forces at wanted scale factor
+    particles_pos = particles_pos + dx
 
+    # Cloud In Cell painting
+    lpt_mesh = cic_paint(jnp.zeros(mesh_size), particles_pos)
+    
+    if trace_deterministic: lpt_mesh = numpyro.deterministic('lpt_mesh', lpt_mesh)
 
-def linear_field(mesh_size, box_size, pk, trace_reparam=False):
-    """
-    Generate initial conditions.
-    """
-    kvec = fftk(mesh_size)
-    kmesh = sum((kk  * (mesh_size[i] / box_size[i]))**2 for i, kk in enumerate(kvec))**0.5
-    pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod())
-
-    field = numpyro.sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
-
-    field = jnp.fft.rfftn(field) * pkmesh**0.5
-    field = jnp.fft.irfftn(field)
-
-    if trace_reparam:
-        field = numpyro.deterministic('init_mesh', field)
-
-    return field
-
-
-def linear_pk_interp(cosmology, scale_factor=1, n_interp=256):
-    """
-    Return a light emulation of the linear matter power spectrum.
-    """
-    k = jnp.logspace(-4, 1, n_interp)
-    pk = jc.power.linear_matter_power(cosmology, k, a=scale_factor)
-    pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape([-1]), k, pk).reshape(x.shape)
-    return pk_fn
-
-
-def laplace_kernel(kvec):
-    """
-    Compute the Laplace kernel from a given K vector
-    Parameters:
-    -----------
-    kvec: array
-    Array of k values in Fourier space
-    Returns:
-    --------
-    wts: array
-    Complex kernel
-    """
-    kk = sum(ki**2 for ki in kvec)
-    kk[kk == 0] = jnp.inf # simpler version
-    return 1 / kk
+    # Observe
+    ## Direct observation
+    # obs_mesh = numpyro.sample('obs_mesh', dist.Delta(lpt_mesh))
+    ## Normal noise 
+    # obs_mesh = numpyro.sample('obs_mesh', dist.Normal(lpt_mesh, 0.1))
+    ## Poisson noise
+    gxy_intens_mesh = (lpt_mesh + 1) * (galaxy_density * box_size.prod() / mesh_size.prod())
+    obs_mesh = numpyro.sample('obs_mesh', dist.Poisson(gxy_intens_mesh))
+    return obs_mesh

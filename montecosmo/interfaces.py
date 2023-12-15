@@ -74,7 +74,9 @@ def plot_figure(my_plot, fig_width=6.4, fig_height=4.8, use_TeX=False, font_size
     plt.figure(figsize=(fig_width, fig_height))
     my_plot()
     plt.tight_layout()
-    display(plt.gcf()) # NOTE: use display() instead of plt.show(), because the latter close figure automatically which doesn't allow to save it later. However, it is better not to forget to close figure later.
+    display(plt.gcf()) 
+    # NOTE: use display() instead of plt.show(), because the latter close figure automatically which doesn't allow to save it later. 
+    # However, it is better not to forget to close figure later.
 
 
 def get_save_plots_interface(my_plot, 
