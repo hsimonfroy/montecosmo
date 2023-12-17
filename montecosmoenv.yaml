@@ -12,6 +12,7 @@ dependencies:
   - numpyro
   - pip:
     - "jax[cuda11_pip]"
+    # - "jax[cuda12_pip]"
     - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     - jax-cosmo
     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
@@ -20,4 +21,8 @@ dependencies:
     # Editable package
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
 
+# Optionally:
 # tensorflow-probability, mlflow
+
+# If ptxas version not up to date:
+# mamba install -c nvidia cuda-nvcc 
