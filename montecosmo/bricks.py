@@ -6,7 +6,6 @@ from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 
 
-
 def cosmo_prior(trace_reparam=False):
     """
     Defines a cosmological prior to sample from.
@@ -49,7 +48,6 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
 
     if trace_reparam:
         field = numpyro.deterministic('init_mesh', field)
-
     return field
 
 
@@ -57,6 +55,7 @@ def lagrangian_bias(init_mesh, pos):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
+        
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_{\text{nl}} \nabla^2 delta + b_s \left(s^2 - \braket{s^2}\right)
     """
     b1 = numpyro.sample('b1', dist.Normal(1, 0.25))
@@ -68,15 +67,15 @@ def lagrangian_bias(init_mesh, pos):
     bnl = numpyro.sample('bnl', dist.Normal(0, 0.5))
     bs = numpyro.sample('bs', dist.Normal(0, 0.5))
 
-    # b1
+    # Apply b1
     delta_part = cic_read(init_mesh, pos)
     weights = 1 + b1 * delta_part
 
-    # b2
+    # Apply b2
     delta_sqr_part = delta_part**2
     weights = weights + b2 * (delta_sqr_part - delta_sqr_part.mean())
 
-    # bnl
+    # Apply bnl
     delta_k = jnp.fft.rfftn(init_mesh)
     kvec = fftk(init_mesh.shape)
     kk = sum(ki**2 for ki in kvec) # laplace kernel
@@ -85,15 +84,15 @@ def lagrangian_bias(init_mesh, pos):
     delta_nl_part = cic_read(delta_nl, pos)
     weights = weights + bnl * delta_nl_part
     
-    # bshear
+    # Apply bshear
     kk[kk == 0] = jnp.inf
     pot_k = delta_k / kk # inverse laplace kernel
     shear_sqr = 0  
     for i, ki in enumerate(kvec):
-        # diagonal terms
+        # Add diagonal terms
         shear_sqr = shear_sqr + jnp.fft.irfftn(ki**2 * pot_k - delta_k / 3)**2
         for kj in kvec[i+1:]:
-            # upper triangle terms (counted twice)
+            # Add upper triangle terms (counted twice)
             shear_sqr = shear_sqr + 2 * jnp.fft.irfftn(ki * kj * pot_k)**2
 
     shear_sqr_part = cic_read(shear_sqr, pos)

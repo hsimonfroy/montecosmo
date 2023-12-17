@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jax import random
 import pickle
-
+import os
 
 
 def save_mcmc(mcmc, i_run, save_path, save_var_names, extra_fields):
@@ -64,6 +64,7 @@ def load_runs(start_run, end_run, load_path, var_names=None):
     Load and append runs saved in different files with same name.
     If var_names is None, load all the variables.
     """
+    print(f"loading: {os.path.basename(load_path)}")
     samples = {}
     for i_run in range(start_run, end_run+1):
         # Load
