@@ -4,6 +4,8 @@ import jax.numpy as jnp
 import jax_cosmo as jc
 from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
+from jaxpm.growth import growth_factor
+
 
 
 def cosmo_prior(trace_reparam=False):
@@ -51,7 +53,7 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     return field
 
 
-def lagrangian_bias(init_mesh, pos):
+def lagrangian_bias(cosmo, a, init_mesh, pos):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -63,9 +65,13 @@ def lagrangian_bias(init_mesh, pos):
     # bnl = numpyro.sample('bnl', dist.Normal(0, 5))
     # bs = numpyro.sample('bs', dist.Normal(0, 5))
 
-    b2 = numpyro.sample('b2', dist.Normal(0, 0.5))
-    bnl = numpyro.sample('bnl', dist.Normal(0, 0.5))
-    bs = numpyro.sample('bs', dist.Normal(0, 0.5))
+    b2 = 0
+    bnl = 0
+    bs = 0
+
+    # Get init_mesh at observation scale factor
+    a = jnp.atleast_1d(a)
+    init_mesh = init_mesh * growth_factor(cosmo, a)
 
     # Apply b1
     delta_part = cic_read(init_mesh, pos)
@@ -100,12 +106,12 @@ def lagrangian_bias(init_mesh, pos):
     return weights
 
 
-def linear_pk_interp(cosmology, scale_factor=1, n_interp=256):
+def linear_pk_interp(cosmo, a=1, n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """
     k = jnp.logspace(-4, 1, n_interp)
-    pk = jc.power.linear_matter_power(cosmology, k, a=scale_factor)
+    pk = jc.power.linear_matter_power(cosmo, k, a=a)
     pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape(-1), k, pk).reshape(x.shape)
     return pk_fn
 

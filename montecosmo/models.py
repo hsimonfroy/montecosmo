@@ -44,7 +44,7 @@ def forward_model(mesh_size=np.array([64, 64, 64]),
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
 
     # Compute Lagrangian bias expansion weights
-    lbe_weights = lagrangian_bias(init_mesh, x_part)
+    lbe_weights = lagrangian_bias(cosmology, scale_factor_obs, init_mesh, x_part)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
