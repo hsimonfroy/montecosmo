@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import jax_cosmo as jc
 from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
-from jaxpm.growth import growth_factor
+from jaxpm.growth import growth_factor, growth_rate
 
 
 
@@ -40,7 +40,7 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     Generate initial conditions.
     """
     kvec = fftk(mesh_size)
-    kmesh = sum((kk  * (m / l))**2 for kk, m, l in zip(kvec, mesh_size, box_size))**0.5
+    kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
     pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod())
 
     field = numpyro.sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
@@ -53,7 +53,7 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     return field
 
 
-def lagrangian_bias(cosmo, a, init_mesh, pos):
+def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -61,13 +61,9 @@ def lagrangian_bias(cosmo, a, init_mesh, pos):
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_{\text{nl}} \nabla^2 delta + b_s \left(s^2 - \braket{s^2}\right)
     """
     b1 = numpyro.sample('b1', dist.Normal(1, 0.25))
-    # b2 = numpyro.sample('b2', dist.Normal(0, 5))
-    # bnl = numpyro.sample('bnl', dist.Normal(0, 5))
-    # bs = numpyro.sample('bs', dist.Normal(0, 5))
-
-    b2 = 0
-    bnl = 0
-    bs = 0
+    b2 = numpyro.sample('b2', dist.Normal(0, 5))
+    bs = numpyro.sample('bs', dist.Normal(0, 5))
+    bnl = numpyro.sample('bnl', dist.Normal(0, 5))
 
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
@@ -81,16 +77,12 @@ def lagrangian_bias(cosmo, a, init_mesh, pos):
     delta_sqr_part = delta_part**2
     weights = weights + b2 * (delta_sqr_part - delta_sqr_part.mean())
 
-    # Apply bnl
-    delta_k = jnp.fft.rfftn(init_mesh)
-    kvec = fftk(init_mesh.shape)
-    kk = sum(ki**2 for ki in kvec) # laplace kernel
-    delta_nl = jnp.fft.irfftn(kk * delta_k)
-
-    delta_nl_part = cic_read(delta_nl, pos)
-    weights = weights + bnl * delta_nl_part
-    
     # Apply bshear
+    delta_k = jnp.fft.rfftn(init_mesh)
+    mesh_size = init_mesh.shape
+    kvec = fftk(mesh_size)
+
+    kk = sum(ki**2 for ki in kvec)
     kk[kk == 0] = jnp.inf
     pot_k = delta_k / kk # inverse laplace kernel
     shear_sqr = 0  
@@ -103,6 +95,14 @@ def lagrangian_bias(cosmo, a, init_mesh, pos):
 
     shear_sqr_part = cic_read(shear_sqr, pos)
     weights = weights + bs * (shear_sqr_part - shear_sqr_part.mean())
+
+    # Apply bnl
+    kk_box = sum((ki  * (m / l))**2 
+                 for ki, m, l in zip(kvec, mesh_size, box_size)) # laplace kernel in physical units
+    delta_nl = jnp.fft.irfftn(kk_box * delta_k)
+
+    delta_nl_part = cic_read(delta_nl, pos)
+    weights = weights + bnl * delta_nl_part
     return weights
 
 
@@ -143,4 +143,33 @@ def laplace_kernel(kvec): # simpler version
     """
     kk = sum(ki**2 for ki in kvec)
     kk[kk == 0] = jnp.inf
+    # kk = kk.at[kk == 0].set(jnp.inf)
     return 1 / kk
+
+
+def kaiser_bias(cosmo, a, mesh_size, los):
+    b = numpyro.sample('b', dist.Normal(2, 0.25))
+    a = jnp.atleast_1d(a)
+
+    # kvec = fftk(mesh_size)
+    kshapes = jnp.eye(len(mesh_size), dtype=jnp.int16) * -2 + 1
+    kvec = [2 * jnp.pi *jnp.fft.fftfreq(m).reshape(kshape)
+            for m, kshape in zip(mesh_size, kshapes)]
+    kmesh = sum(kk**2 for kk in kvec)**0.5
+    mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
+    kmesh = kmesh.at[kmesh == 0].set(jnp.inf)
+    mumesh = mumesh / kmesh
+
+    return b + growth_rate(cosmo, a) * mumesh**2
+
+
+def apply_kaiser_bias(cosmo, a, init_mesh, los=jnp.array([0,0,1])):
+    # Get init_mesh at observation scale factor
+    a = jnp.atleast_1d(a)
+    init_mesh = init_mesh * growth_factor(cosmo, a)
+
+    # Apply eulerian kaiser bias weights
+    kaiser_weights = kaiser_bias(cosmo, a, init_mesh.shape, los)
+    delta_k = jnp.fft.fftn(init_mesh)
+    kaiser_mesh = jnp.fft.ifftn(kaiser_weights * delta_k)
+    return kaiser_mesh
