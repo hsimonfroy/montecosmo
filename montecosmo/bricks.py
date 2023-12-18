@@ -38,7 +38,7 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     Generate initial conditions.
     """
     kvec = fftk(mesh_size)
-    kmesh = sum((kk  * (mesh_size[i] / box_size[i]))**2 for i, kk in enumerate(kvec))**0.5
+    kmesh = sum((kk  * (m / l))**2 for kk, m, l in zip(kvec, mesh_size, box_size))**0.5
     pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod())
 
     field = numpyro.sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
@@ -106,19 +106,20 @@ def linear_pk_interp(cosmology, scale_factor=1, n_interp=256):
     """
     k = jnp.logspace(-4, 1, n_interp)
     pk = jc.power.linear_matter_power(cosmology, k, a=scale_factor)
-    pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape([-1]), k, pk).reshape(x.shape)
+    pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape(-1), k, pk).reshape(x.shape)
     return pk_fn
 
 
-def rsd(cosmo, a, p):
+def rsd(cosmo, a, p, los=jnp.array([0,0,1])):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
+    Computed with respect scale factor and line-of-sight.
     """
     a = jnp.atleast_1d(a)
     # Divide PM momentum by `a` once to retrieve velocity, and once again for comobile velocity  
     dx_rsd = p / (jnp.sqrt(jc.background.Esqr(cosmo, a)) * a**2)
-    # Set velocity to 0 except first direction assumed to be the line of sight 
-    dx_rsd = dx_rsd.at[:,1:].set(0)
+    # Project velocity on line-of-sight
+    dx_rsd = dx_rsd * los
     return dx_rsd
 
 

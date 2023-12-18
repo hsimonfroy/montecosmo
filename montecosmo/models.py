@@ -11,7 +11,7 @@ from jaxpm.painting import cic_paint
 model_kwargs={
             # Mesh and box parameters
             'mesh_size':np.array([64, 64, 64]), 
-            'box_size':np.array([64, 64, 64]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+            'box_size':np.array([640, 640, 640]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # Scale factors
             'scale_factor_lpt':0.1, 
             'scale_factor_obs':0.5,
@@ -23,7 +23,7 @@ model_kwargs={
 
 
 def forward_model(mesh_size=np.array([64, 64, 64]), 
-                  box_size=np.array([64, 64, 64]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+                  box_size=np.array([640, 640, 640]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
                   scale_factor_lpt=0.1, 
                   scale_factor_obs=0.5, 
                   galaxy_density=1e-3, # in galaxy / (Mpc/h)^3
@@ -80,7 +80,7 @@ def forward_model(mesh_size=np.array([64, 64, 64]),
 
 
 def lpt_model(mesh_size=np.array([64, 64, 64]), 
-              box_size=np.array([64, 64, 64]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+              box_size=np.array([640, 640, 640]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
               scale_factor_lpt=0.1, 
               scale_factor_obs=0.5, 
               galaxy_density=1e-3, # in galaxy / (Mpc/h)^3
