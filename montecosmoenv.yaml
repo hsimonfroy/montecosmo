@@ -22,7 +22,7 @@ dependencies:
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
 
 # Optionally:
-# tensorflow-probability, mlflow
+# tensorflow-probability, mlflow, diffrax
 
 # If ptxas version not up to date:
 # mamba install -c nvidia cuda-nvcc 
