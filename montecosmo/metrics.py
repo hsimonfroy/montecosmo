@@ -14,7 +14,7 @@ def _initialize_pk(mesh_size, box_size, kmin, dk, los):
     kedges = np.arange(kmin, kmax, dk)
 
     kshapes = np.eye(len(mesh_size), dtype='int') * -2 + 1
-    kvec = [2 * np.pi *np.fft.fftfreq(m, l / m).reshape(kshape)
+    kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
             for m, l, kshape in zip(mesh_size, box_size, kshapes)]
     kmesh = sum(ki**2 for ki in kvec)**0.5
 

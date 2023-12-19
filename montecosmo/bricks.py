@@ -41,7 +41,7 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     """
     kvec = fftk(mesh_size)
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
-    pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod())
+    pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
     field = numpyro.sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
 
