@@ -58,7 +58,7 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
-        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_{\text{nl}} \nabla^2 delta + b_s \left(s^2 - \braket{s^2}\right)
+        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
     """
     b1 = numpyro.sample('b1', dist.Normal(1, 0.25))
     b2 = numpyro.sample('b2', dist.Normal(0, 5))
