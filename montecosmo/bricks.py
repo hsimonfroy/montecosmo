@@ -1,5 +1,6 @@
 import numpyro
 import numpyro.distributions as dist
+from numpyro import sample, deterministic
 import jax.numpy as jnp
 import jax_cosmo as jc
 from jaxpm.kernels import fftk
@@ -12,18 +13,18 @@ def cosmo_prior(trace_reparam=False):
     """
     Defines a cosmological prior to sample from.
     """
-    # Omega_c_base = numpyro.sample('Omega_c_base', dist.TruncatedNormal(0,1, low=-1))
-    Omega_c_base = numpyro.sample('Omega_c_base', dist.Normal(0,1))
-    sigma8_base = numpyro.sample('sigma8_base', dist.Normal(0, 1))
+    # Omega_c_base = sample('Omega_c_base', dist.TruncatedNormal(0,1, low=-1))
+    Omega_c_base = sample('Omega_c_base', dist.Normal(0,1))
+    sigma8_base = sample('sigma8_base', dist.Normal(0, 1))
     Omega_c = Omega_c_base * 0.2 + 0.25
     sigma8 = sigma8_base * 0.14 + 0.831
 
     if trace_reparam:
-        Omega_c = numpyro.deterministic('Omega_c', Omega_c)
-        sigma8 = numpyro.deterministic('sigma8', sigma8)
+        Omega_c = deterministic('Omega_c', Omega_c)
+        sigma8 = deterministic('sigma8', sigma8)
 
     cosmo_params = {'Omega_c':Omega_c, 'sigma8':sigma8}
-    # numpyro.deterministic('cosmo_params', cosmo_params) # NOTE: does not seem to work properly
+    # deterministic('cosmo_params', cosmo_params) # NOTE: does not seem to work properly
     cosmology = jc.Planck15(**cosmo_params)
     return cosmology
 
@@ -31,8 +32,8 @@ def cosmo_prior(trace_reparam=False):
 #     reparam_config = {'Omega_c': LocScaleReparam(centered=0),
 #                       'sigma8': LocScaleReparam(centered=0)}
 #     with numpyro.handlers.reparam(config=reparam_config):
-#         Omega_c = numpyro.sample('Omega_c', dist.Normal(0.25, 0.2**2))
-#         sigma8 = numpyro.sample('sigma8', dist.Normal(0.831, 0.14**2))
+#         Omega_c = sample('Omega_c', dist.Normal(0.25, 0.2**2))
+#         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
 def linear_field(mesh_size, box_size, pk, trace_reparam=False):
@@ -43,13 +44,13 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
     pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
-    field = numpyro.sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+    field = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
 
     field = jnp.fft.rfftn(field) * pkmesh**0.5
     field = jnp.fft.irfftn(field)
 
     if trace_reparam:
-        field = numpyro.deterministic('init_mesh', field)
+        field = deterministic('init_mesh', field)
     return field
 
 
@@ -60,10 +61,10 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
         
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
     """
-    b1 = numpyro.sample('b1', dist.Normal(1, 0.25))
-    b2 = numpyro.sample('b2', dist.Normal(0, 5))
-    bs = numpyro.sample('bs', dist.Normal(0, 5))
-    bnl = numpyro.sample('bnl', dist.Normal(0, 5))
+    b1 = sample('b1', dist.Normal(1, 0.25))
+    b2 = sample('b2', dist.Normal(0, 5))
+    bs = sample('bs', dist.Normal(0, 5))
+    bnl = sample('bnl', dist.Normal(0, 5))
 
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
@@ -148,7 +149,7 @@ def laplace_kernel(kvec): # simpler version
 
 
 def kaiser_bias(cosmo, a, mesh_size, los):
-    b = numpyro.sample('b', dist.Normal(2, 0.25))
+    b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
     # kvec = fftk(mesh_size)
