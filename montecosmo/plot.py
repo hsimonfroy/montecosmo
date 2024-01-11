@@ -1,19 +1,20 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
-# TODO: use mgrid with 1j instead of linspace+meshgrid
-# TODO: input box instead of cube_...
-# TODO: add an option to choose between 3D plot_surface or 2D pcolormesh
+
 # TODO: needs to return surf/p3d to add colorbar?
-# TODO: create another function to plot 3d scatter, and move both to a plot.py
-def plot_bivar_func(ax, func, nb_discr=100, cube_center=0, cube_halfsize=1.5):
+# TODO: create another function to plot 3d scatter
+def plot_bivar_func(fn, n_discr=10, box=[[-1,1],[-1,1]], surface=False, cmap='viridis'):
     """
-    Plot bivariate function.
+    Plot bivariate function fn, that should be vectorized first.
     e.g.:
-        ax = plt.subplot(121, projection="3d")
-        plot3d_func(ax, my_pdf, 100)
+        plt.subplot(121, projection="3d")
+        plot_bivar_func(my_pdf, 100, surface=True)
     """
-    x, y = np.linspace(cube_center-cube_halfsize, cube_center+cube_halfsize, nb_discr), np.linspace(cube_center-cube_halfsize, cube_center+cube_halfsize, nb_discr)
-    xx, yy = np.meshgrid(x, y)
-    xy = np.array([xx, yy]).transpose(1,2,0)
-    zz =  func(xy.reshape(-1,2)).reshape(nb_discr,nb_discr)
-    surf = ax.plot_surface(xx, yy, zz, cmap="viridis")
+    xxyy = np.mgrid[[slice(box_ax[0],box_ax[1],n_discr*1j) for box_ax in box]]
+    xy = xxyy.transpose(1,2,0)
+    zz = fn(xy.reshape(-1,2)).reshape(n_discr,n_discr)
+    if surface:
+        plt.gca().plot_surface(xxyy[0], xxyy[1], zz, cmap=cmap)
+    else:
+        plt.pcolormesh(xxyy[0], xxyy[1], zz, cmap=cmap)

@@ -22,7 +22,7 @@ def _initialize_pk(mesh_size, box_size, kmin, dk, los):
     Nsum = np.bincount(dig, weights=W.reshape(-1), minlength=len(kedges)+1)
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
-    kmesh[kmesh == 0] = jnp.inf # modify kmesh, so ensure digitizing kmesh before this
+    kmesh[kmesh == 0] = jnp.inf # modify kmesh, so ensure digitizing kmesh before this # TODO: NOT GOOD
     mumesh = mumesh / kmesh
     return dig, Nsum, W, kedges, mumesh
 

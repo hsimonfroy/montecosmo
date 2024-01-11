@@ -3,26 +3,28 @@ name: montecosmoenv
 channels:
   - conda-forge
 dependencies:
-  - python>=3.7
+  - python==3.11.6
   - pip
   - jupyterlab
   - matplotlib
   - ipympl
   - numpy
   - numpyro
+  - diffrax
+  - getdist
+  - mlflow
   - pip:
-    - "jax[cuda11_pip]"
-    # - "jax[cuda12_pip]"
+    - "jax[cuda11_pip]" # Feynman
+    # - "jax[cuda12_pip]" # NERSC
     - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     - jax-cosmo
     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
-    - getdist
     - graphviz # with pip, not the same in conda-forge
     # Editable package
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
 
 # Optionally:
-# tensorflow-probability, mlflow, diffrax
+# tensorflow-probability
 
 # If ptxas version not up to date:
 # mamba install -c nvidia cuda-nvcc 

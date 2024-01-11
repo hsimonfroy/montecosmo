@@ -84,7 +84,7 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
     kvec = fftk(mesh_size)
 
     kk = sum(ki**2 for ki in kvec)
-    kk[kk == 0] = jnp.inf
+    kk[kk == 0] = jnp.inf # TODO: NOT GOOD
     pot_k = delta_k / kk # inverse laplace kernel
     shear_sqr = 0  
     for i, ki in enumerate(kvec):
