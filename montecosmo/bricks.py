@@ -28,6 +28,7 @@ def cosmo_prior(trace_reparam=False):
     cosmology = jc.Planck15(**cosmo_params)
     return cosmology
 
+## To reparametrize automaticaly
 # from numpyro.infer.reparam import LocScaleReparam
 #     reparam_config = {'Omega_c': LocScaleReparam(centered=0),
 #                       'sigma8': LocScaleReparam(centered=0)}
@@ -61,28 +62,28 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
         
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
     """
-    b1_base = sample('b1_base', dist.Normal(0,1))
-    b2_base = sample('b2_base', dist.Normal(0, 1))
-    bs_base = sample('bs_base', dist.Normal(0, 1))
+    b1_base  = sample('b1_base',  dist.Normal(0, 1))
+    b2_base  = sample('b2_base',  dist.Normal(0, 1))
+    bs_base  = sample('bs_base',  dist.Normal(0, 1))
     bnl_base = sample('bnl_base', dist.Normal(0, 1))
-    b1 = 0.5 * b1_base + 1
-    b2 = 5 * b2_base
-    bs = 5 * bs_base
-    bnl = 5 * bnl_base
+    b1  = 0.1 * b1_base
+    b2  = 0.1 * b2_base
+    bs  = 0.1 * bs_base
+    bnl = 0.1 * bnl_base
 
     if trace_reparam:
-        b1 = deterministic('b1', b1)
-        b2 = deterministic('b2', b2)
-        bs = deterministic('bs', bs)
+        b1  = deterministic('b1' , b1 )
+        b2  = deterministic('b2' , b2 )
+        bs  = deterministic('bs' , bs )
         bnl = deterministic('bnl', bnl)
 
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
+    weights = 1
 
 
     # Apply b1
-    weights = 1
     delta_part = cic_read(init_mesh, pos)
     weights = weights + b1 * delta_part
 
