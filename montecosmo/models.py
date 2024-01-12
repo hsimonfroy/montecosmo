@@ -11,8 +11,8 @@ from jaxpm.painting import cic_paint
 
 model_config={
             # Mesh and box parameters
-            'mesh_size':np.array([64, 64, 64]), 
-            'box_size':np.array([640, 640, 640]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+            'mesh_size':64 * np.array([1,1,1]), 
+            'box_size':640 * np.array([1,1,1]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # Scale factors
             'scale_factor_lpt':0.1, 
             'scale_factor_obs':0.5,
@@ -32,7 +32,7 @@ def pmrsd_model(mesh_size,
                   trace_deterministic,
                   noise=0):
     """
-    A cosmological forward model, with LPT and PM displacements, Lagrangian bias, RSD, and Poisson observation.
+    A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
     The relevant variables can be traced.
     """
     # Sample cosmology
@@ -46,7 +46,7 @@ def pmrsd_model(mesh_size,
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
 
     # Compute Lagrangian bias expansion weights
-    lbe_weights = lagrangian_bias(cosmology, scale_factor_obs, init_mesh, x_part, box_size)
+    lbe_weights = lagrangian_bias(cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
@@ -75,11 +75,12 @@ def pmrsd_model(mesh_size,
         biased_mesh = deterministic('biased_mesh', biased_mesh)
 
     # Observe
-    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+    epsilon_var = 0.1 # add epsilon to prevent zero variance
+    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) + epsilon_var
     # ## Normal noise 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh + noise**2)**.5))
+    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh + noise**2)**.5))
     ## Poisson noise
-    obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + noise**2))
+    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + noise**2))
     return obs_mesh
 
 
@@ -92,7 +93,7 @@ def lpt_model(mesh_size,
                   trace_reparam, 
                   trace_deterministic):
     """
-    A simple cosmological model, with LPT displacement and Poisson observation.
+    A simple cosmological model, with LPT displacement.
     The relevant variables can be traced.
     """
     # Sample cosmology
@@ -122,11 +123,12 @@ def lpt_model(mesh_size,
        lpt_mesh = deterministic('lpt_mesh', lpt_mesh)
 
     # Observe
-    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+    epsilon_var = 0.1 # add epsilon to prevent zero variance
+    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) + epsilon_var
     ## Direct observation
-    # obs_mesh = sample('obs_mesh', dist.Delta(lpt_mesh))
+    # obs_mesh = sample('obs_mesh', dist.Delta(gxy_intens_mesh))
     ## Normal noise 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, gxy_intens_mesh))
+    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh)**.5))
     ## Poisson noise
-    obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh))
+    obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh)) 
     return obs_mesh

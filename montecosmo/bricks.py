@@ -7,7 +7,7 @@ from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 
-
+import jax
 
 def cosmo_prior(trace_reparam=False):
     """
@@ -54,25 +54,37 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     return field
 
 
-def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
+def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
     """
-    b1 = sample('b1', dist.Normal(1, 0.25))
-    b2 = sample('b2', dist.Normal(0, 5))
-    bs = sample('bs', dist.Normal(0, 5))
-    bnl = sample('bnl', dist.Normal(0, 5))
+    b1_base = sample('b1_base', dist.Normal(0,1))
+    b2_base = sample('b2_base', dist.Normal(0, 1))
+    bs_base = sample('bs_base', dist.Normal(0, 1))
+    bnl_base = sample('bnl_base', dist.Normal(0, 1))
+    b1 = 0.5 * b1_base + 1
+    b2 = 5 * b2_base
+    bs = 5 * bs_base
+    bnl = 5 * bnl_base
+
+    if trace_reparam:
+        b1 = deterministic('b1', b1)
+        b2 = deterministic('b2', b2)
+        bs = deterministic('bs', bs)
+        bnl = deterministic('bnl', bnl)
 
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
 
+
     # Apply b1
+    weights = 1
     delta_part = cic_read(init_mesh, pos)
-    weights = 1 + b1 * delta_part
+    weights = weights + b1 * delta_part
 
     # Apply b2
     delta_sqr_part = delta_part**2
@@ -84,8 +96,10 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
     kvec = fftk(mesh_size)
 
     kk = sum(ki**2 for ki in kvec)
-    kk[kk == 0] = jnp.inf # TODO: NOT GOOD
-    pot_k = delta_k / kk # inverse laplace kernel
+    kk_nozeros = jnp.where(kk==0, 1, kk) 
+    pot_k = delta_k / kk_nozeros 
+    pot_k = jnp.where(kk==0, 0, pot_k) # inverse laplace kernel
+
     shear_sqr = 0  
     for i, ki in enumerate(kvec):
         # Add diagonal terms
@@ -104,6 +118,7 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size):
 
     delta_nl_part = cic_read(delta_nl, pos)
     weights = weights + bnl * delta_nl_part
+
     return weights
 
 
@@ -123,6 +138,7 @@ def rsd(cosmo, a, p, los=jnp.array([0,0,1])):
     Computed with respect scale factor and line-of-sight.
     """
     a = jnp.atleast_1d(a)
+    los = los / jnp.linalg.norm(los)
     # Divide PM momentum by `a` once to retrieve velocity, and once again for comobile velocity  
     dx_rsd = p / (jnp.sqrt(jc.background.Esqr(cosmo, a)) * a**2)
     # Project velocity on line-of-sight
@@ -130,36 +146,20 @@ def rsd(cosmo, a, p, los=jnp.array([0,0,1])):
     return dx_rsd
 
 
-def laplace_kernel(kvec): # simpler version
-    """
-    Compute the Laplace kernel from a given K vector
-    Parameters:
-    -----------
-    kvec: array
-    Array of k values in Fourier space
-    Returns:
-    --------
-    wts: array
-    Complex kernel
-    """
-    kk = sum(ki**2 for ki in kvec)
-    kk[kk == 0] = jnp.inf
-    # kk = kk.at[kk == 0].set(jnp.inf)
-    return 1 / kk
-
-
 def kaiser_bias(cosmo, a, mesh_size, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
-    # kvec = fftk(mesh_size)
     kshapes = jnp.eye(len(mesh_size), dtype=jnp.int16) * -2 + 1
+    # kvec = fftk(mesh_size)
     kvec = [2 * jnp.pi *jnp.fft.fftfreq(m).reshape(kshape)
             for m, kshape in zip(mesh_size, kshapes)]
     kmesh = sum(kk**2 for kk in kvec)**0.5
+
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
-    kmesh = kmesh.at[kmesh == 0].set(jnp.inf)
-    mumesh = mumesh / kmesh
+    kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 
+    mumesh = mumesh / kmesh_nozeros 
+    mumesh = jnp.where(kmesh==0, 0, mumesh)
 
     return b + growth_rate(cosmo, a) * mumesh**2
 
