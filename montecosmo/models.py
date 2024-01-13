@@ -8,6 +8,7 @@ from montecosmo.bricks import cosmo_prior, linear_pk_interp, linear_field, lagra
 from jaxpm.pm import lpt
 from jaxpm.painting import cic_paint
 
+import jax
 
 model_config={
             # Mesh and box parameters
@@ -75,12 +76,16 @@ def pmrsd_model(mesh_size,
         biased_mesh = deterministic('biased_mesh', biased_mesh)
 
     # Observe
-    epsilon_var = 0.1 # add epsilon to prevent zero variance
-    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) + epsilon_var
-    # ## Normal noise 
-    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh + noise**2)**.5))
+    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+    # jax.debug.print("gxy_intens_mesh min, max, mean{i}", i=(jnp.min(gxy_intens_mesh), jnp.max(gxy_intens_mesh), jnp.mean(gxy_intens_mesh)) )
+
+    ## Normal noise
+    obs_var = 1
+    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, obs_var**.5))
     ## Poisson noise
-    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + noise**2))
+    # eps_var = 0.1 # add epsilon variance to prevent zero variance
+    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
+    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh
 
 
@@ -123,12 +128,14 @@ def lpt_model(mesh_size,
        lpt_mesh = deterministic('lpt_mesh', lpt_mesh)
 
     # Observe
-    epsilon_var = 0.1 # add epsilon to prevent zero variance
-    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) + epsilon_var
+    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
     ## Direct observation
     # obs_mesh = sample('obs_mesh', dist.Delta(gxy_intens_mesh))
-    ## Normal noise 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh)**.5))
+    ## Normal noise
+    obs_var = 1
+    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, obs_var**.5))
     ## Poisson noise
-    obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh)) 
+    # eps_var = 0.1 # add epsilon variance to prevent zero variance
+    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
+    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh

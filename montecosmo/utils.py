@@ -1,7 +1,162 @@
-import jax.numpy as jnp
-from jax import random
 import pickle
 import os
+
+import jax.numpy as jnp
+from jax import random
+from numpyro.handlers import seed, condition, trace
+from numpyro.infer.util import log_density
+
+from jax import random, jit, vmap, grad
+from functools import partial, wraps
+
+
+
+def get_jit(*args, **kwargs):
+    """
+    Return custom jit function that preserves function name and documentation.
+    """
+    def custom_jit(fun):
+        return wraps(fun)(jit(fun, *args, **kwargs))
+    return custom_jit
+
+
+def get_simulator(model, cond_params={}):
+    """
+    Return a simulator that samples from a model, conditioned on some parameters.
+    """
+    def sample_model(model, cond_params, rng_seed=0, model_kwargs={}):
+        cond_model = condition(model, cond_params) # NOTE: Only condition on random sites
+        cond_trace = trace(seed(cond_model, rng_seed=rng_seed)).get_trace(**model_kwargs)
+        params = {name: cond_trace[name]['value'] for name in cond_trace.keys()}
+        return params
+
+    vsample_model = vmap(partial(sample_model, model, cond_params), in_axes=(0,None))
+
+    @get_jit(static_argnames=('batch_size'))
+    def simulator(batch_size=1, rng_key=random.PRNGKey(0), model_kwargs={}):
+        """
+        Sample batches from the model.
+        """
+        keys = random.split(rng_key, batch_size)
+        return vsample_model(keys, model_kwargs)
+    
+    return simulator
+
+
+
+
+def logp_model(model, cond_params, params, model_kwargs={}):
+    """
+    Return a model log probability, evaluated on some parameters, optionally with some fixed parameters.
+    """
+    cond_model = condition(model, cond_params)
+    logp = log_density(model=cond_model, 
+                model_args=(), 
+                model_kwargs=model_kwargs, 
+                params=params)[0]
+    return logp
+
+
+def get_logp_fn(model, cond_params={}):
+    """
+    Return a model log probabilty function, optionally with some fixed parameters.
+    """
+    def logp_fn(params, model_kwargs={}):
+        """
+        Return the model log probabilty, evaluated on some parameters.
+        """
+        return partial(logp_model, model, cond_params)(params, model_kwargs)
+    
+    return logp_fn
+
+
+def get_score_fn(model, cond_params={}):
+    """
+    Return a model score function, optionally with some fixed parameters.
+    """
+    def score_fn(params, model_kwargs={}):
+        """
+        Return the model score, evaluated on some parameters.
+        """
+        score_model = grad(partial(logp_model, model, cond_params), argnums=0)
+        return score_model(params, model_kwargs)
+    
+    return score_fn 
+
+
+
+
+
+# def get_logp_fn(model, cond_params={}):
+#     """
+#     Return a model log probabilty function, conditioned on some parameters.
+#     """
+#     vlogp_model = vmap(partial(logp_model, model, cond_params), in_axes=(0,None))
+#     @my_jit
+#     def logp_fn(params, model_kwargs={}):
+#         """
+#         Return the model log probabilty, evaluated on some parameters.
+#         """
+#         return vlogp_model(params, model_kwargs)
+    
+#     return logp_fn
+
+
+# def get_score_fn(model, cond_params={}):
+#     """
+#     Return a model score function, conditioned on some parameters.
+#     """
+#     score_model = grad(partial(logp_model, model, cond_params), argnums=0)
+#     vscore_model = vmap(score_model, in_axes=(0,None))
+#     @my_jit
+#     def score_fn(params, model_kwargs={}):
+#         """
+#         Return the model score, evaluated on some parameters.
+#         """
+#         return vscore_model(params, model_kwargs)
+    
+#     return score_fn 
+
+
+
+
+
+
+
+# def get_simulator(model, cond_params={}):
+#     """
+#     Return a simulator that samples from a model conditioned on some parameters.
+#     """
+#     def sample_model(model, cond_params, rng_seed=0, model_kwargs={}):
+#         if len(model_kwargs)==0:
+#             model_kwargs = {}
+#         cond_model = condition(model, cond_params) # NOTE: Only condition on random sites
+#         cond_trace = trace(seed(cond_model, rng_seed=rng_seed)).get_trace(**model_kwargs)
+#         params = {name: cond_trace[name]['value'] for name in cond_trace.keys()}
+#         return params
+
+#     vsample_model = vmap(partial(sample_model, model, cond_params), in_axes=(None,0))
+#     vvsample_model = vmap(vsample_model, in_axes=(0,None))
+
+#     @partial(jit, static_argnames=('batch_size'))
+#     def simulator(batch_size=1, rng_key=random.PRNGKey(0), model_kwargs={}):
+#         """
+#         Sample batches from model. If they are both strict greater than one, 
+#         batch size would be left-most dimension, and model arguments size the second left-most.
+#         """
+#         squeeze_axis = []
+#         if batch_size==1:
+#             squeeze_axis.append(0)
+#         if len(model_kwargs)==0:
+#             model_kwargs = jnp.array([[]]) # for vmap, because jnp.array([{}]) is not valid
+#             squeeze_axis.append(1)
+#         keys = random.split(rng_key, batch_size)
+#         params = vvsample_model(keys, model_kwargs)
+#         return {name: params[name].squeeze(axis=squeeze_axis) for name in params.keys()}
+
+#     return simulator
+
+
 
 
 def save_mcmc(mcmc, i_run, save_path, save_var_names, extra_fields):

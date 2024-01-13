@@ -66,10 +66,10 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     b2_base  = sample('b2_base',  dist.Normal(0, 1))
     bs_base  = sample('bs_base',  dist.Normal(0, 1))
     bnl_base = sample('bnl_base', dist.Normal(0, 1))
-    b1  = 0.1 * b1_base
-    b2  = 0.1 * b2_base
-    bs  = 0.1 * bs_base
-    bnl = 0.1 * bnl_base
+    b1  = 0.5 * b1_base + 1
+    b2  = 0.5 * b2_base
+    bs  = 0.5 * bs_base
+    bnl = 0.5 * bnl_base
 
     if trace_reparam:
         b1  = deterministic('b1' , b1 )
@@ -80,9 +80,9 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
+
     weights = 1
-
-
+    
     # Apply b1
     delta_part = cic_read(init_mesh, pos)
     weights = weights + b1 * delta_part
@@ -120,7 +120,7 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     delta_nl_part = cic_read(delta_nl, pos)
     weights = weights + bnl * delta_nl_part
 
-    return weights
+    return jnp.maximum(weights, 0)
 
 
 def linear_pk_interp(cosmo, a=1, n_interp=256):
