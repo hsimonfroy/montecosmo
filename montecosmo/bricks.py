@@ -120,6 +120,7 @@ def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     delta_nl_part = cic_read(delta_nl, pos)
     weights = weights + bnl * delta_nl_part
 
+    # jax.debug.print('Number of strict negative weights={i}', i=(weights<0).sum())
     return jnp.maximum(weights, 0)
 
 

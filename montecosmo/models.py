@@ -8,7 +8,6 @@ from montecosmo.bricks import cosmo_prior, linear_pk_interp, linear_field, lagra
 from jaxpm.pm import lpt
 from jaxpm.painting import cic_paint
 
-import jax
 
 model_config={
             # Mesh and box parameters
@@ -22,6 +21,74 @@ model_config={
             # Debugging
             'trace_reparam':True, 
             'trace_deterministic':False}
+
+
+
+
+def pmrsd2_model(mesh_size,
+                  box_size,
+                  scale_factor_lpt,
+                  scale_factor_obs, 
+                  galaxy_density, # in galaxy / (Mpc/h)^3
+                  trace_reparam, 
+                  trace_deterministic,
+                  noise=0):
+    """
+    A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
+    The relevant variables can be traced.
+    """
+    # Sample cosmology
+    cosmology = cosmo_prior(trace_reparam)
+
+    # Sample initial conditions
+    pk_fn = linear_pk_interp(cosmology, n_interp=256)
+    init_mesh = linear_field(mesh_size, box_size, pk_fn, trace_reparam)
+
+    # Create regular grid of particles
+    x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
+
+    # Compute Lagrangian bias expansion weights
+    lbe_weights = lagrangian_bias(cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
+
+    # LPT displacement
+    cosmology._workspace = {}  # HACK: temporary fix
+    dx, p_part, f = lpt(cosmology, init_mesh, x_part, a=scale_factor_lpt)
+    # NOTE: lpt supposes given mesh follows linear pk at a=1, 
+    # and correct by growth factor to get forces at wanted scale factor
+    x_part = x_part + dx
+
+    if trace_deterministic: 
+        x_part = deterministic('lpt_part', x_part)
+
+    # XXX: here N-body displacement
+    # x_part, v_part = ... PM(scale_factor_lpt -> scale_factor_obs)
+
+    # RSD displacement
+    dx_rsd = rsd(cosmology, scale_factor_obs, p_part)
+    x_part = x_part + dx_rsd
+
+    if trace_deterministic: 
+        x_part = deterministic('rsd_part', x_part)
+
+    # CIC paint weighted by Lagrangian bias expansion
+    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
+
+    if trace_deterministic: 
+        biased_mesh = deterministic('biased_mesh', biased_mesh)
+
+    # Observe
+    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+    # jax.debug.print("gxy_intens_mesh min, max, mean{i}", i=(jnp.min(gxy_intens_mesh), jnp.max(gxy_intens_mesh), jnp.mean(gxy_intens_mesh)) )
+
+    ## Normal noise
+    obs_var = 1
+    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, obs_var**.5))
+    ## Poisson noise
+    # eps_var = 0.1 # add epsilon variance to prevent zero variance
+    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
+    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
+    return obs_mesh
+
 
 
 def pmrsd_model(mesh_size,
