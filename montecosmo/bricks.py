@@ -7,16 +7,16 @@ from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 
-import jax
 
-def cosmo_prior(trace_reparam=False):
+
+
+def get_cosmology(cosmo_base, trace_reparam=False):
     """
-    Defines a cosmological prior to sample from.
+    Compute cosmology.
     """
-    # Omega_c_base = sample('Omega_c_base', dist.TruncatedNormal(0,1, low=-1))
-    Omega_c_base = sample('Omega_c_base', dist.Normal(0,1))
-    sigma8_base = sample('sigma8_base', dist.Normal(0, 1))
-    Omega_c = Omega_c_base * 0.2 + 0.25
+    # Reparametrize
+    Omega_c_base, sigma8_base = cosmo_base
+    Omega_c = Omega_c_base * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
     sigma8 = sigma8_base * 0.14 + 0.831
 
     if trace_reparam:
@@ -24,7 +24,7 @@ def cosmo_prior(trace_reparam=False):
         sigma8 = deterministic('sigma8', sigma8)
 
     cosmo_params = {'Omega_c':Omega_c, 'sigma8':sigma8}
-    # deterministic('cosmo_params', cosmo_params) # NOTE: does not seem to work properly
+    # deterministic('cosmo_params', cosmo_params) # does not seem to work properly
     cosmology = jc.Planck15(**cosmo_params)
     return cosmology
 
@@ -37,17 +37,18 @@ def cosmo_prior(trace_reparam=False):
 #         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
-def linear_field(mesh_size, box_size, pk, trace_reparam=False):
+def get_linear_field(cosmology, init_mesh_base, mesh_size, box_size, trace_reparam=False):
     """
-    Generate initial conditions.
+    Compute initial conditions.
     """
+    # Compute initial power spectrum
+    pk_fn = linear_pk_interp(cosmology, n_interp=256)
     kvec = fftk(mesh_size)
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
-    pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
+    pkmesh = pk_fn(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
-    field = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
-
-    field = jnp.fft.rfftn(field) * pkmesh**0.5
+    # Reparametrize
+    field = jnp.fft.rfftn(init_mesh_base) * pkmesh**0.5
     field = jnp.fft.irfftn(field)
 
     if trace_reparam:
@@ -55,17 +56,24 @@ def linear_field(mesh_size, box_size, pk, trace_reparam=False):
     return field
 
 
-def lagrangian_bias(cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
+def get_cosmo_and_init(cosmo_base, init_base, mesh_size, box_size, trace_reparam=False):
+    """
+    Compute cosmology and initial conditions.
+    """
+    cosmology = get_cosmology(cosmo_base, trace_reparam)
+    init_mesh = get_linear_field(cosmology, init_base, mesh_size, box_size, trace_reparam)
+    return cosmology, init_mesh
+
+
+def get_lagrangian_bias(biases_base, cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
-    """
-    b1_base  = sample('b1_base',  dist.Normal(0, 1))
-    b2_base  = sample('b2_base',  dist.Normal(0, 1))
-    bs_base  = sample('bs_base',  dist.Normal(0, 1))
-    bnl_base = sample('bnl_base', dist.Normal(0, 1))
+    """    
+    # Reparametrize
+    b1_base, b2_base, bs_base, bnl_base = biases_base
     b1  = 0.5 * b1_base + 1
     b2  = 0.5 * b2_base
     bs  = 0.5 * bs_base
@@ -148,7 +156,7 @@ def rsd(cosmo, a, p, los=jnp.array([0,0,1])):
     return dx_rsd
 
 
-def kaiser_bias(cosmo, a, mesh_size, los):
+def get_kaiser_bias(cosmo, a, mesh_size, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
@@ -172,7 +180,26 @@ def apply_kaiser_bias(cosmo, a, init_mesh, los=jnp.array([0,0,1])):
     init_mesh = init_mesh * growth_factor(cosmo, a)
 
     # Apply eulerian kaiser bias weights
-    kaiser_weights = kaiser_bias(cosmo, a, init_mesh.shape, los)
+    kaiser_weights = get_kaiser_bias(cosmo, a, init_mesh.shape, los)
     delta_k = jnp.fft.fftn(init_mesh)
     kaiser_mesh = jnp.fft.ifftn(kaiser_weights * delta_k)
     return kaiser_mesh
+
+
+# def sample_linear_field(mesh_size, box_size, pk, trace_reparam=False):
+#     """
+#     Compute initial conditions.
+#     """
+#     # Compute initial power spectrum
+#     kvec = fftk(mesh_size)
+#     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
+#     pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
+
+#     # Reparametrize
+#     init_mesh_base = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+#     field = jnp.fft.rfftn(init_mesh_base) * pkmesh**0.5
+#     field = jnp.fft.irfftn(field)
+
+#     if trace_reparam:
+#         field = deterministic('init_mesh', field)
+#     return field

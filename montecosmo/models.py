@@ -1,12 +1,17 @@
-import jax.numpy as jnp
-import numpyro
 import numpyro.distributions as dist
 from numpyro import sample, deterministic
+from numpyro.handlers import seed, condition, trace
+from numpyro.infer.util import log_density
 import numpy as np
 
-from montecosmo.bricks import cosmo_prior, linear_pk_interp, linear_field, lagrangian_bias, rsd
+import jax.numpy as jnp
+from jax import random, jit, vmap, grad
+from functools import partial, wraps
+
+from montecosmo.bricks import get_cosmo_and_init, get_lagrangian_bias, rsd
 from jaxpm.pm import lpt
 from jaxpm.painting import cic_paint
+
 
 
 model_config={
@@ -23,32 +28,63 @@ model_config={
             'trace_deterministic':False}
 
 
-
-
-def pmrsd2_model(mesh_size,
-                  box_size,
-                  scale_factor_lpt,
-                  scale_factor_obs, 
-                  galaxy_density, # in galaxy / (Mpc/h)^3
-                  trace_reparam, 
-                  trace_deterministic,
-                  noise=0):
+def prior_model(mesh_size):
     """
-    A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
-    The relevant variables can be traced.
+    A prior for cosmological model. 
+    Return base values for computing cosmology, initial conditions, and Lagrangian bias latent variables.
     """
-    # Sample cosmology
-    cosmology = cosmo_prior(trace_reparam)
+    # Sample cosmology base
+    Omega_c_base = sample('Omega_c_base', dist.Normal(0,1))
+    sigma8_base = sample('sigma8_base', dist.Normal(0, 1))
+    cosmo_base = Omega_c_base, sigma8_base
 
-    # Sample initial conditions
-    pk_fn = linear_pk_interp(cosmology, n_interp=256)
-    init_mesh = linear_field(mesh_size, box_size, pk_fn, trace_reparam)
+    # Sample initial conditions base
+    init_mesh_base = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+
+    # Sample Lagrangian biases base
+    b1_base  = sample('b1_base',  dist.Normal(0, 1))
+    b2_base  = sample('b2_base',  dist.Normal(0, 1))
+    bs_base  = sample('bs_base',  dist.Normal(0, 1))
+    bnl_base = sample('bnl_base', dist.Normal(0, 1))
+    biases_base = b1_base, b2_base, bs_base, bnl_base
+
+    return cosmo_base, init_mesh_base, biases_base
+
+
+def likelihood_model(mean_mesh, obs_var):
+    """
+    A likelihood for cosmological model.
+    Return an observed mesh sampled from a mean mesh with observational variance.
+    """
+    # TODO: prior on obs_var
+    # Normal noise
+    obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, obs_var**.5))
+    # Poisson noise
+    # eps_var = 0.1 # add epsilon variance to prevent zero variance
+    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
+    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
+    return obs_mesh
+
+
+def pmrsd_model_fn(latent_values, 
+                mesh_size,                 
+                box_size,
+                scale_factor_lpt,
+                scale_factor_obs, 
+                galaxy_density, # in galaxy / (Mpc/h)^3
+                trace_reparam, 
+                trace_deterministic):
+    # Unpack latent variables
+    cosmo_base, init_mesh_base, biases_base = latent_values
+
+    # Get cosmology and initial conditions
+    cosmology, init_mesh = get_cosmo_and_init(cosmo_base, init_mesh_base, mesh_size, box_size, trace_reparam)
 
     # Create regular grid of particles
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
 
-    # Compute Lagrangian bias expansion weights
-    lbe_weights = lagrangian_bias(cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
+    # Get Lagrangian bias expansion weights
+    lbe_weights = get_lagrangian_bias(biases_base, cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
@@ -57,11 +93,11 @@ def pmrsd2_model(mesh_size,
     # and correct by growth factor to get forces at wanted scale factor
     x_part = x_part + dx
 
-    if trace_deterministic: 
-        x_part = deterministic('lpt_part', x_part)
-
     # XXX: here N-body displacement
     # x_part, v_part = ... PM(scale_factor_lpt -> scale_factor_obs)
+
+    if trace_deterministic: 
+        x_part = deterministic('pm_part', x_part)
 
     # RSD displacement
     dx_rsd = rsd(cosmology, scale_factor_obs, p_part)
@@ -78,16 +114,7 @@ def pmrsd2_model(mesh_size,
 
     # Observe
     gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-    # jax.debug.print("gxy_intens_mesh min, max, mean{i}", i=(jnp.min(gxy_intens_mesh), jnp.max(gxy_intens_mesh), jnp.mean(gxy_intens_mesh)) )
-
-    ## Normal noise
-    obs_var = 1
-    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, obs_var**.5))
-    ## Poisson noise
-    # eps_var = 0.1 # add epsilon variance to prevent zero variance
-    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
-    return obs_mesh
+    return gxy_intens_mesh
 
 
 
@@ -103,18 +130,43 @@ def pmrsd_model(mesh_size,
     A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
     The relevant variables can be traced.
     """
-    # Sample cosmology
-    cosmology = cosmo_prior(trace_reparam)
+    # Sample from prior
+    latent_values = prior_model(mesh_size)
 
-    # Sample initial conditions
-    pk_fn = linear_pk_interp(cosmology, n_interp=256)
-    init_mesh = linear_field(mesh_size, box_size, pk_fn, trace_reparam)
+    # Compute deterministic model function
+    gxy_intens_mesh = pmrsd_model_fn(latent_values,
+                                        mesh_size,
+                                        box_size,
+                                        scale_factor_lpt,
+                                        scale_factor_obs, 
+                                        galaxy_density, # in galaxy / (Mpc/h)^3
+                                        trace_reparam, 
+                                        trace_deterministic,)
+
+    # Sample from likelihood
+    obs_mesh = likelihood_model(gxy_intens_mesh, obs_var=2+noise**2) # 1+noise**2
+
+    return obs_mesh
+
+
+
+
+def lpt_model_fn(latent_values, 
+                mesh_size,                 
+                box_size,
+                scale_factor_lpt,
+                scale_factor_obs, 
+                galaxy_density, # in galaxy / (Mpc/h)^3
+                trace_reparam, 
+                trace_deterministic):
+    # Unpack latent variables
+    cosmo_base, init_mesh_base, _ = latent_values
+
+    # Get cosmology and initial conditions
+    cosmology, init_mesh = get_cosmo_and_init(cosmo_base, init_mesh_base, mesh_size, box_size, trace_reparam)
 
     # Create regular grid of particles
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
-
-    # Compute Lagrangian bias expansion weights
-    lbe_weights = lagrangian_bias(cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
@@ -123,38 +175,15 @@ def pmrsd_model(mesh_size,
     # and correct by growth factor to get forces at wanted scale factor
     x_part = x_part + dx
 
+    # Cloud In Cell painting
+    lpt_mesh = cic_paint(jnp.zeros(mesh_size), x_part)
+    
     if trace_deterministic: 
-        x_part = deterministic('lpt_part', x_part)
-
-    # XXX: here N-body displacement
-    # x_part, v_part = ... PM(scale_factor_lpt -> scale_factor_obs)
-
-    # RSD displacement
-    dx_rsd = rsd(cosmology, scale_factor_obs, p_part)
-    x_part = x_part + dx_rsd
-
-    if trace_deterministic: 
-        x_part = deterministic('rsd_part', x_part)
-
-    # CIC paint weighted by Lagrangian bias expansion
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
-
-    if trace_deterministic: 
-        biased_mesh = deterministic('biased_mesh', biased_mesh)
+       lpt_mesh = deterministic('lpt_mesh', lpt_mesh)
 
     # Observe
-    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-    # jax.debug.print("gxy_intens_mesh min, max, mean{i}", i=(jnp.min(gxy_intens_mesh), jnp.max(gxy_intens_mesh), jnp.mean(gxy_intens_mesh)) )
-
-    ## Normal noise
-    obs_var = 1
-    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, obs_var**.5))
-    ## Poisson noise
-    # eps_var = 0.1 # add epsilon variance to prevent zero variance
-    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
-    return obs_mesh
-
+    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+    return gxy_intens_mesh
 
 
 def lpt_model(mesh_size,
@@ -168,41 +197,133 @@ def lpt_model(mesh_size,
     A simple cosmological model, with LPT displacement.
     The relevant variables can be traced.
     """
-    # Sample cosmology
-    cosmology = cosmo_prior(trace_reparam)
+    # Sample from prior
+    latent_values = prior_model(mesh_size)
 
-    # Sample initial conditions
-    pk_fn = linear_pk_interp(cosmology, n_interp=256)
-    init_mesh = linear_field(mesh_size, box_size, pk_fn, trace_reparam)
-    
-    if trace_deterministic: 
-       init_mesh = deterministic('init_mesh', init_mesh)
+    gxy_intens_mesh = lpt_model_fn(latent_values,
+                                    mesh_size,
+                                    box_size,
+                                    scale_factor_lpt,
+                                    scale_factor_obs, 
+                                    galaxy_density, # in galaxy / (Mpc/h)^3
+                                    trace_reparam, 
+                                    trace_deterministic,)
 
-    # Create regular grid of particles
-    particles_pos = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
+    # Sample from likelihood
+    obs_mesh = likelihood_model(gxy_intens_mesh, obs_var=1)
 
-    # Initial displacement with LPT
-    cosmology._workspace = {}  # FIXME: this a temporary fix
-    dx, p, f = lpt(cosmology, init_mesh, particles_pos, a=scale_factor_lpt)
-    # NOTE: lpt supposes given mesh follows linear pk at a=1, 
-    # and correct by growth factor to get forces at wanted scale factor
-    particles_pos = particles_pos + dx
-
-    # Cloud In Cell painting
-    lpt_mesh = cic_paint(jnp.zeros(mesh_size), particles_pos)
-    
-    if trace_deterministic: 
-       lpt_mesh = deterministic('lpt_mesh', lpt_mesh)
-
-    # Observe
-    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-    ## Direct observation
-    # obs_mesh = sample('obs_mesh', dist.Delta(gxy_intens_mesh))
-    ## Normal noise
-    obs_var = 1
-    obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, obs_var**.5))
-    ## Poisson noise
-    # eps_var = 0.1 # add epsilon variance to prevent zero variance
-    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh
+
+
+
+
+
+def _simulator(model, rng_seed=0, model_kwargs={}):
+    cond_trace = trace(seed(model, rng_seed=rng_seed)).get_trace(**model_kwargs)
+    params = {name: cond_trace[name]['value'] for name in cond_trace.keys()}
+    return params
+
+
+def get_simulator(model):
+    """
+    Return a simulator that samples from a model.
+    """
+    def simulator(rng_seed=0, model_kwargs={}):
+        """
+        Sample from the model.
+        """
+        return partial(_simulator, model)(rng_seed, model_kwargs)
+    return simulator
+
+
+def _logp_fn(model, params, model_kwargs={}):
+    logp = log_density(model=model, 
+                model_args=(), 
+                model_kwargs=model_kwargs, 
+                params=params)[0]
+    return logp
+
+
+def get_logp_and_score_fn(model):
+    """
+    Return a model log probabilty and score functions.
+    """
+    def logp_fn(params, model_kwargs={}):
+        """
+        Return the model log probabilty, evaluated on some parameters.
+        """
+        return partial(_logp_fn, model)(params, model_kwargs)
+    
+    def score_fn(params, model_kwargs={}):
+        """
+        Return the model score, evaluated on some parameters.
+        """
+        return grad(partial(_logp_fn, model), argnums=0)(params, model_kwargs)
+    
+    return logp_fn, score_fn
+
+
+
+
+
+# def get_logp_fn(model, cond_params={}):
+#     """
+#     Return a model log probabilty function, conditioned on some parameters.
+#     """
+#     vlogp_model = vmap(partial(logp_model, model, cond_params), in_axes=(0,None))
+#     @get_jit
+#     def logp_fn(params, model_kwargs={}):
+#         """
+#         Return the model log probabilty, evaluated on some parameters.
+#         """
+#         return vlogp_model(params, model_kwargs)
+
+#     return logp_fn
+
+# def get_score_fn(model, cond_params={}):
+#     """
+#     Return a model score function, conditioned on some parameters.
+#     """
+#     score_model = grad(partial(logp_model, model, cond_params), argnums=0)
+#     vscore_model = vmap(score_model, in_axes=(0,None))
+#     @get_jit()
+#     def score_fn(params, model_kwargs={}):
+#         """
+#         Return the model score, evaluated on some parameters.
+#         """
+#         return vscore_model(params, model_kwargs)
+    
+#     return score_fn 
+
+# def get_simulator(model, cond_params={}):
+#     """
+#     Return a simulator that samples from a model conditioned on some parameters.
+#     """
+#     def sample_model(model, cond_params, rng_seed=0, model_kwargs={}):
+#         if len(model_kwargs)==0:
+#             model_kwargs = {}
+#         cond_model = condition(model, cond_params) # NOTE: Only condition on random sites
+#         cond_trace = trace(seed(cond_model, rng_seed=rng_seed)).get_trace(**model_kwargs)
+#         params = {name: cond_trace[name]['value'] for name in cond_trace.keys()}
+#         return params
+
+#     vsample_model = vmap(partial(sample_model, model, cond_params), in_axes=(None,0))
+#     vvsample_model = vmap(vsample_model, in_axes=(0,None))
+
+#     @get_jit(static_argnames=('batch_size'))
+#     def simulator(batch_size=1, rng_key=random.PRNGKey(0), model_kwargs={}):
+#         """
+#         Sample batches from model. If they are both strict greater than one, 
+#         batch size would be left-most dimension, and model arguments size the second left-most.
+#         """
+#         squeeze_axis = []
+#         if batch_size==1:
+#             squeeze_axis.append(0)
+#         if len(model_kwargs)==0:
+#             model_kwargs = jnp.array([[]]) # for vmap, because jnp.array([{}]) is not valid
+#             squeeze_axis.append(1)
+#         keys = random.split(rng_key, batch_size)
+#         params = vvsample_model(keys, model_kwargs)
+#         return {name: params[name].squeeze(axis=squeeze_axis) for name in params.keys()}
+
+#     return simulator
