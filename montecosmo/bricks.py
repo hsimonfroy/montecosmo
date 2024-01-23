@@ -74,7 +74,8 @@ def get_lagrangian_bias(biases_base, cosmo, a, init_mesh, pos, box_size, trace_r
     """    
     # Reparametrize
     b1_base, b2_base, bs_base, bnl_base = biases_base
-    b1  = 0.5 * b1_base + 1
+    # b1  = 0.5 * b1_base + 1
+    b1  = 0.5 * b1_base
     b2  = 0.5 * b2_base
     bs  = 0.5 * bs_base
     bnl = 0.5 * bnl_base
@@ -129,7 +130,7 @@ def get_lagrangian_bias(biases_base, cosmo, a, init_mesh, pos, box_size, trace_r
     weights = weights + bnl * delta_nl_part
 
     # jax.debug.print('Number of strict negative weights={i}', i=(weights<0).sum())
-    return jnp.maximum(weights, 0)
+    return weights
 
 
 def linear_pk_interp(cosmo, a=1, n_interp=256):

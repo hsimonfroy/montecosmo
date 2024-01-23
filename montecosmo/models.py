@@ -6,6 +6,7 @@ import numpy as np
 
 import jax.numpy as jnp
 from jax import random, jit, vmap, grad
+from jax.tree_util import tree_map
 from functools import partial, wraps
 
 from montecosmo.bricks import get_cosmo_and_init, get_lagrangian_bias, rsd
@@ -28,37 +29,44 @@ model_config={
             'trace_deterministic':False}
 
 
-def prior_model(mesh_size):
+def prior_model(mesh_size, noise=0.):
     """
     A prior for cosmological model. 
     Return base values for computing cosmology, initial conditions, and Lagrangian bias latent variables.
     """
+    sigma = jnp.sqrt(1+noise**2)
+
     # Sample cosmology base
-    Omega_c_base = sample('Omega_c_base', dist.Normal(0,1))
-    sigma8_base = sample('sigma8_base', dist.Normal(0, 1))
-    cosmo_base = Omega_c_base, sigma8_base
+    # Omega_c_base = sample('Omega_c_base', dist.Normal(0,sigma))
+    # sigma8_base = sample('sigma8_base', dist.Normal(0, sigma))
+    # cosmo_base = Omega_c_base, sigma8_base
+    cosmo_base = 0,0
 
     # Sample initial conditions base
-    init_mesh_base = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+    init_mesh_base = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
 
     # Sample Lagrangian biases base
-    b1_base  = sample('b1_base',  dist.Normal(0, 1))
-    b2_base  = sample('b2_base',  dist.Normal(0, 1))
-    bs_base  = sample('bs_base',  dist.Normal(0, 1))
-    bnl_base = sample('bnl_base', dist.Normal(0, 1))
-    biases_base = b1_base, b2_base, bs_base, bnl_base
+    # b1_base  = sample('b1_base',  dist.Normal(0, sigma))
+    # b2_base  = sample('b2_base',  dist.Normal(0, sigma))
+    # bs_base  = sample('bs_base',  dist.Normal(0, sigma))
+    # bnl_base = sample('bnl_base', dist.Normal(0, sigma))
+    # biases_base = b1_base, b2_base, bs_base, bnl_base
+    biases_base = 0,0,0,0
 
     return cosmo_base, init_mesh_base, biases_base
 
 
-def likelihood_model(mean_mesh, obs_var):
+def likelihood_model(mean_mesh, noise=0.):
     """
     A likelihood for cosmological model.
     Return an observed mesh sampled from a mean mesh with observational variance.
     """
     # TODO: prior on obs_var
+    obs_var = 1
+    sigma = jnp.sqrt(obs_var+noise**2)
+
     # Normal noise
-    obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, obs_var**.5))
+    obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, sigma))
     # Poisson noise
     # eps_var = 0.1 # add epsilon variance to prevent zero variance
     # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
@@ -125,13 +133,13 @@ def pmrsd_model(mesh_size,
                   galaxy_density, # in galaxy / (Mpc/h)^3
                   trace_reparam, 
                   trace_deterministic,
-                  noise=0):
+                  noise=0.):
     """
     A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
     The relevant variables can be traced.
     """
     # Sample from prior
-    latent_values = prior_model(mesh_size)
+    latent_values = prior_model(mesh_size, noise)
 
     # Compute deterministic model function
     gxy_intens_mesh = pmrsd_model_fn(latent_values,
@@ -144,7 +152,7 @@ def pmrsd_model(mesh_size,
                                         trace_deterministic,)
 
     # Sample from likelihood
-    obs_mesh = likelihood_model(gxy_intens_mesh, obs_var=2+noise**2) # 1+noise**2
+    obs_mesh = likelihood_model(gxy_intens_mesh, noise)
 
     return obs_mesh
 
@@ -219,8 +227,8 @@ def lpt_model(mesh_size,
 
 
 def _simulator(model, rng_seed=0, model_kwargs={}):
-    cond_trace = trace(seed(model, rng_seed=rng_seed)).get_trace(**model_kwargs)
-    params = {name: cond_trace[name]['value'] for name in cond_trace.keys()}
+    model_trace = trace(seed(model, rng_seed=rng_seed)).get_trace(**model_kwargs)
+    params = {name: model_trace[name]['value'] for name in model_trace.keys()}
     return params
 
 
