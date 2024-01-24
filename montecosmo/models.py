@@ -9,7 +9,8 @@ from jax import random, jit, vmap, grad
 from jax.tree_util import tree_map
 from functools import partial, wraps
 
-from montecosmo.bricks import get_cosmo_and_init, get_lagrangian_bias, rsd
+from montecosmo.bricks import get_cosmology, get_linear_field, get_lagrangian_weights, rsd
+from montecosmo.metrics import power_spectrum
 from jaxpm.pm import lpt
 from jaxpm.painting import cic_paint
 
@@ -17,8 +18,8 @@ from jaxpm.painting import cic_paint
 
 model_config={
             # Mesh and box parameters
-            'mesh_size':64 * np.array([1,1,1]), 
-            'box_size':640 * np.array([1,1,1]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+            'mesh_size':64 * np.array([1 ,1 ,1 ]), 
+            'box_size':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # Scale factors
             'scale_factor_lpt':0.1, 
             'scale_factor_obs':0.5,
@@ -29,7 +30,7 @@ model_config={
             'trace_deterministic':False}
 
 
-def prior_model(mesh_size, noise=0.):
+def prior_model(mesh_size, noise=0., **config):
     """
     A prior for cosmological model. 
     Return base values for computing cosmology, initial conditions, and Lagrangian bias latent variables.
@@ -37,26 +38,26 @@ def prior_model(mesh_size, noise=0.):
     sigma = jnp.sqrt(1+noise**2)
 
     # Sample cosmology base
-    # Omega_c_base = sample('Omega_c_base', dist.Normal(0,sigma))
-    # sigma8_base = sample('sigma8_base', dist.Normal(0, sigma))
-    # cosmo_base = Omega_c_base, sigma8_base
-    cosmo_base = 0,0
+    Omega_c_base = sample('Omega_c_base', dist.Normal(0,sigma))
+    sigma8_base = sample('sigma8_base', dist.Normal(0, sigma))
+    cosmo_base = Omega_c_base, sigma8_base
+    # cosmo_base = 0,0
 
     # Sample initial conditions base
     init_mesh_base = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
 
     # Sample Lagrangian biases base
-    # b1_base  = sample('b1_base',  dist.Normal(0, sigma))
-    # b2_base  = sample('b2_base',  dist.Normal(0, sigma))
-    # bs_base  = sample('bs_base',  dist.Normal(0, sigma))
-    # bnl_base = sample('bnl_base', dist.Normal(0, sigma))
-    # biases_base = b1_base, b2_base, bs_base, bnl_base
-    biases_base = 0,0,0,0
+    b1_base  = sample('b1_base',  dist.Normal(0, sigma))
+    b2_base  = sample('b2_base',  dist.Normal(0, sigma))
+    bs_base  = sample('bs_base',  dist.Normal(0, sigma))
+    bnl_base = sample('bnl_base', dist.Normal(0, sigma))
+    biases_base = b1_base, b2_base, bs_base, bnl_base
+    # biases_base = 0,0,0,0
 
     return cosmo_base, init_mesh_base, biases_base
 
 
-def likelihood_model(mean_mesh, noise=0.):
+def likelihood_model(mean_mesh, noise=0., **config):
     """
     A likelihood for cosmological model.
     Return an observed mesh sampled from a mean mesh with observational variance.
@@ -86,13 +87,14 @@ def pmrsd_model_fn(latent_values,
     cosmo_base, init_mesh_base, biases_base = latent_values
 
     # Get cosmology and initial conditions
-    cosmology, init_mesh = get_cosmo_and_init(cosmo_base, init_mesh_base, mesh_size, box_size, trace_reparam)
+    cosmology = get_cosmology(cosmo_base, trace_reparam)
+    init_mesh = get_linear_field(cosmology, init_mesh_base, mesh_size, box_size, trace_reparam)
 
     # Create regular grid of particles
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
 
     # Get Lagrangian bias expansion weights
-    lbe_weights = get_lagrangian_bias(biases_base, cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
+    lbe_weights = get_lagrangian_weights(biases_base, cosmology, scale_factor_obs, init_mesh, x_part, box_size, trace_reparam)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
@@ -171,7 +173,8 @@ def lpt_model_fn(latent_values,
     cosmo_base, init_mesh_base, _ = latent_values
 
     # Get cosmology and initial conditions
-    cosmology, init_mesh = get_cosmo_and_init(cosmo_base, init_mesh_base, mesh_size, box_size, trace_reparam)
+    cosmology = get_cosmology(cosmo_base, trace_reparam)
+    init_mesh = get_linear_field(cosmology, init_mesh_base, mesh_size, box_size, trace_reparam)
 
     # Create regular grid of particles
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
@@ -252,24 +255,47 @@ def _logp_fn(model, params, model_kwargs={}):
     return logp
 
 
-def get_logp_and_score_fn(model):
+def get_logp_fn(model):
     """
-    Return a model log probabilty and score functions.
+    Return a model log probabilty functions.
     """
     def logp_fn(params, model_kwargs={}):
         """
-        Return the model log probabilty, evaluated on some parameters.
+        Return the model log probabilty, evaluated on parameters.
         """
         return partial(_logp_fn, model)(params, model_kwargs)
+    return logp_fn
     
+
+def get_score_fn(model):
+    """
+    Return a model score functions.
+    """
     def score_fn(params, model_kwargs={}):
         """
-        Return the model score, evaluated on some parameters.
+        Return the model score, evaluated on parameters.
         """
         return grad(partial(_logp_fn, model), argnums=0)(params, model_kwargs)
-    
-    return logp_fn, score_fn
+    return score_fn
 
+
+def get_pk_fn(config, kmin=0.001, dk=0.01):
+    def pk_fn(mesh):
+        pk = power_spectrum(mesh, kmin, dk, config['mesh_size'], config['box_size'])
+        return pk
+    return pk_fn
+
+
+def get_init_mesh_fn(config):
+    def init_mesh_fn(params_base):
+        """
+        Compute cosmology and initial conditions from base values.
+        """
+        cosmo_base = params_base['Omega_c_base'], params_base['sigma8']
+        cosmology = get_cosmology(cosmo_base)
+        init_mesh = get_linear_field(cosmology, init_base, config['mesh_size'], config['box_size'])
+        return cosmology, init_mesh
+    return init_mesh_fn
 
 
 

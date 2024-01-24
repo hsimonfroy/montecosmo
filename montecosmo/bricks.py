@@ -16,8 +16,8 @@ def get_cosmology(cosmo_base, trace_reparam=False):
     """
     # Reparametrize
     Omega_c_base, sigma8_base = cosmo_base
-    Omega_c = Omega_c_base * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
-    sigma8 = sigma8_base * 0.14 + 0.831
+    Omega_c = cosmo_base['Omega_c_base'] * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
+    sigma8 = cosmo_base['sigma8_base'] * 0.14 + 0.831
 
     if trace_reparam:
         Omega_c = deterministic('Omega_c', Omega_c)
@@ -56,16 +56,8 @@ def get_linear_field(cosmology, init_mesh_base, mesh_size, box_size, trace_repar
     return field
 
 
-def get_cosmo_and_init(cosmo_base, init_base, mesh_size, box_size, trace_reparam=False):
-    """
-    Compute cosmology and initial conditions.
-    """
-    cosmology = get_cosmology(cosmo_base, trace_reparam)
-    init_mesh = get_linear_field(cosmology, init_base, mesh_size, box_size, trace_reparam)
-    return cosmology, init_mesh
 
-
-def get_lagrangian_bias(biases_base, cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
+def get_lagrangian_weights(biases_base, cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -74,8 +66,8 @@ def get_lagrangian_bias(biases_base, cosmo, a, init_mesh, pos, box_size, trace_r
     """    
     # Reparametrize
     b1_base, b2_base, bs_base, bnl_base = biases_base
-    # b1  = 0.5 * b1_base + 1
-    b1  = 0.5 * b1_base
+    b1  = 0.5 * b1_base + 1
+    # b1  = 0.5 * b1_base
     b2  = 0.5 * b2_base
     bs  = 0.5 * bs_base
     bnl = 0.5 * bnl_base
