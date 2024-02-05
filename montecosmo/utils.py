@@ -1,9 +1,10 @@
-import pickle
 import os
+from pickle import dump, load, HIGHEST_PROTOCOL
 
 import jax.numpy as jnp
 from jax import random, jit
 from functools import wraps
+
 
 
 
@@ -24,10 +25,14 @@ def get_jit(*args, **kwargs):
 
 def pickle_dump(obj, path):
     with open(path, 'wb') as file:
-        pickle.dump(obj, file, protocol=pickle.HIGHEST_PROTOCOL)
+        dump(obj, file, protocol=HIGHEST_PROTOCOL)
+
+def pickle_load(path):
+    with open(path, 'rb') as file:
+        return load(file)    
 
 
-def save_mcmc(mcmc, i_run, save_path, save_var_names, extra_fields):
+def save_run(mcmc, i_run, save_path, save_var_names, extra_fields):
     """
     Save one run of MCMC sampling, with extra fields and last state.
     """
@@ -58,7 +63,7 @@ def sample_and_save(mcmc, model_kwargs, n_runs, save_path, save_var_names, extra
 
         # Warmup
         mcmc.warmup(rng_key, collect_warmup=True, **model_kwargs, extra_fields=extra_fields)
-        save_mcmc(mcmc, 0, save_path, save_var_names, extra_fields)
+        save_run(mcmc, 0, save_path, save_var_names, extra_fields)
 
         # Handling rng key
         key_run = mcmc.post_warmup_state.rng_key
@@ -71,7 +76,7 @@ def sample_and_save(mcmc, model_kwargs, n_runs, save_path, save_var_names, extra
             
         # Run
         mcmc.run(key_run, **model_kwargs, extra_fields=extra_fields)
-        save_mcmc(mcmc, i_run, save_path, save_var_names, extra_fields)
+        save_run(mcmc, i_run, save_path, save_var_names, extra_fields)
 
         # Init next run at last state
         mcmc.post_warmup_state = mcmc.last_state
@@ -82,15 +87,15 @@ def sample_and_save(mcmc, model_kwargs, n_runs, save_path, save_var_names, extra
 def load_runs(start_run, end_run, load_path, var_names=None):
     """
     Load and append runs saved in different files with same name.
+    The runs start_run and end_run are included.
     If var_names is None, load all the variables.
     """
     print(f"loading: {os.path.basename(load_path)}")
     samples = {}
     for i_run in range(start_run, end_run+1):
         # Load
-        # post_samples_part = np.load(load_path+f"_{i_run}.npy", allow_pickle=True).item()
-        with open(load_path+f"_{i_run}.p", 'rb') as file:
-          post_samples_part = pickle.load(file)        
+        # post_samples_part = np.load(load_path+f"_{i_run}.npy", allow_pickle=True).item()  
+        post_samples_part = pickle_load(load_path+f"_{i_run}.p")   
 
         # Init or append samples
         if samples == {}:

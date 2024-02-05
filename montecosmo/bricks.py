@@ -3,6 +3,7 @@ import numpyro.distributions as dist
 from numpyro import sample, deterministic
 import jax.numpy as jnp
 import jax_cosmo as jc
+from jax_cosmo import Cosmology
 from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
@@ -10,23 +11,25 @@ from jaxpm.growth import growth_factor, growth_rate
 
 
 
-def get_cosmology(cosmo_base, trace_reparam=False):
+def get_cosmology(cosmo_params_, trace_reparam=False, **params_) -> Cosmology:
     """
-    Compute cosmology.
+    Compute cosmology from latent values.
     """
     # Reparametrize
-    Omega_c_base, sigma8_base = cosmo_base
-    Omega_c = cosmo_base['Omega_c_base'] * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
-    sigma8 = cosmo_base['sigma8_base'] * 0.14 + 0.831
+    Omega_c_, sigma8_ = cosmo_params_
+    # Omega_c_, sigma8_ = params_['Omega_c_'], params_['sigma8_']
+    Omega_c = Omega_c_ * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
+    sigma8 = sigma8_ * 0.14 + 0.831
 
     if trace_reparam:
         Omega_c = deterministic('Omega_c', Omega_c)
         sigma8 = deterministic('sigma8', sigma8)
 
     cosmo_params = {'Omega_c':Omega_c, 'sigma8':sigma8}
-    # deterministic('cosmo_params', cosmo_params) # does not seem to work properly
-    cosmology = jc.Planck15(**cosmo_params)
-    return cosmology
+    # cosmo_params = deterministic('cosmo_params', cosmo_params) # does not render properly
+    cosmo = jc.Planck15(**cosmo_params)
+    # cosmo = deterministic('cosmo',cosmo) # does not render properly
+    return cosmo
 
 ## To reparametrize automaticaly
 # from numpyro.infer.reparam import LocScaleReparam
@@ -37,18 +40,18 @@ def get_cosmology(cosmo_base, trace_reparam=False):
 #         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
-def get_linear_field(cosmology, init_mesh_base, mesh_size, box_size, trace_reparam=False):
+def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_reparam=False, **params_):
     """
-    Compute initial conditions.
+    Compute initial conditions at a=1 from latent values.
     """
     # Compute initial power spectrum
-    pk_fn = linear_pk_interp(cosmology, n_interp=256)
+    pk_fn = linear_pk_interp(cosmo, n_interp=256)
     kvec = fftk(mesh_size)
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
     pkmesh = pk_fn(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
     # Reparametrize
-    field = jnp.fft.rfftn(init_mesh_base) * pkmesh**0.5
+    field = jnp.fft.rfftn(init_mesh_) * pkmesh**0.5
     field = jnp.fft.irfftn(field)
 
     if trace_reparam:
@@ -56,27 +59,35 @@ def get_linear_field(cosmology, init_mesh_base, mesh_size, box_size, trace_repar
     return field
 
 
-
-def get_lagrangian_weights(biases_base, cosmo, a, init_mesh, pos, box_size, trace_reparam=False):
+def get_biases(biases_params_, trace_reparam=False, **params_):
     """
-    Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
-    .. math::
-        
-        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
-    """    
+    Compute biases from latent values.
+    """
     # Reparametrize
-    b1_base, b2_base, bs_base, bnl_base = biases_base
-    b1  = 0.5 * b1_base + 1
-    # b1  = 0.5 * b1_base
-    b2  = 0.5 * b2_base
-    bs  = 0.5 * bs_base
-    bnl = 0.5 * bnl_base
+    b1_, b2_, bs_, bnl_ = biases_params_
+    b1  = 0.5 * b1_ + 1
+    # b1  = 0.5 * b1_
+    b2  = 0.5 * b2_
+    bs  = 0.5 * bs_
+    bnl = 0.5 * bnl_
 
     if trace_reparam:
         b1  = deterministic('b1' , b1 )
         b2  = deterministic('b2' , b2 )
         bs  = deterministic('bs' , bs )
         bnl = deterministic('bnl', bnl)
+    return b1, b2, bs, bnl
+
+
+def lagrangian_weights(cosmo:Cosmology, a, biases, init_mesh, pos, box_size):
+    """
+    Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
+    .. math::
+        
+        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
+    """    
+    # Unpack biases
+    b1, b2, bs, bnl = biases
 
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
@@ -125,7 +136,7 @@ def get_lagrangian_weights(biases_base, cosmo, a, init_mesh, pos, box_size, trac
     return weights
 
 
-def linear_pk_interp(cosmo, a=1, n_interp=256):
+def linear_pk_interp(cosmo:Cosmology, a=1, n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """
@@ -135,7 +146,7 @@ def linear_pk_interp(cosmo, a=1, n_interp=256):
     return pk_fn
 
 
-def rsd(cosmo, a, p, los=jnp.array([0,0,1])):
+def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
@@ -149,7 +160,7 @@ def rsd(cosmo, a, p, los=jnp.array([0,0,1])):
     return dx_rsd
 
 
-def get_kaiser_bias(cosmo, a, mesh_size, los):
+def get_kaiser_bias(cosmo:Cosmology, a, mesh_size, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
@@ -167,7 +178,7 @@ def get_kaiser_bias(cosmo, a, mesh_size, los):
     return b + growth_rate(cosmo, a) * mumesh**2
 
 
-def apply_kaiser_bias(cosmo, a, init_mesh, los=jnp.array([0,0,1])):
+def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
@@ -179,20 +190,3 @@ def apply_kaiser_bias(cosmo, a, init_mesh, los=jnp.array([0,0,1])):
     return kaiser_mesh
 
 
-# def sample_linear_field(mesh_size, box_size, pk, trace_reparam=False):
-#     """
-#     Compute initial conditions.
-#     """
-#     # Compute initial power spectrum
-#     kvec = fftk(mesh_size)
-#     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
-#     pkmesh = pk(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
-
-#     # Reparametrize
-#     init_mesh_base = sample('init_mesh_base', dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
-#     field = jnp.fft.rfftn(init_mesh_base) * pkmesh**0.5
-#     field = jnp.fft.irfftn(field)
-
-#     if trace_reparam:
-#         field = deterministic('init_mesh', field)
-#     return field
