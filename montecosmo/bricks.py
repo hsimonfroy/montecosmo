@@ -11,12 +11,12 @@ from jaxpm.growth import growth_factor, growth_rate
 
 
 
-def get_cosmology(cosmo_params_, trace_reparam=False, **params_) -> Cosmology:
+def get_cosmology(cosmo_, trace_reparam=False, **params_) -> Cosmology:
     """
     Compute cosmology from latent values.
     """
-    # Reparametrize
-    Omega_c_, sigma8_ = cosmo_params_
+    # Parametrize
+    Omega_c_, sigma8_ = cosmo_
     # Omega_c_, sigma8_ = params_['Omega_c_'], params_['sigma8_']
     Omega_c = Omega_c_ * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
     sigma8 = sigma8_ * 0.14 + 0.831
@@ -50,7 +50,7 @@ def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_repara
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
     pkmesh = pk_fn(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
-    # Reparametrize
+    # Parametrize
     field = jnp.fft.rfftn(init_mesh_) * pkmesh**0.5
     field = jnp.fft.irfftn(field)
 
@@ -59,12 +59,12 @@ def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_repara
     return field
 
 
-def get_biases(biases_params_, trace_reparam=False, **params_):
+def get_biases(biases_, trace_reparam=False, **params_):
     """
     Compute biases from latent values.
     """
-    # Reparametrize
-    b1_, b2_, bs_, bnl_ = biases_params_
+    # Parametrize
+    b1_, b2_, bs_, bnl_ = biases_
     b1  = 0.5 * b1_ + 1
     # b1  = 0.5 * b1_
     b2  = 0.5 * b2_

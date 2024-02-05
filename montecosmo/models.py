@@ -33,20 +33,19 @@ model_config={
 def prior_model(mesh_size, noise=0., **config):
     """
     A prior for cosmological model. 
-    Return base values for computing cosmology, initial conditions, and Lagrangian bias latent variables.
+    Return latent values for computing cosmology, initial conditions, and Lagrangian biases variables.
     """
     sigma = jnp.sqrt(1+noise**2)
 
-    # Sample cosmology base
+    # Sample latent cosmology
     Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
     sigma8_  = sample('sigma8_' , dist.Normal(0, sigma))
     cosmo_ = Omega_c_, sigma8_
-    # cosmo_ = 0,0
 
-    # Sample initial conditions base
+    # Sample latent initial conditions
     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
 
-    # Sample Lagrangian biases base
+    # Sample latent Lagrangian biases
     b1_  = sample('b1_',  dist.Normal(0, sigma))
     b2_  = sample('b2_',  dist.Normal(0, sigma))
     bs_  = sample('bs_',  dist.Normal(0, sigma))
@@ -70,8 +69,8 @@ def likelihood_model(mean_mesh, noise=0., **config):
     obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, sigma))
     # Poisson noise
     # eps_var = 0.1 # add epsilon variance to prevent zero variance
-    # obs_mesh = sample('obs_mesh', dist.Poisson(gxy_intens_mesh + eps_var)) 
-    # obs_mesh = sample('obs_mesh', dist.Normal(gxy_intens_mesh, (gxy_intens_mesh  + eps_var)**.5)) # Normal approx
+    # obs_mesh = sample('obs_mesh', dist.Poisson(mean_mesh + eps_var)) 
+    # obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, (mean_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh
 
 
@@ -124,9 +123,8 @@ def pmrsd_model_fn(latent_values,
         biased_mesh = deterministic('biased_mesh', biased_mesh)
 
     # Observe
-    gxy_intens_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-    return gxy_intens_mesh
-
+    gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+    return gxy_mesh
 
 
 def pmrsd_model(mesh_size,
@@ -146,7 +144,7 @@ def pmrsd_model(mesh_size,
     latent_values = prior_model(mesh_size)
 
     # Compute deterministic model function
-    gxy_intens_mesh = pmrsd_model_fn(latent_values,
+    gxy_mesh = pmrsd_model_fn(latent_values,
                                         mesh_size,
                                         box_size,
                                         scale_factor_lpt,
@@ -156,76 +154,12 @@ def pmrsd_model(mesh_size,
                                         trace_deterministic,)
 
     # Sample from likelihood
-    obs_mesh = likelihood_model(gxy_intens_mesh, noise)
-
+    obs_mesh = likelihood_model(gxy_mesh, noise)
     return obs_mesh
 
 
 
 
-def lpt_model_fn(latent_values, 
-                mesh_size,                 
-                box_size,
-                scale_factor_lpt,
-                scale_factor_obs, 
-                galaxy_density, # in galaxy / (Mpc/h)^3
-                trace_reparam, 
-                trace_deterministic):
-    # Unpack latent variables
-    cosmo_, init_mesh_, _ = latent_values
-
-    # Get cosmology and initial mesh from base values
-    cosmology = get_cosmology(cosmo_, trace_reparam)
-    init_mesh = get_init_mesh(cosmology, init_mesh_, mesh_size, box_size, trace_reparam)
-
-    # Create regular grid of particles
-    x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
-
-    # LPT displacement
-    cosmology._workspace = {}  # HACK: temporary fix
-    dx, p_part, f = lpt(cosmology, init_mesh, x_part, a=scale_factor_lpt)
-    # NOTE: lpt supposes given mesh follows linear pk at a=1, 
-    # and correct by growth factor to get forces at wanted scale factor
-    x_part = x_part + dx
-
-    # Cloud In Cell painting
-    lpt_mesh = cic_paint(jnp.zeros(mesh_size), x_part)
-    
-    if trace_deterministic: 
-       lpt_mesh = deterministic('lpt_mesh', lpt_mesh)
-
-    # Observe
-    gxy_intens_mesh = lpt_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-    return gxy_intens_mesh
-
-
-def lpt_model(mesh_size,
-                  box_size,
-                  scale_factor_lpt,
-                  scale_factor_obs, 
-                  galaxy_density, # in galaxy / (Mpc/h)^3
-                  trace_reparam, 
-                  trace_deterministic):
-    """
-    A simple cosmological model, with LPT displacement.
-    The relevant variables can be traced.
-    """
-    # Sample from prior
-    latent_values = prior_model(mesh_size)
-
-    gxy_intens_mesh = lpt_model_fn(latent_values,
-                                    mesh_size,
-                                    box_size,
-                                    scale_factor_lpt,
-                                    scale_factor_obs, 
-                                    galaxy_density, # in galaxy / (Mpc/h)^3
-                                    trace_reparam, 
-                                    trace_deterministic,)
-
-    # Sample from likelihood
-    obs_mesh = likelihood_model(gxy_intens_mesh, obs_var=1)
-
-    return obs_mesh
 
 
 
@@ -281,24 +215,41 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(config, kmin=0.001, dk=0.01):
+def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, **config):
     def pk_fn(mesh):
-        pk = power_spectrum(mesh, kmin, dk, config['mesh_size'], config['box_size'])
+        pk = power_spectrum(mesh, kmin, dk, mesh_size, box_size)
         return pk
     return pk_fn
 
 
-def get_init_mesh_fn(config):
+def get_init_mesh_fn(mesh_size, box_size, **config):
     def init_mesh_fn(**params_):
         """
-        Compute cosmology and initial conditions from base values.
+        Compute cosmology and initial conditions from latent values.
         """
-        cosmo_params_ = params_['Omega_c_'], params_['sigma8_']
+        cosmo_ = params_['Omega_c_'], params_['sigma8_']
         init_ = params_['init_mesh_']
-        cosmo = get_cosmology(cosmo_params_)
-        init_mesh = get_init_mesh(cosmo, init_, config['mesh_size'], config['box_size'])
+        cosmo = get_cosmology(cosmo_)
+        init_mesh = get_init_mesh(cosmo, init_, mesh_size, box_size)
         return cosmo, init_mesh
     return init_mesh_fn
+
+
+def get_noise_fn(t1, noises, steps=False):
+    n_noises = len(noises)-1
+    if steps:
+        def noise_fn(t):
+            i_t = n_noises*t/t1
+            i_t1 = jnp.round(i_t).astype(int)
+            return noises[i_t1]
+    else:
+        def noise_fn(t):
+            i_t = n_noises*t/t1
+            i_t1 = jnp.floor(i_t).astype(int)
+            s1 = noises[i_t1]
+            s2 = noises[i_t1+1]
+            return (s2 - s1)*(i_t - i_t1) + s1
+    return noise_fn
 
 
 

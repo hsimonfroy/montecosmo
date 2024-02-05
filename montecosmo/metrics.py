@@ -30,7 +30,7 @@ def _initialize_pk(mesh_size, box_size, kmin, dk, los):
     return dig, Nsum, W, kedges, mumesh
 
 
-def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0,0,1]), multipoles=0):
+def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.]), multipoles=0):
     # Initialize values related to powerspectra (mode bins and weights)
     los = los / jnp.linalg.norm(los)
     multipoles = jnp.atleast_1d(multipoles)
