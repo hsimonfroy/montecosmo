@@ -16,7 +16,7 @@ from jaxpm.painting import cic_paint
 
 
 
-model_config={
+default_config={
             # Mesh and box parameters
             'mesh_size':64 * np.array([1 ,1 ,1 ]), # int
             'box_size':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
@@ -46,12 +46,12 @@ def prior_model(mesh_size, noise=0., **config):
     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
 
     # Sample latent Lagrangian biases
-    b1_  = sample('b1_',  dist.Normal(0, sigma))
-    b2_  = sample('b2_',  dist.Normal(0, sigma))
-    bs_  = sample('bs_',  dist.Normal(0, sigma))
-    bnl_ = sample('bnl_', dist.Normal(0, sigma))
-    biases_ = b1_, b2_, bs_, bnl_
-    # biases_ = 0,0,0,0
+    # b1_  = sample('b1_',  dist.Normal(0, sigma))
+    # b2_  = sample('b2_',  dist.Normal(0, sigma))
+    # bs_  = sample('bs_',  dist.Normal(0, sigma))
+    # bnl_ = sample('bnl_', dist.Normal(0, sigma))
+    # biases_ = b1_, b2_, bs_, bnl_
+    biases_ = 0,0,0,0
 
     return cosmo_, init_mesh_, biases_
 
@@ -119,11 +119,11 @@ def pmrsd_model_fn(latent_values,
     # CIC paint weighted by Lagrangian bias expansion
     biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
 
-    if trace_deterministic: 
-        biased_mesh = deterministic('biased_mesh', biased_mesh)
-
-    # Observe
+    # Scale mesh by galaxy density
     gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
+
+    if trace_deterministic: 
+        gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
     return gxy_mesh
 
 
@@ -235,7 +235,7 @@ def get_init_mesh_fn(mesh_size, box_size, **config):
     return init_mesh_fn
 
 
-def get_noise_fn(t1, noises, steps=False):
+def get_noise_fn(t0, t1, noises, steps=False):
     n_noises = len(noises)-1
     if steps:
         def noise_fn(t):

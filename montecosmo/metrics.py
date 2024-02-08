@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-from scipy.special import legendre
+# from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
@@ -14,7 +14,7 @@ def _initialize_pk(mesh_size, box_size, kmin, dk, los):
     kmax = np.pi * np.min(mesh_size) / np.max(box_size) + dk / 2
     kedges = jnp.arange(kmin, kmax, dk)
 
-    kshapes = np.eye(len(mesh_size), dtype='int') * -2 + 1
+    kshapes = np.eye(len(mesh_size), dtype=jnp.int32) * -2 + 1
     kvec = [(2 * jnp.pi * m / l) * jnp.fft.fftfreq(m).reshape(kshape)
             for m, l, kshape in zip(mesh_size, box_size, kshapes)]
     kmesh = sum(ki**2 for ki in kvec)**0.5
@@ -40,9 +40,10 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
     fft_image = jnp.fft.fftn(field)
     pk = jnp.real(fft_image * jnp.conj(fft_image))
 
+    # bincount_vfn = vmap(lambda w: jnp.bincount(dig, w, length=kedges.size+1))
     Psum = jnp.empty((len(multipoles), *Nsum.shape))
     for i_ell, ell in enumerate(multipoles):
-        real_weights = W * pk * (2*ell+1) * legendre(ell)(mumesh) # XXX: jax.scipy.special.lpmm implementation not finished yet 
+        real_weights = W * pk * (2*ell+1) * legendre(ell)(mumesh) # XXX: jax.scipy.special.lpmm not completely implemented yet 
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
     # Normalization for powerspectra
     P = (Psum / Nsum).at[:,1:-1].get() * jnp.prod(box_size)
@@ -50,7 +51,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
 
     # Find central values of each bin
     kbins = kedges[:-1] + (kedges[1:] - kedges[:-1]) / 2
-    return jnp.concatenate((kbins[None], P / norm))
+    return jnp.concatenate([kbins[None], P / norm])
 
 
 
@@ -69,5 +70,24 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
             pk[i_ell] = (beta *4/3 + beta**2 *4/7) * bias**2 * pk_init 
         elif ell==4:
             pk[i_ell] = beta**2 *8/35 * bias**2 * pk_init 
-        else: raise Exception("Handle only multipoles of order 0, 2 ,4") 
+        else: 
+            raise NotImplementedError("Handle only multipoles of order 0, 2 ,4") 
     return pk
+
+
+def legendre(ell):
+    """
+    Return Legendre polynomial of given order.
+
+    Reference
+    ---------
+    https://en.wikipedia.org/wiki/Legendre_polynomials
+    """
+    if ell == 0:
+        return lambda x: jnp.ones_like(x)
+    elif ell == 2:
+        return lambda x: 1. / 2. * (3 * x**2 - 1)
+    elif ell == 4:
+        return lambda x: 1. / 8. * (35 * x**4 - 30 * x**2 + 3)
+    else:
+        raise NotImplementedError(f"Legendre polynomial for ell={ell:d} not implemented")

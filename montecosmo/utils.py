@@ -32,6 +32,15 @@ def pickle_load(path):
         return load(file)    
 
 
+def get_ylim(a, scale=1.25, q=0.001):
+    """
+    Compute inferior and superior limit values of an array, with some scaled margins, and discarding on some quantile level.
+    """
+    ymin, ymax = jnp.quantile(a, q/2), jnp.quantile(a, 1-q/2)
+    ymean, ydiff = (ymax+ymin)/2, scale*(ymax-ymin)/2
+    return ymean-ydiff, ymean+ydiff
+
+
 def save_run(mcmc, i_run, save_path, save_var_names, extra_fields):
     """
     Save one run of MCMC sampling, with extra fields and last state.
