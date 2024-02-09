@@ -46,12 +46,12 @@ def prior_model(mesh_size, noise=0., **config):
     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
 
     # Sample latent Lagrangian biases
-    # b1_  = sample('b1_',  dist.Normal(0, sigma))
-    # b2_  = sample('b2_',  dist.Normal(0, sigma))
-    # bs_  = sample('bs_',  dist.Normal(0, sigma))
-    # bnl_ = sample('bnl_', dist.Normal(0, sigma))
-    # biases_ = b1_, b2_, bs_, bnl_
-    biases_ = 0,0,0,0
+    b1_  = sample('b1_',  dist.Normal(0, sigma))
+    b2_  = sample('b2_',  dist.Normal(0, sigma))
+    bs_  = sample('bs_',  dist.Normal(0, sigma))
+    bnl_ = sample('bnl_', dist.Normal(0, sigma))
+    biases_ = b1_, b2_, bs_, bnl_
+    # biases_ = 0,0,0,0
 
     return cosmo_, init_mesh_, biases_
 
@@ -62,7 +62,7 @@ def likelihood_model(mean_mesh, noise=0., **config):
     Return an observed mesh sampled from a mean mesh with observational variance.
     """
     # TODO: prior on obs_var
-    obs_var = 0.5
+    obs_var = 1
     sigma = jnp.sqrt(obs_var+noise**2)
 
     # Normal noise
@@ -239,12 +239,12 @@ def get_noise_fn(t0, t1, noises, steps=False):
     n_noises = len(noises)-1
     if steps:
         def noise_fn(t):
-            i_t = n_noises*t/t1
-            i_t1 = jnp.round(i_t).astype(int)
+            i_t = n_noises*(t-t0)/(t1-t0)
+            i_t1 = jnp.floor(i_t).astype(int)
             return noises[i_t1]
     else:
         def noise_fn(t):
-            i_t = n_noises*t/t1
+            i_t = n_noises*(t-t0)/(t1-t0)
             i_t1 = jnp.floor(i_t).astype(int)
             s1 = noises[i_t1]
             s2 = noises[i_t1+1]

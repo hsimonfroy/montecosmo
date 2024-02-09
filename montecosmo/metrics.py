@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-# from scipy.special import legendre
+from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
@@ -75,19 +75,29 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
     return pk
 
 
-def legendre(ell):
-    """
-    Return Legendre polynomial of given order.
+# def legendre(ell):
+#     """
+#     Return Legendre polynomial of given order.
 
-    Reference
-    ---------
-    https://en.wikipedia.org/wiki/Legendre_polynomials
-    """
-    if ell == 0:
-        return lambda x: jnp.ones_like(x)
-    elif ell == 2:
-        return lambda x: 1. / 2. * (3 * x**2 - 1)
-    elif ell == 4:
-        return lambda x: 1. / 8. * (35 * x**4 - 30 * x**2 + 3)
-    else:
-        raise NotImplementedError(f"Legendre polynomial for ell={ell:d} not implemented")
+#     Reference
+#     ---------
+#     https://en.wikipedia.org/wiki/Legendre_polynomials
+#     """
+#     if ell == 0:
+#         return lambda x: jnp.ones_like(x)
+#     elif ell == 2:
+#         return lambda x: 1. / 2. * (3 * x**2 - 1)
+#     elif ell == 4:
+#         return lambda x: 1. / 8. * (35 * x**4 - 30 * x**2 + 3)
+#     else:
+#         raise NotImplementedError(f"Legendre polynomial for ell={ell:d} not implemented")
+    
+
+# def legendre(ell, x):
+#     P0 = lambda x: jnp.ones_like(x)
+#     P2 = lambda x: 1 / 2 * (3 * x**2 - 1)
+#     P4 = lambda x: 1 / 8 * (35 * x**4 - 30 * x**2 + 3)
+#     def error(x):
+#         return jnp.full_like(x, jnp.nan)
+#     return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
+
