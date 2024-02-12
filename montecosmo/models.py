@@ -140,18 +140,17 @@ def pmrsd_model(mesh_size,
     The relevant variables can be traced.
     """
     # Sample from prior
-    # latent_values = prior_model(mesh_size, noise)
     latent_values = prior_model(mesh_size)
 
     # Compute deterministic model function
     gxy_mesh = pmrsd_model_fn(latent_values,
-                                        mesh_size,
-                                        box_size,
-                                        scale_factor_lpt,
-                                        scale_factor_obs, 
-                                        galaxy_density, # in galaxy / (Mpc/h)^3
-                                        trace_reparam, 
-                                        trace_deterministic,)
+                                mesh_size,
+                                box_size,
+                                scale_factor_lpt,
+                                scale_factor_obs, 
+                                galaxy_density, # in galaxy / (Mpc/h)^3
+                                trace_reparam, 
+                                trace_deterministic,)
 
     # Sample from likelihood
     obs_mesh = likelihood_model(gxy_mesh, noise)

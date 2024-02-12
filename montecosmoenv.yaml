@@ -27,6 +27,10 @@ dependencies:
 # tensorflow-probability
 # - bccp::nbodykit # only for python<3.9
 # - ffmpeg
+# - sbi
+# - chainconsumer
+# - haiku
+# - optax
 
 # If ptxas version not up to date:
 # mamba install -c nvidia cuda-nvcc 

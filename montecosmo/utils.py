@@ -3,8 +3,11 @@ from pickle import dump, load, HIGHEST_PROTOCOL
 
 import jax.numpy as jnp
 from jax import random, jit
-from functools import wraps
+from functools import wraps, partial
 
+import matplotlib.pyplot as plt
+from matplotlib import rc
+from matplotlib.colors import to_rgba_array
 
 
 
@@ -27,6 +30,7 @@ def pickle_dump(obj, path):
     with open(path, 'wb') as file:
         dump(obj, file, protocol=HIGHEST_PROTOCOL)
 
+
 def pickle_load(path):
     with open(path, 'rb') as file:
         return load(file)    
@@ -34,11 +38,50 @@ def pickle_load(path):
 
 def get_ylim(a, scale=1.25, q=0.001):
     """
-    Compute inferior and superior limit values of an array, with some scaled margins, and discarding on some quantile level.
+    Compute inferior and superior limit values of an array, 
+    with some scaled margins, and discarding on some quantile level.
     """
     ymin, ymax = jnp.quantile(a, q/2), jnp.quantile(a, 1-q/2)
     ymean, ydiff = (ymax+ymin)/2, scale*(ymax-ymin)/2
     return ymean-ydiff, ymean+ydiff
+
+
+def color_switch(color, reverse=False):
+    """
+    Select between color an its negative, or colormap and its reversed.
+    Typically used to switch between light theme and dark theme. 
+    `color` must be Matpotlib color, or array of colors, or colormap.
+    """
+    try:
+        color = to_rgba_array(color)
+    except:
+        if isinstance(color, str): # handle cmap
+            if reverse:
+                if color.endswith('_r'): # in case provided cmap is alreday reversed
+                    return color[:-2]
+                else:
+                    return color+'_r'# reverse cmap
+            else:
+                return color
+        else:
+            raise TypeError("color` must be Matpotlib color, or array of colors, or colormap.")
+
+    if reverse:
+        color[...,:-1] = 1-color[...,:-1] # take color negative, does not affect alpha
+    return color
+
+
+def theme_switch(dark_theme=False):
+    """
+    Set Matplotlib theme and return an adequate color switching function.
+    """
+    if dark_theme: 
+        plt.style.use('dark_background')
+    else: 
+        plt.style.use('default')
+    rc('animation', html='html5') # handle Matplotlib animations
+    theme = partial(color_switch, reverse=dark_theme)
+    return theme
 
 
 def save_run(mcmc, i_run, save_path, save_var_names, extra_fields):
