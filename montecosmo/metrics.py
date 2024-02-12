@@ -1,7 +1,9 @@
 import numpy as np
 import jax.numpy as jnp
-from scipy.special import legendre
+# from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
+from jax import debug
+
 
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
 
@@ -43,7 +45,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
     # bincount_vfn = vmap(lambda w: jnp.bincount(dig, w, length=kedges.size+1))
     Psum = jnp.empty((len(multipoles), *Nsum.shape))
     for i_ell, ell in enumerate(multipoles):
-        real_weights = W * pk * (2*ell+1) * legendre(ell)(mumesh) # XXX: jax.scipy.special.lpmm not completely implemented yet 
+        real_weights = W * pk * (2*ell+1) * legendre(ell, mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
     # Normalization for powerspectra
     P = (Psum / Nsum).at[:,1:-1].get() * jnp.prod(box_size)
@@ -59,45 +61,37 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
     multipoles = jnp.atleast_1d(multipoles)
     a = jnp.atleast_1d(a)
     beta = growth_rate(cosmo, a) / bias
-    pk_init = pk_init * growth_factor(cosmo, a)**2
+    k = pk_init[...,0,:]
+    pk0 = pk_init[...,1,:] * growth_factor(cosmo, a)**2
     # f = growth_rate(cosmo, a)
 
     pk = np.empty((len(multipoles), *pk_init.shape))
     for i_ell, ell in enumerate(multipoles):
         if ell==0:
-            pk[i_ell] = (1 + beta *2/3 + beta**2 /5) * bias**2 * pk_init 
+            pk[i_ell] = (1 + beta *2/3 + beta**2 /5) * bias**2 * pk0 
         elif ell==2:
-            pk[i_ell] = (beta *4/3 + beta**2 *4/7) * bias**2 * pk_init 
+            pk[i_ell] = (beta *4/3 + beta**2 *4/7) * bias**2 * pk0 
         elif ell==4:
-            pk[i_ell] = beta**2 *8/35 * bias**2 * pk_init 
+            pk[i_ell] = beta**2 *8/35 * bias**2 * pk0 
         else: 
-            raise NotImplementedError("Handle only multipoles of order 0, 2 ,4") 
-    return pk
+            raise NotImplementedError(
+                "Handle only multipoles of order ell=0, 2 ,4. ell={ell} not implemented.") 
+    return jnp.concatenate([k[None], pk])
 
 
-# def legendre(ell):
-#     """
-#     Return Legendre polynomial of given order.
+def legendre(ell, x):
+    """
+    Return Legendre polynomial of given order.
 
-#     Reference
-#     ---------
-#     https://en.wikipedia.org/wiki/Legendre_polynomials
-#     """
-#     if ell == 0:
-#         return lambda x: jnp.ones_like(x)
-#     elif ell == 2:
-#         return lambda x: 1. / 2. * (3 * x**2 - 1)
-#     elif ell == 4:
-#         return lambda x: 1. / 8. * (35 * x**4 - 30 * x**2 + 3)
-#     else:
-#         raise NotImplementedError(f"Legendre polynomial for ell={ell:d} not implemented")
-    
-
-# def legendre(ell, x):
-#     P0 = lambda x: jnp.ones_like(x)
-#     P2 = lambda x: 1 / 2 * (3 * x**2 - 1)
-#     P4 = lambda x: 1 / 8 * (35 * x**4 - 30 * x**2 + 3)
-#     def error(x):
-#         return jnp.full_like(x, jnp.nan)
-#     return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
+    Reference
+    ---------
+    https://en.wikipedia.org/wiki/Legendre_polynomials
+    """
+    P0 = lambda x: jnp.ones_like(x)
+    P2 = lambda x: 1 / 2 * (3 * x**2 - 1)
+    P4 = lambda x: 1 / 8 * (35 * x**4 - 30 * x**2 + 3)
+    def error(x):
+        return jnp.full_like(x, jnp.nan)
+    # for vmaping on condition, see https://github.com/google/jax/issues/8409
+    return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
 

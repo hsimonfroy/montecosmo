@@ -27,7 +27,17 @@ default_config={
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Debugging
             'trace_reparam':True, 
-            'trace_deterministic':False}
+            'trace_deterministic':False,
+            # Prior config {name: (label, mean, std)}
+            'prior_config':{'Omega_c':('\Omega_c', 0.25, 0.1), # XXX: Omega_c<0 implies nan
+                            'sigma8':('\sigma_8', 0.831, 0.14),
+                            'b1':('b_1', 1, 0.5),
+                            'b2':('b_2', 0, 0.5),
+                            'bs':('b_s', 0, 0.5),
+                            'bnl':('b_{\text{nl}}', 0, 0.5)},
+            # Likelihood config
+            'lik_config':{'obs_std':1}                    
+            }
 
 
 def prior_model(mesh_size, noise=0., **config):
@@ -51,19 +61,17 @@ def prior_model(mesh_size, noise=0., **config):
     bs_  = sample('bs_',  dist.Normal(0, sigma))
     bnl_ = sample('bnl_', dist.Normal(0, sigma))
     biases_ = b1_, b2_, bs_, bnl_
-    # biases_ = 0,0,0,0
 
     return cosmo_, init_mesh_, biases_
 
 
-def likelihood_model(mean_mesh, noise=0., **config):
+def likelihood_model(mean_mesh, lik_config, noise=0., **config):
     """
     A likelihood for cosmological model.
     Return an observed mesh sampled from a mean mesh with observational variance.
     """
-    # TODO: prior on obs_var
-    obs_var = 1
-    sigma = jnp.sqrt(obs_var+noise**2)
+    # TODO: prior on obs_std?
+    sigma = jnp.sqrt(lik_config['obs_std']**2+noise**2)
 
     # Normal noise
     obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, sigma))
@@ -81,14 +89,15 @@ def pmrsd_model_fn(latent_values,
                 scale_factor_obs, 
                 galaxy_density, # in galaxy / (Mpc/h)^3
                 trace_reparam, 
-                trace_deterministic):
+                trace_deterministic,
+                prior_config,):
     # Unpack latent variables
     cosmo_, init_mesh_, biases_ = latent_values
 
     # Get cosmology, initial mesh, and biases from latent values
-    cosmology = get_cosmology(cosmo_, trace_reparam)
+    cosmology = get_cosmology(cosmo_, prior_config, trace_reparam)
     init_mesh = get_init_mesh(cosmology, init_mesh_, mesh_size, box_size, trace_reparam)
-    biases = get_biases(biases_, trace_reparam)
+    biases = get_biases(biases_, prior_config, trace_reparam)
 
     # Create regular grid of particles
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
@@ -134,6 +143,8 @@ def pmrsd_model(mesh_size,
                   galaxy_density, # in galaxy / (Mpc/h)^3
                   trace_reparam, 
                   trace_deterministic,
+                  prior_config,
+                  lik_config,
                   noise=0.):
     """
     A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
@@ -150,10 +161,11 @@ def pmrsd_model(mesh_size,
                                 scale_factor_obs, 
                                 galaxy_density, # in galaxy / (Mpc/h)^3
                                 trace_reparam, 
-                                trace_deterministic,)
+                                trace_deterministic,
+                                prior_config,)
 
     # Sample from likelihood
-    obs_mesh = likelihood_model(gxy_mesh, noise)
+    obs_mesh = likelihood_model(gxy_mesh, lik_config, noise)
     return obs_mesh
 
 
@@ -214,21 +226,21 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, **config):
+def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, **config):
     def pk_fn(mesh):
-        pk = power_spectrum(mesh, kmin, dk, mesh_size, box_size)
+        pk = power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles)
         return pk
     return pk_fn
 
 
-def get_init_mesh_fn(mesh_size, box_size, **config):
+def get_init_mesh_fn(mesh_size, box_size, prior_config, **config):
     def init_mesh_fn(**params_):
         """
         Compute cosmology and initial conditions from latent values.
         """
         cosmo_ = params_['Omega_c_'], params_['sigma8_']
         init_ = params_['init_mesh_']
-        cosmo = get_cosmology(cosmo_)
+        cosmo = get_cosmology(cosmo_, prior_config)
         init_mesh = get_init_mesh(cosmo, init_, mesh_size, box_size)
         return cosmo, init_mesh
     return init_mesh_fn
@@ -250,6 +262,28 @@ def get_noise_fn(t0, t1, noises, steps=False):
             return (s2 - s1)*(i_t - i_t1) + s1
     return noise_fn
 
+
+def print_config(config):
+    """
+    Print config and infos.
+    """
+    print(f"# CONFIG:\n{config}\n")
+
+    cell_lengths = list( config['box_size'] / config['mesh_size'] )
+    print(f"# INFOS:\n{cell_lengths=} Mpc/h")
+
+    delta_k = 2*jnp.pi * jnp.max(1 / config['box_size']) 
+    k_nyquist = 2*jnp.pi * jnp.min(config['mesh_size'] / config['box_size']) / 2
+    # (2*pi factor because of Fourier transform definition)
+    print(f"{delta_k=:.5f} h/Mpc, {k_nyquist=:.5f} h/Mpc")
+
+    mean_gxy_density = config['galaxy_density'] * config['box_size'].prod() / config['mesh_size'].prod()
+    print(f"{mean_gxy_density=:.3f} gxy/cell")
+
+
+def condition_on_config_mean(model, prior_config, **config):
+    params = {name+'_':0. for name in prior_config}
+    return condition(model, params)
 
 
 

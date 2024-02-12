@@ -11,23 +11,21 @@ from jaxpm.growth import growth_factor, growth_rate
 
 
 
-def get_cosmology(cosmo_, trace_reparam=False, **params_) -> Cosmology:
+def get_cosmology(cosmo_, prior_config, trace_reparam=False, **params_) -> Cosmology:
     """
     Compute cosmology from latent values.
     """
     # Parametrize
-    Omega_c_, sigma8_ = cosmo_
-    # Omega_c_, sigma8_ = params_['Omega_c_'], params_['sigma8_']
-    Omega_c = Omega_c_ * 0.1 + 0.25 # XXX: Omega_c<0 implies nan
-    sigma8 = sigma8_ * 0.14 + 0.831
+    cosmo = {}
+    for name, value_ in zip(['Omega_c', 'sigma8'], cosmo_):
+        _, mean, std = prior_config[name]
+        value = value_ * std + mean
+        if trace_reparam:
+            value = deterministic(name, value)
+        cosmo[name] = value
 
-    if trace_reparam:
-        Omega_c = deterministic('Omega_c', Omega_c)
-        sigma8 = deterministic('sigma8', sigma8)
-
-    cosmo_params = {'Omega_c':Omega_c, 'sigma8':sigma8}
     # cosmo_params = deterministic('cosmo_params', cosmo_params) # does not render properly
-    cosmo = jc.Planck15(**cosmo_params)
+    cosmo = jc.Planck15(**cosmo)
     # cosmo = deterministic('cosmo',cosmo) # does not render properly
     return cosmo
 
@@ -59,24 +57,20 @@ def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_repara
     return field
 
 
-def get_biases(biases_, trace_reparam=False, **params_):
+def get_biases(biases_, prior_config, trace_reparam=False, **params_):
     """
     Compute biases from latent values.
     """
     # Parametrize
-    b1_, b2_, bs_, bnl_ = biases_
-    b1  = 0.5 * b1_ + 1
-    # b1  = 0.5 * b1_
-    b2  = 0.5 * b2_
-    bs  = 0.5 * bs_
-    bnl = 0.5 * bnl_
+    biases = []
+    for name, value_ in zip(['b1', 'b2', 'bs', 'bnl'], biases_):
+        _, mean, std = prior_config[name]
+        value = value_ * std + mean
+        if trace_reparam:
+            value = deterministic(name, value)
+        biases.append(value)
 
-    if trace_reparam:
-        b1  = deterministic('b1' , b1 )
-        b2  = deterministic('b2' , b2 )
-        bs  = deterministic('bs' , bs )
-        bnl = deterministic('bnl', bnl)
-    return b1, b2, bs, bnl
+    return biases
 
 
 def lagrangian_weights(cosmo:Cosmology, a, biases, init_mesh, pos, box_size):
@@ -160,7 +154,7 @@ def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):
     return dx_rsd
 
 
-def get_kaiser_bias(cosmo:Cosmology, a, mesh_size, los):
+def kaiser_weights(cosmo:Cosmology, a, mesh_size, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
@@ -184,9 +178,9 @@ def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
     init_mesh = init_mesh * growth_factor(cosmo, a)
 
     # Apply eulerian kaiser bias weights
-    kaiser_weights = get_kaiser_bias(cosmo, a, init_mesh.shape, los)
+    weights = kaiser_weights(cosmo, a, init_mesh.shape, los)
     delta_k = jnp.fft.fftn(init_mesh)
-    kaiser_mesh = jnp.fft.ifftn(kaiser_weights * delta_k)
+    kaiser_mesh = jnp.fft.ifftn(weights * delta_k)
     return kaiser_mesh
 
 
