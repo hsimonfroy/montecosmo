@@ -65,7 +65,7 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
     pk0 = pk_init[...,1,:] * growth_factor(cosmo, a)**2
     # f = growth_rate(cosmo, a)
 
-    pk = np.empty((len(multipoles), *pk_init.shape))
+    pk = np.empty((len(multipoles), *pk0.shape))
     for i_ell, ell in enumerate(multipoles):
         if ell==0:
             pk[i_ell] = (1 + beta *2/3 + beta**2 /5) * bias**2 * pk0 
