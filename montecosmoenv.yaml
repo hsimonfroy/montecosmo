@@ -31,6 +31,7 @@ dependencies:
 # - chainconsumer
 # - haiku
 # - optax
+# - git+https://github.com/sfschen/ZeNBu
 
 # If ptxas version not up to date:
 # mamba install -c nvidia cuda-nvcc 

@@ -21,20 +21,20 @@ default_config={
             'mesh_size':64 * np.array([1 ,1 ,1 ]), # int
             'box_size':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # Scale factors
-            'scale_factor_lpt':0.1, 
-            'scale_factor_obs':0.5,
+            'a_lpt':0.1, 
+            'a_obs':0.5,
             # Galaxies
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Debugging
             'trace_reparam':True, 
             'trace_deterministic':False,
             # Prior config {name: (label, mean, std)}
-            'prior_config':{'Omega_c':('\Omega_c', 0.25, 0.1), # XXX: Omega_c<0 implies nan
-                            'sigma8':('\sigma_8', 0.831, 0.14),
-                            'b1':('b_1', 1, 0.5),
-                            'b2':('b_2', 0, 0.5),
-                            'bs':('b_s', 0, 0.5),
-                            'bnl':('b_{\text{nl}}', 0, 0.5)},
+            'prior_config':{'Omega_c':['\Omega_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
+                            'sigma8':['\sigma_8', 0.831, 0.14],
+                            'b1':['b_1', 1, 0.5],
+                            'b2':['b_2', 0, 0.5],
+                            'bs':['b_s', 0, 0.5],
+                            'bnl':['b_{\\text{nl}}', 0, 0.5]},
             # Likelihood config
             'lik_config':{'obs_std':1}                    
             }
@@ -85,8 +85,8 @@ def likelihood_model(mean_mesh, lik_config, noise=0., **config):
 def pmrsd_model_fn(latent_values, 
                 mesh_size,                 
                 box_size,
-                scale_factor_lpt,
-                scale_factor_obs, 
+                a_lpt,
+                a_obs, 
                 galaxy_density, # in galaxy / (Mpc/h)^3
                 trace_reparam, 
                 trace_deterministic,
@@ -103,23 +103,23 @@ def pmrsd_model_fn(latent_values,
     x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
 
     # Lagrangian bias expansion weights
-    lbe_weights = lagrangian_weights(cosmology, scale_factor_obs, biases, init_mesh, x_part, box_size)
+    lbe_weights = lagrangian_weights(cosmology, a_obs, biases, init_mesh, x_part, box_size)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
-    dx, p_part, f = lpt(cosmology, init_mesh, x_part, a=scale_factor_lpt)
+    dx, p_part, f = lpt(cosmology, init_mesh, x_part, a=a_lpt)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
     # and correct by growth factor to get forces at wanted scale factor
     x_part = x_part + dx
 
     # XXX: here N-body displacement
-    # x_part, v_part = ... PM(scale_factor_lpt -> scale_factor_obs)
+    # x_part, v_part = ... PM(a_lpt -> a_obs)
 
     if trace_deterministic: 
         x_part = deterministic('pm_part', x_part)
 
     # RSD displacement
-    dx_rsd = rsd(cosmology, scale_factor_obs, p_part)
+    dx_rsd = rsd(cosmology, a_obs, p_part)
     x_part = x_part + dx_rsd
 
     if trace_deterministic: 
@@ -128,18 +128,18 @@ def pmrsd_model_fn(latent_values,
     # CIC paint weighted by Lagrangian bias expansion
     biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
 
+    if trace_deterministic: 
+        biased_mesh = deterministic('biased_mesh', biased_mesh)
+    
     # Scale mesh by galaxy density
     gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-
-    if trace_deterministic: 
-        gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
     return gxy_mesh
 
 
 def pmrsd_model(mesh_size,
                   box_size,
-                  scale_factor_lpt,
-                  scale_factor_obs, 
+                  a_lpt,
+                  a_obs, 
                   galaxy_density, # in galaxy / (Mpc/h)^3
                   trace_reparam, 
                   trace_deterministic,
@@ -157,8 +157,8 @@ def pmrsd_model(mesh_size,
     gxy_mesh = pmrsd_model_fn(latent_values,
                                 mesh_size,
                                 box_size,
-                                scale_factor_lpt,
-                                scale_factor_obs, 
+                                a_lpt,
+                                a_obs, 
                                 galaxy_density, # in galaxy / (Mpc/h)^3
                                 trace_reparam, 
                                 trace_deterministic,

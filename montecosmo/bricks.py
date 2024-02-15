@@ -130,7 +130,7 @@ def lagrangian_weights(cosmo:Cosmology, a, biases, init_mesh, pos, box_size):
     return weights
 
 
-def linear_pk_interp(cosmo:Cosmology, a=1, n_interp=256):
+def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """

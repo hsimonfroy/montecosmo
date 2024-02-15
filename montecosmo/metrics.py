@@ -2,7 +2,6 @@ import numpy as np
 import jax.numpy as jnp
 # from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
-from jax import debug
 
 
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
