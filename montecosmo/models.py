@@ -100,7 +100,6 @@ def pmrsd_model_fn(latent_values,
     biases = get_biases(biases_, prior_config, trace_reparam)
 
     # Create regular grid of particles
-    # x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
     x_part = jnp.indices(mesh_size).reshape(3,-1).T
 
     # Lagrangian bias expansion weights
@@ -185,7 +184,7 @@ def _simulator(model, rng_seed=0, model_kwargs={}):
 
 def get_simulator(model):
     """
-    Return a simulator that samples from a model.
+    Return simulator that samples from model.
     """
     def simulator(rng_seed=0, model_kwargs={}):
         """
@@ -205,7 +204,7 @@ def _logp_fn(model, params, model_kwargs={}):
 
 def get_logp_fn(model):
     """
-    Return a model log probabilty functions.
+    Return model log probabilty functions.
     """
     def logp_fn(params, model_kwargs={}):
         """
@@ -217,7 +216,7 @@ def get_logp_fn(model):
 
 def get_score_fn(model):
     """
-    Return a model score functions.
+    Return model score functions.
     """
     def score_fn(params, model_kwargs={}):
         """
@@ -228,9 +227,14 @@ def get_score_fn(model):
 
 
 def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, **config):
+    """
+    Return a 
+    """
     def pk_fn(mesh):
-        pk = power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles)
-        return pk
+        """
+        Return mesh power spectrum.
+        """
+        return power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles)
     return pk_fn
 
 
@@ -239,10 +243,13 @@ def get_cosmo_and_init_fn(mesh_size, box_size, prior_config, **config):
         """
         Compute cosmology and initial conditions from latent values.
         """
-        cosmo_ = params_['Omega_c_'], params_['sigma8_']
-        init_ = params_['init_mesh_']
+        cosmo_ = [params_[name] for name in ['Omega_c_', 'sigma8_']]
+        init_mesh_ = params_['init_mesh_']
+        biases_ = [params_[name] for name in ['b1_', 'b2_', 'bs_', 'bnl_']]
         cosmo = get_cosmology(cosmo_, prior_config)
-        init_mesh = get_init_mesh(cosmo, init_, mesh_size, box_size)
+        init_mesh = get_init_mesh(cosmo, init_mesh_, mesh_size, box_size)
+        biases_
+        
         return cosmo, init_mesh
     return cosmo_and_init_fn
 
@@ -291,7 +298,6 @@ def print_config(model:partial|dict):
 
     mean_gxy_density = config['galaxy_density'] * config['box_size'].prod() / config['mesh_size'].prod()
     print(f"{mean_gxy_density=:.3f} gxy/cell\n")
-
 
 
 def condition_on_config_mean(model, prior_config=None, **config):

@@ -2,7 +2,8 @@ import os
 from pickle import dump, load, HIGHEST_PROTOCOL
 
 import jax.numpy as jnp
-from jax import random, jit
+import jax.random as jr
+from jax import jit
 from jax.tree_util import tree_map
 from functools import wraps, partial
 
@@ -110,7 +111,7 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, extra_fie
     pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
 
 
-def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, extra_fields:list=[], rng_key=random.PRNGKey(0))->MCMC:
+def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, extra_fields:list=[], rng_key=jr.PRNGKey(0))->MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
     Do `mcmc.num_warmup` warmup steps, followed by `n_runs` times `mcmc.num_samples` sampling steps.
