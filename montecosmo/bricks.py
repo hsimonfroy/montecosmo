@@ -50,6 +50,10 @@ def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_repara
 
     # Parametrize
     field = jnp.fft.rfftn(init_mesh_) * pkmesh**0.5
+
+    # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
+    # field = field * jnp.exp(-.5 * kmesh**2 / k_nyquist**2)
+    
     field = jnp.fft.irfftn(field)
 
     if trace_reparam:
@@ -87,6 +91,13 @@ def lagrangian_weights(cosmo:Cosmology, a, biases, init_mesh, pos, box_size):
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
 
+    # mesh_size = init_mesh.shape
+    # init_mesh = jnp.fft.rfftn(init_mesh)
+    # kvec = fftk(mesh_size)
+    # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
+    # kkmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))
+    # init_mesh = jnp.fft.irfftn(init_mesh * jnp.exp(-.5 * kkmesh / k_nyquist**2))
+
     weights = 1
     
     # Apply b1
@@ -120,7 +131,7 @@ def lagrangian_weights(cosmo:Cosmology, a, biases, init_mesh, pos, box_size):
 
     # Apply bnl
     kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_size, box_size)) # laplace kernel in physical units
+                 for ki, m, l in zip(kvec, mesh_size, box_size)) # laplace kernel in h/Mpc physical units
     delta_nl = jnp.fft.irfftn(kk_box * delta_k)
 
     delta_nl_part = cic_read(delta_nl, pos)
@@ -158,10 +169,10 @@ def kaiser_weights(cosmo:Cosmology, a, mesh_size, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
-    kshapes = jnp.eye(len(mesh_size), dtype=jnp.int16) * -2 + 1
-    # kvec = fftk(mesh_size)
-    kvec = [2 * jnp.pi *jnp.fft.fftfreq(m).reshape(kshape)
-            for m, kshape in zip(mesh_size, kshapes)]
+    kvec = fftk(mesh_size)
+    # kshapes = jnp.eye(len(mesh_size), dtype=jnp.int16) * -2 + 1
+    # kvec = [2 * jnp.pi *jnp.fft.fftfreq(m).reshape(kshape)
+    #         for m, kshape in zip(mesh_size, kshapes)]
     kmesh = sum(kk**2 for kk in kvec)**0.5
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
@@ -179,8 +190,12 @@ def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
 
     # Apply eulerian kaiser bias weights
     weights = kaiser_weights(cosmo, a, init_mesh.shape, los)
-    delta_k = jnp.fft.fftn(init_mesh)
-    kaiser_mesh = jnp.fft.ifftn(weights * delta_k)
+    # delta_k = jnp.fft.fftn(init_mesh)
+    # kaiser_mesh = jnp.fft.ifftn(weights * delta_k)
+    delta_k = jnp.fft.rfftn(init_mesh)
+    kaiser_mesh = jnp.fft.irfftn(weights * delta_k)
     return kaiser_mesh
+
+
 
 

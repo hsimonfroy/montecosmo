@@ -26,7 +26,7 @@ default_config={
             # Galaxies
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Debugging
-            'trace_reparam':True, 
+            'trace_reparam':False, 
             'trace_deterministic':False,
             # Prior config {name: (label, mean, std)}
             'prior_config':{'Omega_c':['\Omega_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
@@ -100,7 +100,8 @@ def pmrsd_model_fn(latent_values,
     biases = get_biases(biases_, prior_config, trace_reparam)
 
     # Create regular grid of particles
-    x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
+    # x_part = jnp.stack(jnp.meshgrid(*[jnp.arange(s) for s in mesh_size]),axis=-1).reshape([-1,3])
+    x_part = jnp.indices(mesh_size).reshape(3,-1).T
 
     # Lagrangian bias expansion weights
     lbe_weights = lagrangian_weights(cosmology, a_obs, biases, init_mesh, x_part, box_size)
@@ -233,8 +234,8 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-def get_init_mesh_fn(mesh_size, box_size, prior_config, **config):
-    def init_mesh_fn(**params_):
+def get_cosmo_and_init_fn(mesh_size, box_size, prior_config, **config):
+    def cosmo_and_init_fn(**params_):
         """
         Compute cosmology and initial conditions from latent values.
         """
@@ -243,10 +244,15 @@ def get_init_mesh_fn(mesh_size, box_size, prior_config, **config):
         cosmo = get_cosmology(cosmo_, prior_config)
         init_mesh = get_init_mesh(cosmo, init_, mesh_size, box_size)
         return cosmo, init_mesh
-    return init_mesh_fn
+    return cosmo_and_init_fn
 
 
 def get_noise_fn(t0, t1, noises, steps=False):
+    """
+    Given a noises list, starting and ending times, 
+    return a function that interpolate these noises between these times,
+    by steps or linearly.
+    """
     n_noises = len(noises)-1
     if steps:
         def noise_fn(t):
@@ -263,14 +269,20 @@ def get_noise_fn(t0, t1, noises, steps=False):
     return noise_fn
 
 
-def print_config(config):
+def print_config(model:partial|dict):
     """
-    Print config and infos.
+    Print config and infos from a partial model.
+    Alternatively, config can be directly provided.
     """
+    if isinstance(model, dict):
+        config = model
+    else:
+        assert isinstance(model, partial), "No partial model or config provided."
+        config = model.keywords
     print(f"# CONFIG:\n{config}\n")
 
-    cell_lengths = list( config['box_size'] / config['mesh_size'] )
-    print(f"# INFOS:\n{cell_lengths=} Mpc/h")
+    cell_size = list( config['box_size'] / config['mesh_size'] )
+    print(f"# INFOS:\n{cell_size=} Mpc/h")
 
     delta_k = 2*jnp.pi * jnp.max(1 / config['box_size']) 
     k_nyquist = 2*jnp.pi * jnp.min(config['mesh_size'] / config['box_size']) / 2
@@ -278,10 +290,18 @@ def print_config(config):
     print(f"{delta_k=:.5f} h/Mpc, {k_nyquist=:.5f} h/Mpc")
 
     mean_gxy_density = config['galaxy_density'] * config['box_size'].prod() / config['mesh_size'].prod()
-    print(f"{mean_gxy_density=:.3f} gxy/cell")
+    print(f"{mean_gxy_density=:.3f} gxy/cell\n")
 
 
-def condition_on_config_mean(model, prior_config, **config):
+
+def condition_on_config_mean(model, prior_config=None, **config):
+    """
+    Condition model on the mean values of the prior config.
+    If no `prior_config` is provided, extract it from partial model.
+    """
+    if prior_config is None:
+        assert isinstance(model, partial), "No 'prior_config' found."
+        prior_config = model.keywords['prior_config']
     params = {name+'_':0. for name in prior_config}
     return condition(model, params)
 
