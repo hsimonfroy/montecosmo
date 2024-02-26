@@ -9,10 +9,11 @@ from jax import random, jit, vmap, grad
 from jax.tree_util import tree_map
 from functools import partial, wraps
 
-from montecosmo.bricks import get_cosmology, get_init_mesh, get_biases, lagrangian_weights, rsd
+from montecosmo.bricks import get_cosmo, get_init_mesh, get_biases, lagrangian_weights, rsd
 from montecosmo.metrics import power_spectrum
 from jaxpm.pm import lpt
 from jaxpm.painting import cic_paint
+from jax_cosmo import Planck15
 
 
 
@@ -50,7 +51,7 @@ def prior_model(mesh_size, noise=0., **config):
     # Sample latent cosmology
     Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
     sigma8_  = sample('sigma8_' , dist.Normal(0, sigma))
-    cosmo_ = Omega_c_, sigma8_
+    # cosmo_ = Omega_c_, sigma8_
 
     # Sample latent initial conditions
     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
@@ -60,9 +61,14 @@ def prior_model(mesh_size, noise=0., **config):
     b2_  = sample('b2_',  dist.Normal(0, sigma))
     bs_  = sample('bs_',  dist.Normal(0, sigma))
     bnl_ = sample('bnl_', dist.Normal(0, sigma))
-    biases_ = b1_, b2_, bs_, bnl_
+    # biases_ = b1_, b2_, bs_, bnl_
 
-    return cosmo_, init_mesh_, biases_
+    params_ = dict(Omega_c_=Omega_c_, sigma8_=sigma8_, 
+                   init_mesh_=init_mesh_, 
+                   b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
+
+    return params_
+    # return cosmo_, init_mesh_, biases_
 
 
 def likelihood_model(mean_mesh, lik_config, noise=0., **config):
@@ -92,22 +98,23 @@ def pmrsd_model_fn(latent_values,
                 trace_deterministic,
                 prior_config,):
     # Unpack latent variables
-    cosmo_, init_mesh_, biases_ = latent_values
+    # cosmo_, init_mesh_, biases_ = latent_values
 
     # Get cosmology, initial mesh, and biases from latent values
-    cosmology = get_cosmology(cosmo_, prior_config, trace_reparam)
-    init_mesh = get_init_mesh(cosmology, init_mesh_, mesh_size, box_size, trace_reparam)
-    biases = get_biases(biases_, prior_config, trace_reparam)
+    cosmo = get_cosmo(prior_config, trace_reparam, **latent_values)
+    cosmology = Planck15(**cosmo)
+    init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_values)
+    biases = get_biases(prior_config, trace_reparam, **latent_values)
 
     # Create regular grid of particles
     x_part = jnp.indices(mesh_size).reshape(3,-1).T
 
     # Lagrangian bias expansion weights
-    lbe_weights = lagrangian_weights(cosmology, a_obs, biases, init_mesh, x_part, box_size)
+    lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_size, **biases, **init_mesh)
 
     # LPT displacement
     cosmology._workspace = {}  # HACK: temporary fix
-    dx, p_part, f = lpt(cosmology, init_mesh, x_part, a=a_lpt)
+    dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
     # and correct by growth factor to get forces at wanted scale factor
     x_part = x_part + dx
@@ -228,7 +235,7 @@ def get_score_fn(model):
 
 def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, **config):
     """
-    Return a 
+    Return model power spectrum function.
     """
     def pk_fn(mesh):
         """
@@ -238,20 +245,34 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-def get_cosmo_and_init_fn(mesh_size, box_size, prior_config, **config):
-    def cosmo_and_init_fn(**params_):
-        """
-        Compute cosmology and initial conditions from latent values.
-        """
-        cosmo_ = [params_[name] for name in ['Omega_c_', 'sigma8_']]
-        init_mesh_ = params_['init_mesh_']
-        biases_ = [params_[name] for name in ['b1_', 'b2_', 'bs_', 'bnl_']]
-        cosmo = get_cosmology(cosmo_, prior_config)
-        init_mesh = get_init_mesh(cosmo, init_mesh_, mesh_size, box_size)
-        biases_
+# def get_cosmo_and_init_fn(mesh_size, box_size, prior_config, **config):
+#     def cosmo_and_init_fn(**params_):
+#         """
+#         Compute cosmology and initial conditions from latent values.
+#         """
+#         cosmo_ = [params_[name] for name in ['Omega_c_', 'sigma8_']]
+#         init_mesh_ = params_['init_mesh_']
+#         biases_ = [params_[name] for name in ['b1_', 'b2_', 'bs_', 'bnl_']]
+#         cosmo = get_cosmo(cosmo_, prior_config)
+#         init_mesh = get_init_mesh(cosmo, init_mesh_, mesh_size, box_size)
+#         biases_
         
-        return cosmo, init_mesh
-    return cosmo_and_init_fn
+#         return cosmo, init_mesh
+#     return cosmo_and_init_fn
+
+def get_params_fn(mesh_size, box_size, prior_config, trace_reparam=False, **config):
+    def params_fn(**params_):
+        """
+        Compute parameters from latent values.
+        """
+        cosmo = get_cosmo(prior_config, trace_reparam, **params_)
+        cosmology = Planck15(**cosmo)
+        init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **params_)
+        biases = get_biases(prior_config, trace_reparam, **params_)
+        
+        params = dict(**cosmo, **init_mesh, **biases)
+        return params
+    return params_fn
 
 
 def get_noise_fn(t0, t1, noises, steps=False):

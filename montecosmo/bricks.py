@@ -11,23 +11,38 @@ from jaxpm.growth import growth_factor, growth_rate
 
 
 
-def get_cosmology(cosmo_, prior_config, trace_reparam=False, **params_) -> Cosmology:
+# def get_cosmology(cosmo_, prior_config, trace_reparam=False, **params_) -> Cosmology:
+#     """
+#     Compute cosmology from latent values.
+#     """
+#     # Parametrize
+#     cosmo = {}
+#     for name, value_ in zip(['Omega_c', 'sigma8'], cosmo_):
+#         _, mean, std = prior_config[name]
+#         value = value_ * std + mean
+#         if trace_reparam:
+#             value = deterministic(name, value)
+#         cosmo[name] = value
+
+#     # cosmo_params = deterministic('cosmo_params', cosmo_params) # does not render properly
+#     cosmo = jc.Planck15(**cosmo)
+#     # cosmo = deterministic('cosmo',cosmo) # does not render properly
+#     return cosmo
+
+
+def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
     """
     Compute cosmology from latent values.
     """
-    # Parametrize
     cosmo = {}
-    for name, value_ in zip(['Omega_c', 'sigma8'], cosmo_):
+    for name in ['Omega_c', 'sigma8']:
         _, mean, std = prior_config[name]
-        value = value_ * std + mean
+        value = params_[name+'_'] * std + mean
         if trace_reparam:
             value = deterministic(name, value)
         cosmo[name] = value
-
-    # cosmo_params = deterministic('cosmo_params', cosmo_params) # does not render properly
-    cosmo = jc.Planck15(**cosmo)
-    # cosmo = deterministic('cosmo',cosmo) # does not render properly
     return cosmo
+
 
 ## To reparametrize automaticaly
 # from numpyro.infer.reparam import LocScaleReparam
@@ -38,7 +53,7 @@ def get_cosmology(cosmo_, prior_config, trace_reparam=False, **params_) -> Cosmo
 #         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
-def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_reparam=False, **params_):
+def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, **params_):
     """
     Compute initial conditions at a=1 from latent values.
     """
@@ -49,44 +64,40 @@ def get_init_mesh(cosmo:Cosmology, init_mesh_, mesh_size, box_size, trace_repara
     pkmesh = pk_fn(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
     # Parametrize
-    field = jnp.fft.rfftn(init_mesh_) * pkmesh**0.5
+    init_mesh = jnp.fft.rfftn(params_['init_mesh_']) * pkmesh**0.5
 
     # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
-    # field = field * jnp.exp(-.5 * kmesh**2 / k_nyquist**2)
+    # init_mesh = init_mesh * jnp.exp(-.5 * kmesh**2 / k_nyquist**2)
     
-    field = jnp.fft.irfftn(field)
+    init_mesh = jnp.fft.irfftn(init_mesh)
 
     if trace_reparam:
-        field = deterministic('init_mesh', field)
-    return field
+        init_mesh = deterministic('init_mesh', init_mesh)
+    return dict(init_mesh=init_mesh)
 
 
-def get_biases(biases_, prior_config, trace_reparam=False, **params_):
+def get_biases(prior_config, trace_reparam=False, **params_) -> dict:
     """
     Compute biases from latent values.
     """
-    # Parametrize
-    biases = []
-    for name, value_ in zip(['b1', 'b2', 'bs', 'bnl'], biases_):
+    biases = {}
+    for name in ['b1', 'b2', 'bs', 'bnl']:
         _, mean, std = prior_config[name]
-        value = value_ * std + mean
+        value = params_[name+'_'] * std + mean
         if trace_reparam:
             value = deterministic(name, value)
-        biases.append(value)
-
+        biases[name] = value
     return biases
 
 
-def lagrangian_weights(cosmo:Cosmology, a, biases, init_mesh, pos, box_size):
+def lagrangian_weights(cosmo:Cosmology, a, pos, box_size, 
+                       b1, b2, bs, bnl, init_mesh, **params):
     """
     Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
     """    
-    # Unpack biases
-    b1, b2, bs, bnl = biases
-
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
