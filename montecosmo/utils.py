@@ -40,14 +40,14 @@ def pickle_load(path):
         return load(file)    
 
 
-def get_ylim(a, scale=1.25, q=0.001):
+def get_vlim(a, scale=1.25, q=0.001):
     """
     Compute inferior and superior limit values of an array, 
     with some scaled margins, and discarding bilateraly on some quantile level.
     """
-    ymin, ymax = jnp.quantile(a, q/2), jnp.quantile(a, 1-q/2)
-    ymean, ydiff = (ymax+ymin)/2, scale*(ymax-ymin)/2
-    return ymean-ydiff, ymean+ydiff
+    vmin, vmax = jnp.quantile(a, q/2), jnp.quantile(a, 1-q/2)
+    vmean, vdiff = (vmax+vmin)/2, scale*(vmax-vmin)/2
+    return vmean-vdiff, vmean+vdiff
 
 
 def color_switch(color, reverse=False):
@@ -75,7 +75,15 @@ def color_switch(color, reverse=False):
     return color
 
 
-def theme_switch(dark_theme=False):
+def set_plotting_options(use_TeX):
+    params = {'text.usetex': use_TeX,
+            #   'ps.useafm': True,
+            #   'pdf.use14corefonts': True,
+              } # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
+    plt.rcParams.update(params)
+
+
+def theme_switch(dark_theme=False, use_TeX=False):
     """
     Set Matplotlib theme and return an adequate color switching function.
     """
@@ -84,6 +92,7 @@ def theme_switch(dark_theme=False):
     else: 
         plt.style.use('default')
     rc('animation', html='html5') # handle Matplotlib animations
+    set_plotting_options(use_TeX)
     theme = partial(color_switch, reverse=dark_theme)
     return theme
 
@@ -144,13 +153,14 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, e
     return mcmc
 
 
-def load_runs(start_run, end_run, load_path, var_names=None):
+def load_runs(start_run:int, end_run:int, load_path:str, var_names:list=None):
     """
     Load and append runs (or extra fields) saved in different files with same name.
     Both runs `start_run` and `end_run` are included.
     If `var_names` is None, load all the variables.
     """
     print(f"loading: {os.path.basename(load_path)}")
+    var_names = list(var_names) # in case iterator is passed
     for i_run in range(start_run, end_run+1):
         # Load
         samples_part = pickle_load(load_path+f"_{i_run}.p")   
