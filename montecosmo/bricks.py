@@ -11,25 +11,6 @@ from jaxpm.growth import growth_factor, growth_rate
 
 
 
-# def get_cosmology(cosmo_, prior_config, trace_reparam=False, **params_) -> Cosmology:
-#     """
-#     Compute cosmology from latent values.
-#     """
-#     # Parametrize
-#     cosmo = {}
-#     for name, value_ in zip(['Omega_c', 'sigma8'], cosmo_):
-#         _, mean, std = prior_config[name]
-#         value = value_ * std + mean
-#         if trace_reparam:
-#             value = deterministic(name, value)
-#         cosmo[name] = value
-
-#     # cosmo_params = deterministic('cosmo_params', cosmo_params) # does not render properly
-#     cosmo = jc.Planck15(**cosmo)
-#     # cosmo = deterministic('cosmo',cosmo) # does not render properly
-#     return cosmo
-
-
 def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
     """
     Compute cosmology from latent values.

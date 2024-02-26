@@ -235,7 +235,7 @@ def get_score_fn(model):
 
 def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, **config):
     """
-    Return model power spectrum function.
+    Return power spectrum function for given config.
     """
     def pk_fn(mesh):
         """
@@ -245,56 +245,44 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-# def get_cosmo_and_init_fn(mesh_size, box_size, prior_config, **config):
-#     def cosmo_and_init_fn(**params_):
-#         """
-#         Compute cosmology and initial conditions from latent values.
-#         """
-#         cosmo_ = [params_[name] for name in ['Omega_c_', 'sigma8_']]
-#         init_mesh_ = params_['init_mesh_']
-#         biases_ = [params_[name] for name in ['b1_', 'b2_', 'bs_', 'bnl_']]
-#         cosmo = get_cosmo(cosmo_, prior_config)
-#         init_mesh = get_init_mesh(cosmo, init_mesh_, mesh_size, box_size)
-#         biases_
-        
-#         return cosmo, init_mesh
-#     return cosmo_and_init_fn
-
 def get_params_fn(mesh_size, box_size, prior_config, trace_reparam=False, **config):
-    def params_fn(**params_):
+    """
+    Return a partial replay model function for given config.
+    """
+    def params_fn(Omega_c_=None, sigma8_=None, 
+                   init_mesh_=None, 
+                   b1_=None, b2_=None, bs_=None, bnl_=None, 
+                   **params_):
         """
-        Compute parameters from latent values.
+        Partially replay model, i.e. compute parameters of interest from latent values.
         """
-        cosmo = get_cosmo(prior_config, trace_reparam, **params_)
-        cosmology = Planck15(**cosmo)
-        init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **params_)
-        biases = get_biases(prior_config, trace_reparam, **params_)
+        if not any([v is None for v in [Omega_c_, sigma8_]]):
+            cosmo = get_cosmo(prior_config, trace_reparam, Omega_c_=Omega_c_, sigma8_=sigma8_)
+
+            if init_mesh_ is not None:
+                cosmology = Planck15(**cosmo)
+                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, init_mesh_=init_mesh_)
+            else: init_mesh = {}
+        else: cosmo = {}; init_mesh = {}
+
+        if not any([v is None for v in [b1_, b2_, bs_, bnl_]]):
+            biases = get_biases(prior_config, trace_reparam, b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
+        else: biases = {}
         
+#     def params_fn(**params_):
+#         try:
+#             cosmo = get_cosmo(prior_config, trace_reparam, **params_)
+#             try:
+#                 cosmology = Planck15(**cosmo)
+#                 init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **params_)
+#             except: init_mesh = {}
+#         except: cosmo = {}; init_mesh = {}
+#         try:
+#             biases = get_biases(prior_config, trace_reparam, **params_)
+#         except: biases = {}
         params = dict(**cosmo, **init_mesh, **biases)
         return params
     return params_fn
-
-
-def get_noise_fn(t0, t1, noises, steps=False):
-    """
-    Given a noises list, starting and ending times, 
-    return a function that interpolate these noises between these times,
-    by steps or linearly.
-    """
-    n_noises = len(noises)-1
-    if steps:
-        def noise_fn(t):
-            i_t = n_noises*(t-t0)/(t1-t0)
-            i_t1 = jnp.floor(i_t).astype(int)
-            return noises[i_t1]
-    else:
-        def noise_fn(t):
-            i_t = n_noises*(t-t0)/(t1-t0)
-            i_t1 = jnp.floor(i_t).astype(int)
-            s1 = noises[i_t1]
-            s2 = noises[i_t1+1]
-            return (s2 - s1)*(i_t - i_t1) + s1
-    return noise_fn
 
 
 def print_config(model:partial|dict):
@@ -331,6 +319,28 @@ def condition_on_config_mean(model, prior_config=None, **config):
         prior_config = model.keywords['prior_config']
     params = {name+'_':0. for name in prior_config}
     return condition(model, params)
+
+
+def get_noise_fn(t0, t1, noises, steps=False):
+    """
+    Given a noises list, starting and ending times, 
+    return a function that interpolate these noises between these times,
+    by steps or linearly.
+    """
+    n_noises = len(noises)-1
+    if steps:
+        def noise_fn(t):
+            i_t = n_noises*(t-t0)/(t1-t0)
+            i_t1 = jnp.floor(i_t).astype(int)
+            return noises[i_t1]
+    else:
+        def noise_fn(t):
+            i_t = n_noises*(t-t0)/(t1-t0)
+            i_t1 = jnp.floor(i_t).astype(int)
+            s1 = noises[i_t1]
+            s2 = noises[i_t1+1]
+            return (s2 - s1)*(i_t - i_t1) + s1
+    return noise_fn
 
 
 
