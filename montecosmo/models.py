@@ -44,14 +44,14 @@ default_config={
 def prior_model(mesh_size, noise=0., **config):
     """
     A prior for cosmological model. 
-    Return latent values for computing cosmology, initial conditions, and Lagrangian biases variables.
+
+    Return latent params for computing cosmology, initial conditions, and Lagrangian biases.
     """
     sigma = jnp.sqrt(1+noise**2)
 
     # Sample latent cosmology
     Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
     sigma8_  = sample('sigma8_' , dist.Normal(0, sigma))
-    # cosmo_ = Omega_c_, sigma8_
 
     # Sample latent initial conditions
     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
@@ -61,19 +61,18 @@ def prior_model(mesh_size, noise=0., **config):
     b2_  = sample('b2_',  dist.Normal(0, sigma))
     bs_  = sample('bs_',  dist.Normal(0, sigma))
     bnl_ = sample('bnl_', dist.Normal(0, sigma))
-    # biases_ = b1_, b2_, bs_, bnl_
 
     params_ = dict(Omega_c_=Omega_c_, sigma8_=sigma8_, 
                    init_mesh_=init_mesh_, 
                    b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
 
     return params_
-    # return cosmo_, init_mesh_, biases_
 
 
 def likelihood_model(mean_mesh, lik_config, noise=0., **config):
     """
     A likelihood for cosmological model.
+
     Return an observed mesh sampled from a mean mesh with observational variance.
     """
     # TODO: prior on obs_std?
@@ -88,7 +87,7 @@ def likelihood_model(mean_mesh, lik_config, noise=0., **config):
     return obs_mesh
 
 
-def pmrsd_model_fn(latent_values, 
+def pmrsd_model_fn(latent_params, 
                 mesh_size,                 
                 box_size,
                 a_lpt,
@@ -97,14 +96,11 @@ def pmrsd_model_fn(latent_values,
                 trace_reparam, 
                 trace_deterministic,
                 prior_config,):
-    # Unpack latent variables
-    # cosmo_, init_mesh_, biases_ = latent_values
-
-    # Get cosmology, initial mesh, and biases from latent values
-    cosmo = get_cosmo(prior_config, trace_reparam, **latent_values)
+    # Get cosmology, initial mesh, and biases from latent params
+    cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
     cosmology = Planck15(**cosmo)
-    init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_values)
-    biases = get_biases(prior_config, trace_reparam, **latent_values)
+    init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_params)
+    biases = get_biases(prior_config, trace_reparam, **latent_params)
 
     # Create regular grid of particles
     x_part = jnp.indices(mesh_size).reshape(3,-1).T
@@ -158,10 +154,10 @@ def pmrsd_model(mesh_size,
     The relevant variables can be traced.
     """
     # Sample from prior
-    latent_values = prior_model(mesh_size)
+    latent_params = prior_model(mesh_size)
 
     # Compute deterministic model function
-    gxy_mesh = pmrsd_model_fn(latent_values,
+    gxy_mesh = pmrsd_model_fn(latent_params,
                                 mesh_size,
                                 box_size,
                                 a_lpt,
@@ -281,6 +277,7 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
 #             biases = get_biases(prior_config, trace_reparam, **params_)
 #         except: biases = {}
         params = dict(**cosmo, **init_mesh, **biases)
+        # params = cosmo | init_mesh | biases # python>=3.9
         return params
     return param_fn
 
