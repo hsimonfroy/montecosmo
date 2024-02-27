@@ -1,6 +1,7 @@
 import os
 from pickle import dump, load, HIGHEST_PROTOCOL
 
+import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
 from jax import jit
@@ -12,6 +13,7 @@ from matplotlib import rc
 from matplotlib.colors import to_rgba_array
 
 from numpyro.infer import MCMC
+from collections.abc import Iterable
 
 
 
@@ -54,7 +56,10 @@ def color_switch(color, reverse=False):
     """
     Select between color an its negative, or colormap and its reversed.
     Typically used to switch between light theme and dark theme. 
+
     `color` must be Matpotlib color, or array of colors, or colormap.
+
+    No need to switch the default color cycle `f'C{i}'`, Matplotlib handles it already.
     """
     try:
         color = to_rgba_array(color)
@@ -153,13 +158,9 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, e
     return mcmc
 
 
-def load_runs(start_run:int, end_run:int, load_path:str, var_names:list=None):
-    """
-    Load and append runs (or extra fields) saved in different files with same name.
-    Both runs `start_run` and `end_run` are included.
-    If `var_names` is None, load all the variables.
-    """
-    print(f"loading: {os.path.basename(load_path)}")
+def _load_runs(load_path:str, start_run:int, end_run:int, var_names:Iterable[str]=None, verbose=False):
+    if verbose:
+        print(f"loading: {os.path.basename(load_path)}")
     var_names = list(var_names) # in case iterator is passed
     for i_run in range(start_run, end_run+1):
         # Load
@@ -173,5 +174,30 @@ def load_runs(start_run:int, end_run:int, load_path:str, var_names:list=None):
         else:
             # samples = {key: jnp.concatenate((samples[key], samples_part[key])) for key in var_names}
             samples = tree_map(lambda x,y: jnp.concatenate((x, y)), samples, samples_part)
-    print(f"total run length={samples[list(samples.keys())[0]].shape[0]}")
+            
+    if verbose:
+        print(f"total run length: {samples[list(samples.keys())[0]].shape[0]}")
     return samples
+
+
+def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:int|Iterable[int], 
+              var_names:Iterable[str]=None, verbose=False):
+    """
+    Load and append runs (or extra fields) saved in different files with same name.
+
+    Both runs `start_run` and `end_run` are included.
+    If `var_names` is None, load all the variables.
+    """
+    paths = np.atleast_1d(load_path)
+    starts = np.atleast_1d(start_run)
+    ends = np.atleast_1d(end_run)
+    assert len(paths)==len(starts)==len(ends), "lists must have the same lengths."
+    samples = []
+
+    for path, start, end in zip(paths, starts, ends):
+        samples.append(_load_runs(path, start, end, var_names, verbose))
+
+    if isinstance(load_path,str):
+        return samples[0]
+    else:
+        return samples 

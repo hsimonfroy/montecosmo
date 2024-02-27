@@ -30,12 +30,12 @@ default_config={
             'trace_reparam':False, 
             'trace_deterministic':False,
             # Prior config {name: (label, mean, std)}
-            'prior_config':{'Omega_c':['\Omega_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
-                            'sigma8':['\sigma_8', 0.831, 0.14],
-                            'b1':['b_1', 1, 0.5],
-                            'b2':['b_2', 0, 0.5],
-                            'bs':['b_s', 0, 0.5],
-                            'bnl':['b_{\\text{nl}}', 0, 0.5]},
+            'prior_config':{'Omega_c':['{\Omega}_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
+                            'sigma8':['{\sigma}_8', 0.831, 0.14],
+                            'b1':['{b}_1', 1, 0.5],
+                            'b2':['{b}_2', 0, 0.5],
+                            'bs':['{b}_s', 0, 0.5],
+                            'bnl':['{b}_{\\text{nl}}', 0, 0.5]},
             # Likelihood config
             'lik_config':{'obs_std':1}                    
             }
@@ -245,11 +245,11 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-def get_params_fn(mesh_size, box_size, prior_config, trace_reparam=False, **config):
+def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **config):
     """
     Return a partial replay model function for given config.
     """
-    def params_fn(Omega_c_=None, sigma8_=None, 
+    def param_fn(Omega_c_=None, sigma8_=None, 
                    init_mesh_=None, 
                    b1_=None, b2_=None, bs_=None, bnl_=None, 
                    **params_):
@@ -269,7 +269,7 @@ def get_params_fn(mesh_size, box_size, prior_config, trace_reparam=False, **conf
             biases = get_biases(prior_config, trace_reparam, b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
         else: biases = {}
         
-#     def params_fn(**params_):
+#     def param_fn(**params_):
 #         try:
 #             cosmo = get_cosmo(prior_config, trace_reparam, **params_)
 #             try:
@@ -282,7 +282,7 @@ def get_params_fn(mesh_size, box_size, prior_config, trace_reparam=False, **conf
 #         except: biases = {}
         params = dict(**cosmo, **init_mesh, **biases)
         return params
-    return params_fn
+    return param_fn
 
 
 def print_config(model:partial|dict):
@@ -295,18 +295,20 @@ def print_config(model:partial|dict):
     else:
         assert isinstance(model, partial), "No partial model or config provided."
         config = model.keywords
-    print(f"# CONFIG:\n{config}\n")
+    print(f"# CONFIG\n{config}\n")
 
     cell_size = list( config['box_size'] / config['mesh_size'] )
-    print(f"# INFOS:\n{cell_size=} Mpc/h")
+    print("# INFOS")
+    print(f"cell_size:        {cell_size} Mpc/h")
 
     delta_k = 2*jnp.pi * jnp.max(1 / config['box_size']) 
     k_nyquist = 2*jnp.pi * jnp.min(config['mesh_size'] / config['box_size']) / 2
     # (2*pi factor because of Fourier transform definition)
-    print(f"{delta_k=:.5f} h/Mpc, {k_nyquist=:.5f} h/Mpc")
+    print(f"delta_k:          {delta_k:.5f} h/Mpc")
+    print(f"k_nyquist:        {k_nyquist:.5f} h/Mpc")
 
     mean_gxy_density = config['galaxy_density'] * config['box_size'].prod() / config['mesh_size'].prod()
-    print(f"{mean_gxy_density=:.3f} gxy/cell\n")
+    print(f"mean_gxy_density: {mean_gxy_density:.3f} gxy/cell\n")
 
 
 def condition_on_config_mean(model, prior_config=None, **config):
