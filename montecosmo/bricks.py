@@ -13,7 +13,7 @@ from jaxpm.growth import growth_factor, growth_rate
 
 def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
     """
-    Compute cosmology from latent values.
+    Return cosmology from latent values.
     """
     cosmo = {}
     for name in ['Omega_c', 'sigma8']:
@@ -36,7 +36,7 @@ def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
 
 def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, **params_):
     """
-    Compute initial conditions at a=1 from latent values.
+    Return initial conditions at a=1 from latent values.
     """
     # Compute initial power spectrum
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
@@ -59,7 +59,7 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, **p
 
 def get_biases(prior_config, trace_reparam=False, **params_) -> dict:
     """
-    Compute biases from latent values.
+    Return biases from latent values.
     """
     biases = {}
     for name in ['b1', 'b2', 'bs', 'bnl']:
@@ -74,7 +74,7 @@ def get_biases(prior_config, trace_reparam=False, **params_) -> dict:
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_size, 
                        b1, b2, bs, bnl, init_mesh, **params):
     """
-    Compute Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
+    Return Lagrangian bias expansion weight as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta

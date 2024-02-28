@@ -250,7 +250,7 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
                    b1_=None, b2_=None, bs_=None, bnl_=None, 
                    **params_):
         """
-        Partially replay model, i.e. compute parameters of interest from latent values.
+        Partially replay model, i.e. transform latent params into params of interest.
         """
         if not any([v is None for v in [Omega_c_, sigma8_]]):
             cosmo = get_cosmo(prior_config, trace_reparam, Omega_c_=Omega_c_, sigma8_=sigma8_)
@@ -259,25 +259,14 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
                 cosmology = Planck15(**cosmo)
                 init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, init_mesh_=init_mesh_)
             else: init_mesh = {}
-        else: cosmo = {}; init_mesh = {}
+        else: cosmo, init_mesh = {}, {}
 
         if not any([v is None for v in [b1_, b2_, bs_, bnl_]]):
             biases = get_biases(prior_config, trace_reparam, b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
         else: biases = {}
-        
-#     def param_fn(**params_):
-#         try:
-#             cosmo = get_cosmo(prior_config, trace_reparam, **params_)
-#             try:
-#                 cosmology = Planck15(**cosmo)
-#                 init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **params_)
-#             except: init_mesh = {}
-#         except: cosmo = {}; init_mesh = {}
-#         try:
-#             biases = get_biases(prior_config, trace_reparam, **params_)
-#         except: biases = {}
+
         params = dict(**cosmo, **init_mesh, **biases)
-        # params = cosmo | init_mesh | biases # python>=3.9
+        # params = cosmo | init_mesh | biases  # XXX: python>=3.9
         return params
     return param_fn
 

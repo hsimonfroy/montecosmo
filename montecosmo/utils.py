@@ -52,7 +52,7 @@ def get_vlim(q=0., scale=1.):
     """
     def vlim(a):
         """
-        Compute robust inferior and superior limit values of an array.
+        Return robust inferior and superior limit values of an array.
         """
         vmin, vmax = jnp.quantile(a, q/2), jnp.quantile(a, 1-q/2)
         vmean, vdiff = (vmax+vmin)/2, scale*(vmax-vmin)/2
@@ -239,12 +239,14 @@ def get_gdprior(samples:dict, prior_config:dict, label:str="Prior",
                    verbose:bool=False, **config):
     """
     Construct getdist MCSamples from prior config.
+
+    Only uses keys from samples.
     """
-    names = list(samples.keys()) # NOTE: this function only uses keys from params_
+    names = list(samples.keys())
     labels = []
     means, stds = [], []
     for name in samples:
-        if name.endswith('_'): # internal convention for a latent value 
+        if name.endswith('_'): # convention for a latent param 
             lab = "\overline"+prior_config[name[:-1]][0]
             mean, std = 0, 1
         else:
@@ -269,7 +271,7 @@ def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
                    verbose:bool=False, **config):
     labels = []
     for name in samples:
-        if name.endswith('_'): # internal convention for latent value 
+        if name.endswith('_'): # convention for a latent param 
             lab = "\overline"+prior_config[name[:-1]][0]
         else:
             lab = prior_config[name][0]

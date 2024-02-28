@@ -39,7 +39,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
 
     # Absolute value of FFT
     fft_image = jnp.fft.fftn(field)
-    pk = jnp.real(fft_image * jnp.conj(fft_image))
+    pk = jnp.real(fft_image * jnp.conj(fft_image)) # TODO: cross pk
 
     # bincount_vfn = vmap(lambda w: jnp.bincount(dig, w, length=kedges.size+1))
     Psum = jnp.empty((len(multipoles), *Nsum.shape))
