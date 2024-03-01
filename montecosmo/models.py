@@ -119,29 +119,34 @@ def pmrsd_model_fn(latent_params,
     x_part = x_part + dx
 
     # PM displacement from a_lpt to a_obs
-    assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
-    if a_lpt < a_obs:
-        if isinstance(trace_meshes, int) and trace_meshes >= 2:
-            # NOTE: For historic reasons, bool is a subclass of int
-            snapshots = np.linspace(a_lpt, a_obs, trace_meshes)
-        else:
-            snapshots = np.linspace(a_lpt, a_obs, 2) # TODO: always do maximum(trace_meshes, 2)
+    # assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
+    if trace_meshes == 1:
+        x_part = deterministic('pm_parts', x_part[None])[0]
 
+    if a_lpt < a_obs:
+        if trace_meshes < 2: trace_meshes = 2 # XXX: jnp.maximum would not jit
+        snapshots = jnp.linspace(a_lpt, a_obs, trace_meshes)
         res = odeint(make_ode_fn(mesh_size), [x_part, p_part], snapshots, cosmology, rtol=1e-5, atol=1e-5)
         x_parts, p_parts = res
 
-        if trace_meshes: 
+        if trace_meshes >= 2:
             x_parts = deterministic('pm_parts', x_parts)
 
         x_part, p_part = x_parts[-1], p_parts[-1]
 
-    else:
-        if trace_meshes: 
-            x_part = deterministic('pm_parts', jnp.repeat(x_part[None], trace_meshes, axis=0))[-1]
+    # elif trace_meshes >= 2: print(f"warning: required trace_meshes={trace_meshes:d} LPT+PM snapshots, "+
+    #                               f"but a_lpt == a_obs == {a_lpt:.2f}. Only LPT mesh would be returned")
+
+
+    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
+    if trace_meshes: 
+        deterministic('biased_prersd_mesh', biased_mesh)
+
 
 
      # RSD displacement at a_obs
-    dx_rsd = rsd(cosmology, a_obs, p_part)
+    # dx_rsd = rsd(cosmology, a_obs, p_part)
+    dx_rsd = rsd(cosmology, a_obs, jnp.zeros_like(x_part))
     x_part = x_part + dx_rsd
 
     if trace_meshes: 
