@@ -137,15 +137,7 @@ def pmrsd_model_fn(latent_params,
     # elif trace_meshes >= 2: print(f"warning: required trace_meshes={trace_meshes:d} LPT+PM snapshots, "+
     #                               f"but a_lpt == a_obs == {a_lpt:.2f}. Only LPT mesh would be returned")
 
-
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
-    if trace_meshes: 
-        deterministic('biased_prersd_mesh', biased_mesh)
-
-
-
-     # RSD displacement at a_obs
-    # dx_rsd = rsd(cosmology, a_obs, p_part)
+    # RSD displacement at a_obs
     dx_rsd = rsd(cosmology, a_obs, jnp.zeros_like(x_part))
     x_part = x_part + dx_rsd
 

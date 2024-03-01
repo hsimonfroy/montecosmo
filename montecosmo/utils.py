@@ -296,15 +296,21 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
     Construct getdist MCSamples from samples. 
     """
     ps_ = np.atleast_1d(samples)
-    if label is not None:
-        assert len(ps_)==len(label), "lists must have the same lengths."
-    else:
-        label = np.broadcast_to(label, ps_.shape)
+    label = np.atleast_1d(label)
+    # if label is not None:
+    assert len(ps_)==len(label), "lists must have the same lengths."
+    # else:
+        # label = np.broadcast_to(label, ps_.shape)
     gdsamples = []
 
     for p_, lab in zip(ps_, label):
         gdsamples.append(_get_gdsamples(p_, prior_config, lab, verbose))
-    return gdsamples 
+
+    if isinstance(samples,dict):
+        return gdsamples[0]
+    else:
+        return gdsamples 
+    
 
 ##### To plot a table ####
 # plt.subplot(position=[0,-0.01,1,1]), plt.axis('off')
