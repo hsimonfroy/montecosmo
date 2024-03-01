@@ -11,9 +11,12 @@ from functools import partial, wraps
 
 from montecosmo.bricks import get_cosmo, get_init_mesh, get_biases, lagrangian_weights, rsd
 from montecosmo.metrics import power_spectrum
-from jaxpm.pm import lpt
+
+from jax.experimental.ode import odeint
+from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
 from jax_cosmo import Planck15
+
 
 
 
@@ -28,7 +31,7 @@ default_config={
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Debugging
             'trace_reparam':False, 
-            'trace_deterministic':False,
+            'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
             # Prior config {name: (label, mean, std)}
             'prior_config':{'Omega_c':['{\Omega}_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
                             'sigma8':['{\sigma}_8', 0.831, 0.14],
@@ -94,7 +97,7 @@ def pmrsd_model_fn(latent_params,
                 a_obs, 
                 galaxy_density, # in galaxy / (Mpc/h)^3
                 trace_reparam, 
-                trace_deterministic,
+                trace_meshes,
                 prior_config,):
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
@@ -105,33 +108,49 @@ def pmrsd_model_fn(latent_params,
     # Create regular grid of particles
     x_part = jnp.indices(mesh_size).reshape(3,-1).T
 
-    # Lagrangian bias expansion weights
+    # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
     lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_size, **biases, **init_mesh)
 
-    # LPT displacement
+    # LPT displacement at a_lpt
     cosmology._workspace = {}  # HACK: temporary fix
     dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
     # and correct by growth factor to get forces at wanted scale factor
     x_part = x_part + dx
 
-    # XXX: here N-body displacement
-    # x_part, v_part = ... PM(a_lpt -> a_obs)
+    # PM displacement from a_lpt to a_obs
+    assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
+    if a_lpt < a_obs:
+        if isinstance(trace_meshes, int) and trace_meshes >= 2:
+            # NOTE: For historic reasons, bool is a subclass of int
+            snapshots = np.linspace(a_lpt, a_obs, trace_meshes)
+        else:
+            snapshots = np.linspace(a_lpt, a_obs, 2) # TODO: always do maximum(trace_meshes, 2)
 
-    if trace_deterministic: 
-        x_part = deterministic('pm_part', x_part)
+        res = odeint(make_ode_fn(mesh_size), [x_part, p_part], snapshots, cosmology, rtol=1e-5, atol=1e-5)
+        x_parts, p_parts = res
 
-    # RSD displacement
+        if trace_meshes: 
+            x_parts = deterministic('pm_parts', x_parts)
+
+        x_part, p_part = x_parts[-1], p_parts[-1]
+
+    else:
+        if trace_meshes: 
+            x_part = deterministic('pm_parts', jnp.repeat(x_part[None], trace_meshes, axis=0))[-1]
+
+
+     # RSD displacement at a_obs
     dx_rsd = rsd(cosmology, a_obs, p_part)
     x_part = x_part + dx_rsd
 
-    if trace_deterministic: 
+    if trace_meshes: 
         x_part = deterministic('rsd_part', x_part)
 
-    # CIC paint weighted by Lagrangian bias expansion
+    # CIC paint weighted by Lagrangian bias expansion weights
     biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
 
-    if trace_deterministic: 
+    if trace_meshes: 
         biased_mesh = deterministic('biased_mesh', biased_mesh)
     
     # Scale mesh by galaxy density
@@ -145,7 +164,7 @@ def pmrsd_model(mesh_size,
                   a_obs, 
                   galaxy_density, # in galaxy / (Mpc/h)^3
                   trace_reparam, 
-                  trace_deterministic,
+                  trace_meshes,
                   prior_config,
                   lik_config,
                   noise=0.):
@@ -164,7 +183,7 @@ def pmrsd_model(mesh_size,
                                 a_obs, 
                                 galaxy_density, # in galaxy / (Mpc/h)^3
                                 trace_reparam, 
-                                trace_deterministic,
+                                trace_meshes,
                                 prior_config,)
 
     # Sample from likelihood
