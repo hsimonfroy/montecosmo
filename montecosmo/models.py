@@ -37,8 +37,8 @@ default_config={
                             'sigma8':['{\sigma}_8', 0.831, 0.14],
                             'b1':['{b}_1', 1, 0.5],
                             'b2':['{b}_2', 0, 0.5],
-                            'bs':['{b}_s', 0, 0.5],
-                            'bnl':['{b}_{\\text{nl}}', 0, 0.5]},
+                            'bs2':['{b}_{s^2}', 0, 0.5],
+                            'bn2':['{b}_{\\nabla^2}', 0, 0.5]},
             # Likelihood config
             'lik_config':{'obs_std':1}                    
             }
@@ -62,12 +62,12 @@ def prior_model(mesh_size, noise=0., **config):
     # Sample latent Lagrangian biases
     b1_  = sample('b1_',  dist.Normal(0, sigma))
     b2_  = sample('b2_',  dist.Normal(0, sigma))
-    bs_  = sample('bs_',  dist.Normal(0, sigma))
-    bnl_ = sample('bnl_', dist.Normal(0, sigma))
+    bs2_  = sample('bs2_',  dist.Normal(0, sigma))
+    bn2_ = sample('bn2_', dist.Normal(0, sigma))
 
     params_ = dict(Omega_c_=Omega_c_, sigma8_=sigma8_, 
                    init_mesh_=init_mesh_, 
-                   b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
+                   b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
 
     return params_
 
@@ -95,10 +95,43 @@ def pmrsd_model_fn(latent_params,
                 box_size,
                 a_lpt,
                 a_obs, 
-                galaxy_density, # in galaxy / (Mpc/h)^3
+                galaxy_density,
                 trace_reparam, 
                 trace_meshes,
                 prior_config,):
+    """
+    Parameters
+    ----------
+    latent_params : dict
+        Latent parameters typically drawn from prior.
+
+    mesh_size : array_like of int
+        Size of the mesh.
+
+    box_size : array_like
+        Size of the box in Mpc/h. Typically aim for cell lengths between 1 and 10 Mpc/h.
+
+    a_lpt : float
+        Scale factor to which compute Lagrangian Perturbation Theory (LPT) displacement.
+        If equal to a_obs, no Particule Mesh (PM) step is computed.
+
+    a_obs : float
+        Scale factor of observations.
+        If equal to a_lpt, no Particule Mesh (PM) step is computed.
+
+    galaxy_density : float
+        Galaxy density in galaxy / (Mpc/h)^3.
+
+    trace_reparam : bool
+        If True, trace reparametrized deterministic parameters.
+
+    trace_meshes : bool, int
+        If True, trace intermediary meshes.
+        If int, number of PM mesh snapshots (LPT included) to trace.
+
+    prior_config : dict
+        Prior configuration.
+    """
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
     cosmology = Planck15(**cosmo)
@@ -120,8 +153,10 @@ def pmrsd_model_fn(latent_params,
 
     # PM displacement from a_lpt to a_obs
     # assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
+    # assert(a_lpt < a_obs or 0 <= trace_meshes <= 1), \
+    #     "required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {a_lpt:.2f}"
     if trace_meshes == 1:
-        x_part = deterministic('pm_parts', x_part[None])[0]
+        x_part = deterministic('pm_part', x_part[None])[0]
 
     if a_lpt < a_obs:
         if trace_meshes < 2: trace_meshes = 2 # XXX: jnp.maximum would not jit
@@ -130,16 +165,19 @@ def pmrsd_model_fn(latent_params,
         x_parts, p_parts = res
 
         if trace_meshes >= 2:
-            x_parts = deterministic('pm_parts', x_parts)
+            x_parts = deterministic('pm_part', x_parts)
 
         x_part, p_part = x_parts[-1], p_parts[-1]
 
-    # elif trace_meshes >= 2: print(f"warning: required trace_meshes={trace_meshes:d} LPT+PM snapshots, "+
-    #                               f"but a_lpt == a_obs == {a_lpt:.2f}. Only LPT mesh would be returned")
+        
+    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
+    if trace_meshes: 
+        biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
     # RSD displacement at a_obs
-    dx_rsd = rsd(cosmology, a_obs, jnp.zeros_like(x_part))
-    x_part = x_part + dx_rsd
+    dx = rsd(cosmology, a_obs, p_part)
+    # dx = rsd(cosmology, a_obs, jnp.zeros_like(x_part))
+    x_part = x_part + dx
 
     if trace_meshes: 
         x_part = deterministic('rsd_part', x_part)
@@ -148,7 +186,7 @@ def pmrsd_model_fn(latent_params,
     biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
 
     if trace_meshes: 
-        biased_mesh = deterministic('biased_mesh', biased_mesh)
+        biased_mesh = deterministic('bias_mesh', biased_mesh)
     
     # Scale mesh by galaxy density
     gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
@@ -168,6 +206,41 @@ def pmrsd_model(mesh_size,
     """
     A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
     The relevant variables can be traced.
+
+    Parameters
+    ----------
+    mesh_size : array_like of int
+        Size of the mesh.
+
+    box_size : array_like
+        Size of the box in Mpc/h. Typically aim for cell lengths between 1 and 10 Mpc/h.
+
+    a_lpt : float
+        Scale factor to which compute Lagrangian Perturbation Theory (LPT) displacement.
+        If equal to a_obs, no Particule Mesh (PM) step is computed.
+
+    a_obs : float
+        Scale factor of observations.
+        If equal to a_lpt, no Particule Mesh (PM) step is computed.
+
+    galaxy_density : float
+        Galaxy density in galaxy / (Mpc/h)^3
+
+    trace_reparam : bool
+        If True, trace reparametrized deterministic parameters.
+
+    trace_meshes : bool, int
+        If True, trace intermediary meshes.
+        If int, number of PM mesh snapshots (LPT included) to trace.
+
+    prior_config : dict
+        Prior configuration.
+
+    lik_config : dict 
+        Likelihood configuration.
+
+    Noise : float
+        Noise level.
     """
     # Sample from prior
     latent_params = prior_model(mesh_size)
@@ -263,7 +336,7 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
     """
     def param_fn(Omega_c_=None, sigma8_=None, 
                    init_mesh_=None, 
-                   b1_=None, b2_=None, bs_=None, bnl_=None, 
+                   b1_=None, b2_=None, bs2_=None, bn2_=None, 
                    **params_):
         """
         Partially replay model, i.e. transform latent params into params of interest.
@@ -277,8 +350,8 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
 
-        if not any([v is None for v in [b1_, b2_, bs_, bnl_]]):
-            biases = get_biases(prior_config, trace_reparam, b1_=b1_, b2_=b2_, bs_=bs_, bnl_=bnl_)
+        if not any([v is None for v in [b1_, b2_, bs2_, bn2_]]):
+            biases = get_biases(prior_config, trace_reparam, b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
         else: biases = {}
 
         params = dict(**cosmo, **init_mesh, **biases)

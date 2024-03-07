@@ -227,7 +227,8 @@ def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:
     for path, start, end in zip(paths, starts, ends):
         samples.append(_load_runs(path, start, end, var_names, verbose))
 
-    if isinstance(load_path,str):
+    # if isinstance(load_path, str):
+    if paths is load_path:
         return samples[0]
     else:
         return samples 
@@ -295,18 +296,16 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
     """
     Construct getdist MCSamples from samples. 
     """
-    ps_ = np.atleast_1d(samples)
+    params = np.atleast_1d(samples)
     label = np.atleast_1d(label)
-    # if label is not None:
-    assert len(ps_)==len(label), "lists must have the same lengths."
-    # else:
-        # label = np.broadcast_to(label, ps_.shape)
+    assert len(params)==len(label), "lists must have the same lengths."
     gdsamples = []
 
-    for p_, lab in zip(ps_, label):
-        gdsamples.append(_get_gdsamples(p_, prior_config, lab, verbose))
+    for par, lab in zip(params, label):
+        gdsamples.append(_get_gdsamples(par, prior_config, lab, verbose))
 
-    if isinstance(samples,dict):
+    # if isinstance(samples, dict):
+    if params is samples:
         return gdsamples[0]
     else:
         return gdsamples 

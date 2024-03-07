@@ -62,7 +62,7 @@ def get_biases(prior_config, trace_reparam=False, **params_) -> dict:
     Return biases from latent values.
     """
     biases = {}
-    for name in ['b1', 'b2', 'bs', 'bnl']:
+    for name in ['b1', 'b2', 'bs2', 'bn2']:
         _, mean, std = prior_config[name]
         value = params_[name+'_'] * std + mean
         if trace_reparam:
@@ -72,12 +72,12 @@ def get_biases(prior_config, trace_reparam=False, **params_) -> dict:
 
 
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_size, 
-                       b1, b2, bs, bnl, init_mesh, **params):
+                       b1, b2, bs2, bn2, init_mesh, **params):
     """
     Return Lagrangian bias expansion weight as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
-        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_s \left(s^2 - \braket{s^2}\right) + b_{\text{nl}} \nabla^2 delta
+        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_{s^2} \left(s^2 - \braket{s^2}\right) + b_{\nabla^2} \nabla^2 delta
     """    
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
@@ -100,7 +100,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     delta_sqr_part = delta_part**2
     weights = weights + b2 * (delta_sqr_part - delta_sqr_part.mean())
 
-    # Apply bshear
+    # Apply bshear2
     delta_k = jnp.fft.rfftn(init_mesh)
     mesh_size = init_mesh.shape
     kvec = fftk(mesh_size)
@@ -119,15 +119,15 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
             shear_sqr = shear_sqr + 2 * jnp.fft.irfftn(ki * kj * pot_k)**2
 
     shear_sqr_part = cic_read(shear_sqr, pos)
-    weights = weights + bs * (shear_sqr_part - shear_sqr_part.mean())
+    weights = weights + bs2 * (shear_sqr_part - shear_sqr_part.mean())
 
-    # Apply bnl
+    # Apply bnabla2
     kk_box = sum((ki  * (m / l))**2 
                  for ki, m, l in zip(kvec, mesh_size, box_size)) # laplace kernel in h/Mpc physical units
     delta_nl = jnp.fft.irfftn(kk_box * delta_k)
 
     delta_nl_part = cic_read(delta_nl, pos)
-    weights = weights + bnl * delta_nl_part
+    weights = weights + bn2 * delta_nl_part
 
     # jax.debug.print('Number of strict negative weights={i}', i=(weights<0).sum())
     return weights
