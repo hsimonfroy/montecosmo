@@ -1,3 +1,5 @@
+from __future__ import annotations # for Union typing with | in python<3.10
+
 import numpyro.distributions as dist
 from numpyro import sample, deterministic
 from numpyro.handlers import seed, condition, trace

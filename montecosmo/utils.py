@@ -1,3 +1,5 @@
+from __future__ import annotations # for Union typing | in python<3.10
+
 import os
 from pickle import dump, load, HIGHEST_PROTOCOL
 
@@ -17,6 +19,7 @@ from numpyro.diagnostics import print_summary
 from getdist.gaussian_mixtures import GaussianND
 from getdist import MCSamples
 from collections.abc import Iterable
+
 
 
 
