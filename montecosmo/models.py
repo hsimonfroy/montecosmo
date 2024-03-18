@@ -7,11 +7,11 @@ from numpyro.infer.util import log_density
 import numpy as np
 
 import jax.numpy as jnp
-from jax import random, jit, vmap, grad
+from jax import random, jit, vmap, grad, debug
 from jax.tree_util import tree_map
 from functools import partial, wraps
 
-from montecosmo.bricks import get_cosmo, get_init_mesh, get_biases, lagrangian_weights, rsd
+from montecosmo.bricks import get_cosmo, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn, get_odeint_fn
 from montecosmo.metrics import power_spectrum
 
 from jax.experimental.ode import odeint
@@ -19,7 +19,7 @@ from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
 from jax_cosmo import Planck15
 
-
+from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
 
 
 default_config={
@@ -151,25 +151,49 @@ def pmrsd_model_fn(latent_params,
     dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
     # and correct by growth factor to get forces at wanted scale factor
-    x_part = x_part + dx
+    # x_part = x_part + dx
+    particles = jnp.concatenate((x_part + dx, p_part), axis=-1)
 
     # PM displacement from a_lpt to a_obs
     # assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
     # assert(a_lpt < a_obs or 0 <= trace_meshes <= 1), \
     #     "required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {a_lpt:.2f}"
     if trace_meshes == 1:
-        x_part = deterministic('pm_part', x_part[None])[0]
+        particles = deterministic('pm_part', particles[None])[0]
 
     if a_lpt < a_obs:
-        if trace_meshes < 2: trace_meshes = 2 # XXX: jnp.maximum would not jit
-        snapshots = jnp.linspace(a_lpt, a_obs, trace_meshes)
-        res = odeint(make_ode_fn(mesh_size), [x_part, p_part], snapshots, cosmology, rtol=1e-5, atol=1e-5)
-        x_parts, p_parts = res
+        # PM solve with jax odeint
+        debug.print("odeint2")
+        if trace_meshes < 2: 
+            snapshots = jnp.linspace(a_lpt, a_obs, 2) # XXX: jnp.maximum would not jit
+        else: 
+            snapshots = jnp.linspace(a_lpt, a_obs, trace_meshes)
+        xs, ps = odeint(make_ode_fn(mesh_size), (particles[:,:3], particles[:,3:]), snapshots, cosmology, rtol=1e-5, atol=1e-5)
+        particles = jnp.concatenate((xs, ps), axis=-1)
+        # particles = odeint(get_odeint_fn(cosmology, mesh_size), particles, snapshots, (), rtol=1e-5, atol=1e-5)
+
+        # # PM solve with diffrax diffeqsolve
+        # debug.print("diffrax11")
+        # terms = ODETerm(get_ode_fn(cosmology, mesh_size))
+        # solver = Dopri5()
+        # controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0, icoeff=1, dcoeff=0)
+        # if trace_meshes < 2: 
+        #     saveat = SaveAt(t1=True)
+        # else: 
+        #     saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))
+        # # sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=(x_part, p_part),
+        # #                      stepsize_controller=controller, max_steps=1000, saveat=saveat)       
+        # sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
+        #                      stepsize_controller=controller, max_steps=100, saveat=saveat)
+        # particles = sol.ys
+        # debug.print("num_steps: {n}", n=sol.stats['num_steps'])
 
         if trace_meshes >= 2:
-            x_parts = deterministic('pm_part', x_parts)
+            particles = deterministic('pm_part', particles)
+            # particles = deterministic('pm_part', jnp.concatenate((x_part, p_part), axis=-1))
 
-        x_part, p_part = x_parts[-1], p_parts[-1]
+        particles = particles[-1]
+        # x_part, p_part = x_part[-1], p_part[-1]
 
         
     # biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
@@ -177,15 +201,17 @@ def pmrsd_model_fn(latent_params,
     #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
     # RSD displacement at a_obs
-    dx = rsd(cosmology, a_obs, p_part)
-    # dx = rsd(cosmology, a_obs, jnp.zeros_like(x_part))
-    x_part = x_part + dx
+    dx = rsd(cosmology, a_obs, particles[:,3:])
+    particles = particles.at[:,:3].add(dx)
+    # dx = rsd(cosmology, a_obs, p_part)
+    # x_part = x_part + dx
 
     if trace_meshes: 
-        x_part = deterministic('rsd_part', x_part)
+        particles = deterministic('rsd_part', particles)
 
     # CIC paint weighted by Lagrangian bias expansion weights
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
+    biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
+    # biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
 
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)
