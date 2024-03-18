@@ -172,9 +172,9 @@ def pmrsd_model_fn(latent_params,
         x_part, p_part = x_parts[-1], p_parts[-1]
 
         
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
-    if trace_meshes: 
-        biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
+    # biased_mesh = cic_paint(jnp.zeros(mesh_size), x_part, lbe_weights)
+    # if trace_meshes: 
+    #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
     # RSD displacement at a_obs
     dx = rsd(cosmology, a_obs, p_part)

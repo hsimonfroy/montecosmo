@@ -1,4 +1,4 @@
-# If using conda/mamba, don't forget to `mamba update -n base -c conda-forge mamba`
+# If using conda/mamba, may have to `mamba update -n base -c conda-forge mamba`
 name: montecosmoenv
 channels:
   - conda-forge
@@ -24,7 +24,9 @@ dependencies:
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
 
 # Optionally:
-# tensorflow-probability
+# - tensorflow
+# - tensorflow-datasets
+# - tensorflow-probability
 # - bccp::nbodykit # only for python<3.9
 # - ffmpeg
 # - sbi
