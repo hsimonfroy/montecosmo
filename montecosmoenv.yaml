@@ -34,6 +34,9 @@ dependencies:
 # - haiku
 # - optax
 # - git+https://github.com/sfschen/ZeNBu
+# DESI packages
+# - git+https://github.com/cosmodesi/desilike#egg=desilike[plotting]
+# - git+https://github.com/cosmodesi/cosmoprimo#egg=cosmoprimo[class,camb,astropy,extras]
 
 # If ptxas version not up to date:
 # mamba install -c nvidia cuda-nvcc 

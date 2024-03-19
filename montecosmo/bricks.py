@@ -144,6 +144,26 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     return pk_fn
 
 
+def get_ode_fn(cosmo:Cosmology, mesh_size):
+
+    def nbody_ode(a, state, args):
+        """
+        state is a phase space state array [*position, *velocities]
+        """
+        pos, vel = state[:,:3], state[:,3:]
+        forces = pm_forces(pos, mesh_shape=mesh_size) * 1.5 * cosmo.Omega_m
+
+        # Computes the update of position (drift)
+        dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
+        
+        # Computes the update of velocity (kick)
+        dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
+
+        return jnp.concatenate((dpos, dvel), axis=-1)
+
+    return nbody_ode
+
+
 def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
@@ -191,48 +211,5 @@ def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
 
 
 
-def get_ode_fn(cosmo:Cosmology, mesh_size):
-
-    def nbody_ode(a, state, args):
-        """
-        state is a phase space state array [*position, *velocities]
-        """
-        pos, vel = state[:,:3], state[:,3:]
-        forces = pm_forces(pos, mesh_shape=mesh_size) * 1.5 * cosmo.Omega_m
-
-        # Computes the update of position (drift)
-        dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
-        
-        # Computes the update of velocity (kick)
-        dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
-
-        # state = state.at[:,:3].set(dpos)
-        # state = state.at[:,3:].set(dvel)
-        # return state
-        return jnp.concatenate((dpos, dvel), axis=-1)
-
-    return nbody_ode
-
-
-
-
-
-def get_odeint_fn(cosmo:Cosmology, mesh_size):
-
-    def nbody_ode(state, a, args):
-        """
-        state is a phase space state array [*position, *velocities]
-        """
-        pos, vel = state[:,:3], state[:,3:]
-        forces = pm_forces(pos, mesh_shape=mesh_size) * 1.5 * cosmo.Omega_m
-
-        # Computes the update of position (drift)
-        dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
-        
-        # Computes the update of velocity (kick)
-        dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
-        return jnp.concatenate((dpos, dvel), axis=-1)
-
-    return nbody_ode
 
 
