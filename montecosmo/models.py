@@ -169,7 +169,7 @@ def pmrsd_model_fn(latent_params,
         else: 
             saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                             stepsize_controller=controller, max_steps=100, saveat=saveat)
+                             stepsize_controller=controller, max_steps=1000, saveat=saveat)
         particles = sol.ys
         # debug.print("num_steps: {n}", n=sol.stats['num_steps'])
 
@@ -177,7 +177,8 @@ def pmrsd_model_fn(latent_params,
             particles = deterministic('pm_part', particles)
 
         particles = particles[-1]
-        
+    
+    # Uncomment only to trace bias mesh without rsd
     biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
     if trace_meshes: 
         biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
