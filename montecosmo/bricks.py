@@ -50,6 +50,8 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, **p
 
     # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
     # init_mesh = init_mesh * jnp.exp(-.5 * kmesh**2 / k_nyquist**2)
+    # from jax import debug
+    # debug.print('init smoothed')
     
     init_mesh = jnp.fft.irfftn(init_mesh)
 
@@ -85,11 +87,12 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     init_mesh = init_mesh * growth_factor(cosmo, a)
 
     # mesh_size = init_mesh.shape
-    # init_mesh = jnp.fft.rfftn(init_mesh)
+    # delta_k = jnp.fft.rfftn(init_mesh)
     # kvec = fftk(mesh_size)
     # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
-    # kkmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))
-    # init_mesh = jnp.fft.irfftn(init_mesh * jnp.exp(-.5 * kkmesh / k_nyquist**2))
+    # kk_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))
+    # delta_k = delta_k * jnp.exp(-.5 * kk_box / k_nyquist**2)
+    # init_mesh = jnp.fft.irfftn(delta_k)
 
     weights = 1
     
