@@ -46,32 +46,61 @@ default_config={
             }
 
 
-def prior_model(mesh_size, noise=0., **config):
+def prior_model(mesh_size, prior_config, **config):
     """
     A prior for cosmological model. 
 
     Return latent params for computing cosmology, initial conditions, and Lagrangian biases.
     """
-    sigma = jnp.sqrt(1+noise**2)
 
-    # Sample latent cosmology
-    Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
-    sigma8_  = sample('sigma8_' , dist.Normal(0, sigma))
+    # Sample latent cosmology and Lagrangian biases
+    params_ = {}
+    
+    # Standard param
+    for name in prior_config:
+        name_ = name+'_'
+        params_[name_] = sample(name_, dist.Normal(0, 1))
+
+    # # Unstandard param
+    # for name in prior_config:
+    #     name_ = name+'_'
+    #     _, mean, std = prior_config[name]
+    #     param = sample(name_, dist.Normal(mean, std))
+    #     params_[name_] = (param - mean) / std
 
     # Sample latent initial conditions
-    init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
-
-    # Sample latent Lagrangian biases
-    b1_  = sample('b1_',  dist.Normal(0, sigma))
-    b2_  = sample('b2_',  dist.Normal(0, sigma))
-    bs2_  = sample('bs2_',  dist.Normal(0, sigma))
-    bn2_ = sample('bn2_', dist.Normal(0, sigma))
-
-    params_ = dict(Omega_c_=Omega_c_, sigma8_=sigma8_, 
-                   init_mesh_=init_mesh_, 
-                   b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
+    name_ = 'init_mesh_'
+    params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
 
     return params_
+
+
+# def prior_model(mesh_size, prior_config, noise=0., **config):
+#     """
+#     A prior for cosmological model. 
+
+#     Return latent params for computing cosmology, initial conditions, and Lagrangian biases.
+#     """
+#     sigma = jnp.sqrt(1+noise**2)
+
+#     # Sample latent initial conditions
+#     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
+
+#     # Sample latent cosmology
+#     Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
+#     sigma8_  = sample('sigma8_' , dist.Normal(0, sigma))
+
+#     # Sample latent Lagrangian biases
+#     b1_  = sample('b1_',  dist.Normal(0, sigma))
+#     b2_  = sample('b2_',  dist.Normal(0, sigma))
+#     bs2_  = sample('bs2_',  dist.Normal(0, sigma))
+#     bn2_ = sample('bn2_', dist.Normal(0, sigma))
+
+#     params_ = dict(Omega_c_=Omega_c_, sigma8_=sigma8_, 
+#                    init_mesh_=init_mesh_, 
+#                    b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
+
+#     return params_
 
 
 def likelihood_model(mean_mesh, lik_config, noise=0., **config):
@@ -183,9 +212,9 @@ def pmrsd_model_fn(latent_params,
     # if trace_meshes: 
     #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
-    # RSD displacement at a_obs
-    dx = rsd(cosmology, a_obs, particles[:,3:])
-    particles = particles.at[:,:3].add(dx)
+    # # RSD displacement at a_obs
+    # dx = rsd(cosmology, a_obs, particles[:,3:])
+    # particles = particles.at[:,:3].add(dx)
 
     if trace_meshes: 
         particles = deterministic('rsd_part', particles)
@@ -251,7 +280,7 @@ def pmrsd_model(mesh_size,
         Noise level.
     """
     # Sample from prior
-    latent_params = prior_model(mesh_size)
+    latent_params = prior_model(mesh_size, prior_config)
 
     # Compute deterministic model function
     gxy_mesh = pmrsd_model_fn(latent_params,

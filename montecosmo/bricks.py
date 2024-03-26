@@ -186,9 +186,6 @@ def kaiser_weights(cosmo:Cosmology, a, mesh_size, los):
     a = jnp.atleast_1d(a)
 
     kvec = fftk(mesh_size)
-    # kshapes = jnp.eye(len(mesh_size), dtype=jnp.int16) * -2 + 1
-    # kvec = [2 * jnp.pi *jnp.fft.fftfreq(m).reshape(kshape)
-    #         for m, kshape in zip(mesh_size, kshapes)]
     kmesh = sum(kk**2 for kk in kvec)**0.5
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
@@ -206,8 +203,6 @@ def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
 
     # Apply eulerian kaiser bias weights
     weights = kaiser_weights(cosmo, a, init_mesh.shape, los)
-    # delta_k = jnp.fft.fftn(init_mesh)
-    # kaiser_mesh = jnp.fft.ifftn(weights * delta_k)
     delta_k = jnp.fft.rfftn(init_mesh)
     kaiser_mesh = jnp.fft.irfftn(weights * delta_k)
     return kaiser_mesh
