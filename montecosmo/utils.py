@@ -136,18 +136,19 @@ def theme_switch(dark_theme=False, use_TeX=False):
 #     pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
 
 
-def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, extra_fields:list=[]):
+def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, 
+             extra_fields:list=[], group_by_chain:bool=True):
     """
     Save one run of MCMC sampling, with extra fields and last state.
     If `var_names` is None, save all the variables.
     """
     # Save samples (and extra fields)
-    samples = mcmc.get_samples()
+    samples = mcmc.get_samples(group_by_chain)
     if var_names is not None:
         samples = {key: samples[key] for key in var_names}
 
     if extra_fields:
-        extra = mcmc.get_extra_fields()
+        extra = mcmc.get_extra_fields(group_by_chain)
         samples.update(extra)
         del extra
 
@@ -158,7 +159,8 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, extra_fie
     pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
 
 
-def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, extra_fields:list=[], rng_key=jr.PRNGKey(0)) -> MCMC:
+def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 
+                    extra_fields:list=[], rng_key=jr.key(0), group_by_chain:bool=True) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
     Do `mcmc.num_warmup` warmup steps, followed by `n_runs` times `mcmc.num_samples` sampling steps.
@@ -170,7 +172,7 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, e
 
         # Warmup
         mcmc.warmup(rng_key, collect_warmup=True, extra_fields=extra_fields)
-        save_run(mcmc, 0, save_path, var_names, extra_fields)
+        save_run(mcmc, 0, save_path, var_names, extra_fields, group_by_chain)
 
         # Handling rng key
         key_run = mcmc.post_warmup_state.rng_key

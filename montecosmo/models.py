@@ -212,9 +212,9 @@ def pmrsd_model_fn(latent_params,
     # if trace_meshes: 
     #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
-    # # RSD displacement at a_obs
-    # dx = rsd(cosmology, a_obs, particles[:,3:])
-    # particles = particles.at[:,:3].add(dx)
+    # RSD displacement at a_obs
+    dx = rsd(cosmology, a_obs, particles[:,3:])
+    particles = particles.at[:,:3].add(dx)
 
     if trace_meshes: 
         particles = deterministic('rsd_part', particles)
