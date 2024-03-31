@@ -37,10 +37,10 @@ default_config={
             # Prior config {name: (label, mean, std)}
             'prior_config':{'Omega_c':['{\Omega}_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
                             'sigma8':['{\sigma}_8', 0.831, 0.14],
-                            'b1':['{b}_1', 1, 0.5],
-                            'b2':['{b}_2', 0, 0.5],
-                            'bs2':['{b}_{s^2}', 0, 0.5],
-                            'bn2':['{b}_{\\nabla^2}', 0, 0.5]},
+                            'b1':['{b}_1', 1., 0.5],
+                            'b2':['{b}_2', 0., 0.5],
+                            'bs2':['{b}_{s^2}', 0., 0.5],
+                            'bn2':['{b}_{\\nabla^2}', 0., 0.5]},
             # Likelihood config
             'lik_config':{'obs_std':1}                    
             }
@@ -57,16 +57,16 @@ def prior_model(mesh_size, prior_config, **config):
     params_ = {}
     
     # Standard param
-    for name in prior_config:
-        name_ = name+'_'
-        params_[name_] = sample(name_, dist.Normal(0, 1))
-
-    # # Unstandard param
     # for name in prior_config:
     #     name_ = name+'_'
-    #     _, mean, std = prior_config[name]
-    #     param = sample(name_, dist.Normal(mean, std))
-    #     params_[name_] = (param - mean) / std
+    #     params_[name_] = sample(name_, dist.Normal(0, 1))
+
+    # # Unstandard param
+    for name in prior_config:
+        name_ = name+'_'
+        _, mean, std = prior_config[name]
+        param = sample(name_, dist.Normal(mean, std))
+        params_[name_] = (param - mean) / std
 
     # Sample latent initial conditions
     name_ = 'init_mesh_'
@@ -431,7 +431,8 @@ def condition_on_config_mean(model, prior_config=None, **config):
     if prior_config is None:
         assert isinstance(model, partial), "No 'prior_config' found."
         prior_config = model.keywords['prior_config']
-    params = {name+'_':0. for name in prior_config}
+    # params = {name+'_':0. for name in prior_config}
+    params = {name+'_':prior_config[name][1] for name in prior_config}
     return condition(model, params)
 
 
