@@ -57,34 +57,22 @@ def prior_model(mesh_size, prior_config, **config):
     params_ = {}
     
     # Standard param
-    # for name in prior_config:
-    #     name_ = name+'_'
-    #     params_[name_] = sample(name_, dist.Normal(0, 1))
-
-    # # Unstandard param
     for name in prior_config:
         name_ = name+'_'
-        _, mean, std = prior_config[name]
-        param = sample(name_, dist.Normal(mean, std))
-        params_[name_] = (param - mean) / std
+        params_[name_] = sample(name_, dist.Normal(0, 1))
+
+    # # Unstandard param
+    # for name in prior_config:
+    #     name_ = name+'_'
+    #     _, mean, std = prior_config[name]
+    #     param = sample(name_, dist.Normal(mean, std))
+    #     params_[name_] = (param - mean) / std
 
     # Sample latent initial conditions
     name_ = 'init_mesh_'
     params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
 
     return params_
-
-
-# def prior_model(mesh_size, prior_config, noise=0., **config):
-#     """
-#     A prior for cosmological model. 
-
-#     Return latent params for computing cosmology, initial conditions, and Lagrangian biases.
-#     """
-#     sigma = jnp.sqrt(1+noise**2)
-
-#     # Sample latent initial conditions
-#     init_mesh_ = sample('init_mesh_', dist.Normal(jnp.zeros(mesh_size), sigma*jnp.ones(mesh_size)))
 
 #     # Sample latent cosmology
 #     Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
@@ -100,7 +88,7 @@ def prior_model(mesh_size, prior_config, **config):
 #                    init_mesh_=init_mesh_, 
 #                    b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
 
-#     return params_
+
 
 
 def likelihood_model(mean_mesh, lik_config, noise=0., **config):
@@ -431,8 +419,8 @@ def condition_on_config_mean(model, prior_config=None, **config):
     if prior_config is None:
         assert isinstance(model, partial), "No 'prior_config' found."
         prior_config = model.keywords['prior_config']
-    # params = {name+'_':0. for name in prior_config}
-    params = {name+'_':prior_config[name][1] for name in prior_config}
+    params = {name+'_':0. for name in prior_config}
+    # params = {name+'_':prior_config[name][1] for name in prior_config}
     return condition(model, params)
 
 
@@ -457,66 +445,3 @@ def get_noise_fn(t0, t1, noises, steps=False):
             return (s2 - s1)*(i_t - i_t1) + s1
     return noise_fn
 
-
-
-# def get_logp_fn(model, cond_params={}):
-#     """
-#     Return a model log probabilty function, conditioned on some parameters.
-#     """
-#     vlogp_model = vmap(partial(logp_model, model, cond_params), in_axes=(0,None))
-#     @get_jit
-#     def logp_fn(params, model_kwargs={}):
-#         """
-#         Return the model log probabilty, evaluated on some parameters.
-#         """
-#         return vlogp_model(params, model_kwargs)
-
-#     return logp_fn
-
-# def get_score_fn(model, cond_params={}):
-#     """
-#     Return a model score function, conditioned on some parameters.
-#     """
-#     score_model = grad(partial(logp_model, model, cond_params), argnums=0)
-#     vscore_model = vmap(score_model, in_axes=(0,None))
-#     @get_jit()
-#     def score_fn(params, model_kwargs={}):
-#         """
-#         Return the model score, evaluated on some parameters.
-#         """
-#         return vscore_model(params, model_kwargs)
-    
-#     return score_fn 
-
-# def get_simulator(model, cond_params={}):
-#     """
-#     Return a simulator that samples from a model conditioned on some parameters.
-#     """
-#     def sample_model(model, cond_params, rng_seed=0, model_kwargs={}):
-#         if len(model_kwargs)==0:
-#             model_kwargs = {}
-#         cond_model = condition(model, cond_params) # NOTE: Only condition on random sites
-#         cond_trace = trace(seed(cond_model, rng_seed=rng_seed)).get_trace(**model_kwargs)
-#         params = {name: cond_trace[name]['value'] for name in cond_trace.keys()}
-#         return params
-
-#     vsample_model = vmap(partial(sample_model, model, cond_params), in_axes=(None,0))
-#     vvsample_model = vmap(vsample_model, in_axes=(0,None))
-
-#     @get_jit(static_argnames=('batch_size'))
-#     def simulator(batch_size=1, rng_key=random.PRNGKey(0), model_kwargs={}):
-#         """
-#         Sample batches from model. If they are both strict greater than one, 
-#         batch size would be left-most dimension, and model arguments size the second left-most.
-#         """
-#         squeeze_axis = []
-#         if batch_size==1:
-#             squeeze_axis.append(0)
-#         if len(model_kwargs)==0:
-#             model_kwargs = jnp.array([[]]) # for vmap, because jnp.array([{}]) is not valid
-#             squeeze_axis.append(1)
-#         keys = random.split(rng_key, batch_size)
-#         params = vvsample_model(keys, model_kwargs)
-#         return {name: params[name].squeeze(axis=squeeze_axis) for name in params.keys()}
-
-#     return simulator
