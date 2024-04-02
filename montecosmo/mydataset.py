@@ -6,7 +6,7 @@ from jax.tree_util import tree_map
 from functools import partial
 
 import tensorflow_datasets as tfds
-from tensorflow_datasets.core.utils import gcs_utils
+# from tensorflow_datasets.core.utils import gcs_utils
 
 # disable internet connection
 # gcs_utils.gcs_dataset_info_files = lambda *args, **kwargs: None
@@ -79,7 +79,7 @@ class mydataset(tfds.core.GeneratorBasedBuilder):
             key, rng_key = jr.split(rng_key)
             simus = simulator(rng_seed=jr.split(key, batch_size))
             print(simus)
-            # yield simus
-            for j_b in range(batch_size):
-                yield f"{i_b}-{j_b}",{key: simus[key][j_b] for key in simus}
+            yield simus
+            # for j_b in range(batch_size):
+            #     yield f"{i_b}-{j_b}",{key: simus[key][j_b] for key in simus}
 

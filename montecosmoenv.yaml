@@ -24,16 +24,18 @@ dependencies:
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
 
 # Optionally:
-# - tensorflow
-# - tensorflow-datasets
-# - tensorflow-probability
-# - bccp::nbodykit # only for python<3.9
-# - ffmpeg
-# - sbi
-# - chainconsumer
-# - haiku
-# - optax
-# - git+https://github.com/sfschen/ZeNBu
+  # - tensorflow
+  # - tensorflow-datasets
+  # - tensorflow-probability
+  # - bccp::nbodykit # only for python<3.9
+  # - ffmpeg
+  # - sbi
+  # - chainconsumer
+  # - flax
+  # - optax
+  # - pip:
+  #   - jax_resnet
+  #   - git+https://github.com/sfschen/ZeNBu
 # DESI packages
 # - git+https://github.com/cosmodesi/desilike#egg=desilike[plotting]
 # - git+https://github.com/cosmodesi/cosmoprimo#egg=cosmoprimo[class,camb,astropy,extras]

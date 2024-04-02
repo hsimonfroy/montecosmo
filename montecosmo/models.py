@@ -42,7 +42,7 @@ default_config={
                             'bs2':['{b}_{s^2}', 0., 0.5],
                             'bn2':['{b}_{\\nabla^2}', 0., 0.5]},
             # Likelihood config
-            'lik_config':{'obs_std':1}                    
+            'lik_config':{'obs_std':1.}                    
             }
 
 
