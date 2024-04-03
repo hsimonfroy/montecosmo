@@ -6,7 +6,7 @@ from pickle import dump, load, HIGHEST_PROTOCOL
 import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
-from jax import jit
+from jax import jit, vmap, grad
 from jax.tree_util import tree_map
 from functools import wraps, partial
 
@@ -113,27 +113,7 @@ def theme_switch(dark_theme=False, use_TeX=False):
     return theme
 
 
-# def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, extra_fields:list=[]):
-#     """
-#     Save one run of MCMC sampling, with extra fields and last state.
-#     If `var_names` is None, save all the variables.
-#     """
-#     samples = mcmc.get_samples()
-#     if var_names is not None:
-#         samples = {key: samples[key] for key in var_names}
 
-#     # Save run
-#     pickle_dump(samples, save_path+f"_{i_run}.p")
-#     del samples
-
-#     # Save extra fields
-#     if extra_fields:
-#         extra = mcmc.get_extra_fields()
-#         pickle_dump(extra, save_path+f"_extra_{i_run}.p")
-#         del extra
-
-#     # Save or overwrite last state
-#     pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
 
 
 def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, 
@@ -192,29 +172,6 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None,
         key_run = mcmc.post_warmup_state.rng_key
     return mcmc
 
-
-# def _load_runs(load_path:str, start_run:int, end_run:int, var_names:Iterable[str]=None, conc_axis:int=0, verbose=False):
-#     if verbose:
-#         print(f"loading: {os.path.basename(load_path)}")
-
-#     for i_run in range(start_run, end_run+1):
-#         # Load
-#         samples_part = pickle_load(load_path+f"_{i_run}.p")   
-#         if var_names is not None: # NOTE: var_names should not be a consumable iterator
-#             samples_part = {key: samples_part[key] for key in var_names}
-
-#         # Init or append samples
-#         if i_run == start_run:
-#             samples = samples_part
-#         else:
-#             # samples = {key: jnp.concatenate((samples[key], samples_part[key])) for key in var_names}
-#             samples = tree_map(lambda x,y: jnp.concatenate((x, y), axis=conc_axis), samples, samples_part)
-            
-#     if verbose:
-#         # print(f"total run length: {samples[list(samples.keys())[0]].shape[0]}")
-#         n_samples, n_evals = samples['num_steps'].shape, samples['num_steps'].sum(axis=conc_axis)
-#         print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
-#     return samples
 
 def _load_runs(load_path:str, start_run:int, end_run:int, var_names:Iterable[str]=None, conc_axis:int=0, verbose=False):
     if verbose:
@@ -345,6 +302,22 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
     # if isinstance(samples, dict):
         return gdsamples[0]
     
+
+
+
+def tanh_push(x, a, b):
+    m, d = (b+a)/2, (b-a)/2
+    return d * jnp.tanh( (x-m)/d ) + m
+
+def invtanh_push(y, a, b):
+    m, d = (b+a)/2, (b-a)/2
+    return d * jnp.arctanh( (y-m)/d ) + m
+
+def pdf_push(pdf, y, a, b):
+    grad_fn = vmap(grad(partial(tanh_push, a=a, b=b)))
+    x = invtanh_push(y, a, b)
+    return pdf(x) / jnp.abs(grad_fn(x))
+
 
 ##### To plot a table ####
 # plt.subplot(position=[0,-0.01,1,1]), plt.axis('off')

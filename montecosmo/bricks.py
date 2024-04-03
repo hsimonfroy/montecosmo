@@ -8,6 +8,7 @@ from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
+from montecosmo.utils import tanh_push
 
 
 
@@ -20,6 +21,9 @@ def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
     for name in ['Omega_c', 'sigma8']:
         _, mean, std = prior_config[name]
         value = params_[name+'_'] * std + mean
+        if name == 'Omega_c':
+            value = tanh_push(value, 0,1) # set value in interval
+
         if trace_reparam:
             value = deterministic(name, value)
         cosmo[name] = value
