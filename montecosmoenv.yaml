@@ -29,11 +29,11 @@ dependencies:
   # - tensorflow-probability
   # - bccp::nbodykit # only for python<3.9
   # - ffmpeg
-  # - sbi
   # - chainconsumer
   # - flax
   # - optax
   # - pip:
+  #   - sbi
   #   - jax_resnet
   #   - git+https://github.com/sfschen/ZeNBu
 # DESI packages
