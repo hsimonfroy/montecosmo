@@ -313,9 +313,20 @@ def invtanh_push(y, a, b):
     m, d = (b+a)/2, (b-a)/2
     return d * jnp.arctanh( (y-m)/d ) + m
 
-def pdf_push(pdf, y, a, b):
+def pdf_tanh_push(pdf, y, a, b):
     grad_fn = vmap(grad(partial(tanh_push, a=a, b=b)))
     x = invtanh_push(y, a, b)
+    return pdf(x) / jnp.abs(grad_fn(x))
+
+def softplus_push(x, s):
+    return jnp.log(jnp.exp(x / s) + 1) * s
+
+def invsoftplus_push(y, s):
+    return jnp.log(jnp.exp(y / s) - 1) * s
+
+def pdf_softplus_push(pdf, y, s):
+    grad_fn = vmap(grad(partial(softplus_push, s=s)))
+    x = invsoftplus_push(y, s)
     return pdf(x) / jnp.abs(grad_fn(x))
 
 
