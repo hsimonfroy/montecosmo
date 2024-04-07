@@ -48,16 +48,16 @@ def pickle_load(path):
         return load(file)    
 
 
-def get_vlim(q=0., scale=1., axis=0):
+def get_vlim(level=1., scale=1., axis=0):
     """
     Return function computing robust inferior and superior limit values of an array, 
-    i.e. discard bilateraly on some quantile level, and scale the margins.
+    i.e. discard quantiles bilateraly on some level, and scale the margins.
     """
     def vlim(a):
         """
         Return robust inferior and superior limit values of an array.
         """
-        vmin, vmax = jnp.quantile(a, q/2, axis=axis), jnp.quantile(a, 1-q/2, axis=axis)
+        vmin, vmax = jnp.quantile(a, (1-level)/2, axis=axis), jnp.quantile(a, (1+level)/2, axis=axis)
         vmean, vdiff = (vmax+vmin)/2, scale*(vmax-vmin)/2
         return jnp.stack((vmean-vdiff, vmean+vdiff), axis=-1)
     return vlim
