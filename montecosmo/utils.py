@@ -59,7 +59,7 @@ def get_vlim(q=0., scale=1., axis=0):
         """
         vmin, vmax = jnp.quantile(a, q/2, axis=axis), jnp.quantile(a, 1-q/2, axis=axis)
         vmean, vdiff = (vmax+vmin)/2, scale*(vmax-vmin)/2
-        return jnp.stack((vmean-vdiff, vmean+vdiff))
+        return jnp.stack((vmean-vdiff, vmean+vdiff), axis=-1)
     return vlim
 
 
