@@ -295,7 +295,7 @@ def pmrsd_model(mesh_size,
 
 def _simulator(model, rng_seed=0, model_kwargs={}):
     model_trace = trace(seed(model, rng_seed=rng_seed)).get_trace(**model_kwargs)
-    params = {name: model_trace[name]['value'] for name in model_trace.keys()}
+    params = {name: model_trace[name]['value'] for name in model_trace}
     return params
 
 
