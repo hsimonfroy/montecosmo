@@ -1,44 +1,49 @@
 # If using conda/mamba, may have to `mamba update -n base -c conda-forge mamba`
-name: montecosmoenv
+name: montenv
 channels:
   - conda-forge
 dependencies:
-  - python==3.11.6 # for mlflow
+  - python # tests on >=3.11.6,<=3.12.2
   - pip
   - jupyterlab
   - matplotlib
   - ipympl
   - numpy
-  - numpyro
-  - diffrax
   - getdist
   - mlflow
-  - pip:
-    - "jax[cuda11_pip]" # Feynman
+  - ffmpeg
+  - scikit-image
+  - pip: 
+    # pip install -U "jax[cuda12_pip]" --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    # Or use "jax[cuda11_pip]==0.4.25" and nvidia-cudnn-cu11==8.9.4.25 # Feynman
     # - "jax[cuda12_pip]" # NERSC
+    # - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+    - numpyro[cuda] 
     - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    - graphviz # with pip, not the same in conda-forges
     - jax-cosmo
     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
-    - graphviz # with pip, not the same in conda-forge
+    - diffrax
+    - flax
+    - optax
+    - jax_resnet
+    - tensorflow-probability
+    # - tensorflow-datasets
     # Editable package
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
 
 # Optionally:
-  # - tensorflow
-  # - tensorflow-datasets
-  # - tensorflow-probability
   # - bccp::nbodykit # only for python<3.9
-  # - ffmpeg
-  # - chainconsumer
-  # - flax
-  # - optax
   # - pip:
+  #   - tensorflow  
   #   - sbi
-  #   - jax_resnet
   #   - git+https://github.com/sfschen/ZeNBu
 # DESI packages
 # - git+https://github.com/cosmodesi/desilike#egg=desilike[plotting]
 # - git+https://github.com/cosmodesi/cosmoprimo#egg=cosmoprimo[class,camb,astropy,extras]
 
 # If ptxas version not up to date:
-# mamba install -c nvidia cuda-nvcc 
+# mamba install -c nvidia cuda-nvcc
+# If struggling with cuda versions:
+# pip install tensorflow[and-cuda] 
