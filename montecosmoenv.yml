@@ -36,7 +36,9 @@ dependencies:
 # Optionally:
   # - bccp::nbodykit # only for python<3.9
   # - pip:
-  #   - tensorflow  
+  #   - tensorflow[and-cuda]
+  #   - dm-haiku  
+  #   - git+https://github.com/DifferentiableUniverseInitiative/sbi_lens.git
   #   - sbi
   #   - git+https://github.com/sfschen/ZeNBu
 # DESI packages
