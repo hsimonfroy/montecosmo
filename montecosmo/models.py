@@ -17,7 +17,7 @@ from montecosmo.metrics import power_spectrum
 from jax.experimental.ode import odeint
 from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
-from jax_cosmo import Planck15
+from jax_cosmo import Cosmology
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
 
@@ -35,15 +35,39 @@ default_config={
             'trace_reparam':False, 
             'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
             # Prior config {name: (label, mean, std)}
-            'prior_config':{'Omega_c':['{\Omega}_c', 0.25, 0.1], # XXX: Omega_c<0 implies nan
-                            'sigma8':['{\sigma}_8', 0.831, 0.14],
-                            'b1':['{b}_1', 1., 0.5],
-                            'b2':['{b}_2', 0., 0.5],
-                            'bs2':['{b}_{s^2}', 0., 0.5],
-                            'bn2':['{b}_{\\nabla^2}', 0., 0.5]},
+            'prior_config':{'Omega_m':['{\Omega}_m', 0.3111, 0.15], # XXX: Omega_m<0 implies nan
+                            'sigma8':['{\sigma}_8', 0.8102, 0.15],
+                            'b1':['{b}_1', 1., 1],
+                            'b2':['{b}_2', 0., 1],
+                            'bs2':['{b}_{s^2}', 0., 1],
+                            'bn2':['{b}_{\\nabla^2}', 0., 1]},
             # Likelihood config
             'lik_config':{'obs_std':1.}                    
             }
+
+
+# Planck 2015 paper XIII Table 4 final column (best fit)
+Planck15 = partial(Cosmology,
+    Omega_c=0.2589,
+    Omega_b=0.04860,
+    Omega_k=0.0,
+    h=0.6774,
+    n_s=0.9667,
+    sigma8=0.8159,
+    w0=-1.0,
+    wa=0.0,)
+
+# Planck 2018 paper VI Table 2 final column (best fit)
+Planck18 = partial(Cosmology,
+    Omega_c=0.2607,
+    Omega_b=0.0490,
+    Omega_k=0.0,
+    h=0.6766,
+    n_s=0.9665,
+    sigma8=0.8102,
+    w0=-1.0,
+    wa=0.0,)
+
 
 
 def prior_model(mesh_size, prior_config, **config):
@@ -61,33 +85,11 @@ def prior_model(mesh_size, prior_config, **config):
         name_ = name+'_'
         params_[name_] = sample(name_, dist.Normal(0, 1))
 
-    # # Unstandard param
-    # for name in prior_config:
-    #     name_ = name+'_'
-    #     _, mean, std = prior_config[name]
-    #     param = sample(name_, dist.Normal(mean, std))
-    #     params_[name_] = (param - mean) / std
-
     # Sample latent initial conditions
     name_ = 'init_mesh_'
     params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
 
     return params_
-
-#     # Sample latent cosmology
-#     Omega_c_ = sample('Omega_c_', dist.Normal(0, sigma))
-#     sigma8_  = sample('sigma8_' , dist.Normal(0, sigma))
-
-#     # Sample latent Lagrangian biases
-#     b1_  = sample('b1_',  dist.Normal(0, sigma))
-#     b2_  = sample('b2_',  dist.Normal(0, sigma))
-#     bs2_  = sample('bs2_',  dist.Normal(0, sigma))
-#     bn2_ = sample('bn2_', dist.Normal(0, sigma))
-
-#     params_ = dict(Omega_c_=Omega_c_, sigma8_=sigma8_, 
-#                    init_mesh_=init_mesh_, 
-#                    b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
-
 
 
 
@@ -153,7 +155,7 @@ def pmrsd_model_fn(latent_params,
     """
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
-    cosmology = Planck15(**cosmo)
+    cosmology = Planck15(Omega_c = cosmo['Omega_m'] - Planck15.Omega_b, sigma8 = cosmo['sigma8'])
     init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_params)
     biases = get_biases(prior_config, trace_reparam, **latent_params)
 
@@ -359,15 +361,15 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
     """
     Return a partial replay model function for given config.
     """
-    def param_fn(Omega_c_=None, sigma8_=None, 
+    def param_fn(Omega_m_=None, sigma8_=None, 
                    init_mesh_=None, 
                    b1_=None, b2_=None, bs2_=None, bn2_=None, 
                    **params_):
         """
         Partially replay model, i.e. transform latent params into params of interest.
         """
-        if not any([v is None for v in [Omega_c_, sigma8_]]):
-            cosmo = get_cosmo(prior_config, trace_reparam, Omega_c_=Omega_c_, sigma8_=sigma8_)
+        if not any([v is None for v in [Omega_m_, sigma8_]]):
+            cosmo = get_cosmo(prior_config, trace_reparam, Omega_m_=Omega_m_, sigma8_=sigma8_)
 
             if init_mesh_ is not None:
                 cosmology = Planck15(**cosmo)
@@ -420,7 +422,6 @@ def condition_on_config_mean(model, prior_config=None, **config):
         assert isinstance(model, partial), "No 'prior_config' found."
         prior_config = model.keywords['prior_config']
     params = {name+'_':0. for name in prior_config}
-    # params = {name+'_':prior_config[name][1] for name in prior_config}
     return condition(model, params)
 
 

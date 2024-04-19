@@ -18,10 +18,10 @@ def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
     Return cosmology from latent values.
     """
     cosmo = {}
-    for name in ['Omega_c', 'sigma8']:
+    for name in ['Omega_m', 'sigma8']:
         _, mean, std = prior_config[name]
         value = params_[name+'_'] * std + mean
-        if name == 'Omega_c':
+        if name == 'Omega_m':
             value = tanh_push(value, 0,0.5) # set value in interval
 
         if trace_reparam:
@@ -32,10 +32,10 @@ def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
 
 ## To reparametrize automaticaly
 # from numpyro.infer.reparam import LocScaleReparam
-#     reparam_config = {'Omega_c': LocScaleReparam(centered=0),
+#     reparam_config = {'Omega_m': LocScaleReparam(centered=0),
 #                       'sigma8': LocScaleReparam(centered=0)}
 #     with numpyro.handlers.reparam(config=reparam_config):
-#         Omega_c = sample('Omega_c', dist.Normal(0.25, 0.2**2))
+#         Omega_m = sample('Omega_m', dist.Normal(0.25, 0.2**2))
 #         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
