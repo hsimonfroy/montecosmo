@@ -27,7 +27,7 @@ default_config={
             'mesh_size':64 * np.array([1 ,1 ,1 ]), # int
             'box_size':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # Scale factors
-            'a_lpt':0.1, 
+            'a_lpt':0.5, 
             'a_obs':0.5,
             # Galaxies
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
@@ -35,8 +35,8 @@ default_config={
             'trace_reparam':False, 
             'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
             # Prior config {name: (label, mean, std)}
-            'prior_config':{'Omega_m':['{\Omega}_m', 0.3111, 0.15], # XXX: Omega_m<0 implies nan
-                            'sigma8':['{\sigma}_8', 0.8102, 0.15],
+            'prior_config':{'Omega_m':['{\\Omega}_m', 0.3111, 0.15], # XXX: Omega_m<0 implies nan
+                            'sigma8':['{\\sigma}_8', 0.8102, 0.15],
                             'b1':['{b}_1', 1., 1],
                             'b2':['{b}_2', 0., 1],
                             'bs2':['{b}_{s^2}', 0., 1],
@@ -59,6 +59,7 @@ Planck15 = partial(Cosmology,
 
 # Planck 2018 paper VI Table 2 final column (best fit)
 Planck18 = partial(Cosmology,
+    # Omega_m = 0.3111
     Omega_c=0.2607,
     Omega_b=0.0490,
     Omega_k=0.0,
@@ -155,7 +156,7 @@ def pmrsd_model_fn(latent_params,
     """
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
-    cosmology = Planck15(Omega_c = cosmo['Omega_m'] - Planck15.Omega_b, sigma8 = cosmo['sigma8'])
+    cosmology = Planck15(Omega_c = cosmo['Omega_m'] - Planck15().Omega_b, sigma8 = cosmo['sigma8'])
     init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_params)
     biases = get_biases(prior_config, trace_reparam, **latent_params)
 
@@ -209,8 +210,10 @@ def pmrsd_model_fn(latent_params,
     if trace_meshes: 
         particles = deterministic('rsd_part', particles)
 
+    debug.print("{i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
     # CIC paint weighted by Lagrangian bias expansion weights
     biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
+    debug.print("{i}", i=(biased_mesh.mean(), biased_mesh.std()))
 
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)

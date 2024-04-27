@@ -21,8 +21,8 @@ def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
     for name in ['Omega_m', 'sigma8']:
         _, mean, std = prior_config[name]
         value = params_[name+'_'] * std + mean
-        if name == 'Omega_m':
-            value = tanh_push(value, 0,0.5) # set value in interval
+        # if name == 'Omega_m':
+        #     value = tanh_push(value, 0,0.5) # set value in interval
 
         if trace_reparam:
             value = deterministic(name, value)
