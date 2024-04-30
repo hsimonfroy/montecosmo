@@ -111,6 +111,71 @@ def likelihood_model(mean_mesh, lik_config, noise=0., **config):
     # obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, (mean_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh
 
+from jaxpm.pm import pm_forces
+import jax_cosmo as jc
+from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
+from jaxpm.kernels import fftk
+
+
+def lpt(cosmo, initial_conditions, positions, a):
+    """
+    Computes first order LPT displacement
+    """
+    initial_force = pm_forces(positions, delta=initial_conditions)
+    a = jnp.atleast_1d(a)
+    dx = growth_factor(cosmo, a) * initial_force
+    p = a**2 * growth_rate(cosmo, a) * jnp.sqrt(jc.background.Esqr(cosmo, a)) * dx
+    f = a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a)) * dGfa(cosmo, a) * initial_force
+    return dx, p, f
+
+
+def invlaplace_kernel(kvec):
+    kk = sum(ki**2 for ki in kvec)
+    kk_nozeros = jnp.where(kk==0, 1, kk) 
+    return - jnp.where(kk==0, 0, 1 / kk_nozeros)
+
+
+def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
+    """
+    Computes first and second order LPT displacement, e.g. https://arxiv.org/pdf/0910.0258
+    """
+    a = jnp.atleast_1d(a)
+    E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
+
+    # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D renormalized? minus sign?
+    init_force = pm_forces(positions, delta=init_mesh)
+    dx = growth_factor(cosmo, a) * init_force
+    p = a**2 * growth_rate(cosmo, a) * E * dx
+    f = a**2 * E * dGfa(cosmo, a) * init_force
+
+    if order == 2:
+        delta_k = jnp.fft.rfftn(init_mesh)
+        kvec = fftk(init_mesh.shape)
+        pot_k = delta_k * invlaplace_kernel(kvec)
+
+        delta2 = 0
+        shear_acc = 0
+        for i, ki in enumerate(kvec):
+            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
+            shear_ii = jnp.fft.irfftn(ki**2 * pot_k)
+            delta2 += shear_ii * shear_acc 
+            shear_acc += shear_ii
+
+            for kj in kvec[i+1:]:
+                # Sub squared upper triangle terms
+                delta2 -= jnp.fft.irfftn(ki * kj * pot_k)**2
+        
+        init_force2 = - pm_forces(positions, delta=delta2)
+        dx2 = growth_factor_second(cosmo, a) * init_force2
+        p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
+        f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
+
+        dx += dx2
+        p  += p2
+        f  += f2
+
+    return dx, p, f
+
 
 def pmrsd_model_fn(latent_params, 
                 mesh_size,                 
