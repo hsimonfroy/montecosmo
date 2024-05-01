@@ -8,7 +8,6 @@ from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
-from montecosmo.utils import tanh_push
 
 
 
@@ -84,7 +83,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     Return Lagrangian bias expansion weight as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
-        w = 1 + b_1 \delta + b_2 \left(\delta^2 - \braket{\delta^2}\right) + b_{s^2} \left(s^2 - \braket{s^2}\right) + b_{\nabla^2} \nabla^2 delta
+        w = 1 + b_1 \\delta + b_2 \left(\\delta^2 - \\braket{\\delta^2}\right) + b_{s^2} \left(s^2 - \\braket{s^2}\right) + b_{\\nabla^2} \\nabla^2 \delta
     """    
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
@@ -123,7 +122,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
         # Add diagonal terms
         shear_sqr = shear_sqr + jnp.fft.irfftn(ki**2 * pot_k - delta_k / 3)**2
         for kj in kvec[i+1:]:
-            # Add upper triangle terms (counted twice)
+            # Add strict-up-triangle terms (counted twice)
             shear_sqr = shear_sqr + 2 * jnp.fft.irfftn(ki * kj * pot_k)**2
 
     shear_sqr_part = cic_read(shear_sqr, pos)

@@ -39,7 +39,6 @@ dependencies:
   #   - tensorflow[and-cuda]
   #   - dm-haiku  
   #   - git+https://github.com/DifferentiableUniverseInitiative/sbi_lens.git
-  #   - sbi
   #   - git+https://github.com/sfschen/ZeNBu
 # DESI packages
 # - git+https://github.com/cosmodesi/desilike#egg=desilike[plotting]
