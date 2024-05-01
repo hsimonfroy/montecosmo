@@ -305,29 +305,36 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
 
 
 
-def tanh_push(x, a, b):
-    m, d = (b+a)/2, (b-a)/2
-    return d * jnp.tanh( (x-m)/d ) + m
 
-def invtanh_push(y, a, b):
-    m, d = (b+a)/2, (b-a)/2
-    return d * jnp.arctanh( (y-m)/d ) + m
 
-def pdf_tanh_push(pdf, y, a, b):
-    grad_fn = vmap(grad(partial(tanh_push, a=a, b=b)))
-    x = invtanh_push(y, a, b)
-    return pdf(x) / jnp.abs(grad_fn(x))
+from jax.scipy.special import logsumexp
+from jax.scipy.stats import norm
 
-def softplus_push(x, s):
-    return jnp.log(jnp.exp(x / s) + 1) * s
+def hightail(x, low=None, high=jnp.inf):
+    # temp = 1/1.702 # best temperature for norm inf, i.e. Bowling approx
+    temp = 1/2.9687545 # best temperature at 5 sigma
+    energy = jnp.stack(jnp.broadcast_arrays(x, high, high+x), axis=0)
+    return - temp * logsumexp( - energy / temp, axis=0)
 
-def invsoftplus_push(y, s):
-    return jnp.log(jnp.exp(y / s) - 1) * s
+def lowtail(x, low=-jnp.inf, high=None):
+    # temp = 1/1.702 # best temperature for norm inf, i.e. Bowling approx
+    temp = 1/2.9687545 # best temperature at 5 sigma
+    energy = - jnp.stack(jnp.broadcast_arrays(x, low), axis=0)
+    return temp * logsumexp( - energy / temp, axis=0)
 
-def pdf_softplus_push(pdf, y, s):
-    grad_fn = vmap(grad(partial(softplus_push, s=s)))
-    x = invsoftplus_push(y, s)
-    return pdf(x) / jnp.abs(grad_fn(x))
+def body(x, low=-jnp.inf, high=jnp.inf):
+    u = norm.cdf(x)
+    cdf_low, cdf_high = norm.cdf(low), norm.cdf(high)
+    cdf_y = cdf_low + (cdf_high - cdf_low) * u
+    return norm.ppf(cdf_y)
+
+def std2trunc(x, loc=0, scale=1, low=-jnp.inf, high=jnp.inf):
+    low, high = (low - loc) / scale, (high - loc) / scale
+    lim = 5
+    # condlist = [x < -lim, lim < x]
+    condlist = [(x < -lim) & (low < -lim), (lim < x) & (lim < high)]
+    funclist = [lowtail, hightail, body]
+    return loc + scale * jnp.piecewise(x, condlist, funclist, low=low, high=high)
 
 
 ##### To plot a table ####

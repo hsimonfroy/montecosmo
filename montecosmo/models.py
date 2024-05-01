@@ -112,6 +112,81 @@ def likelihood_model(mean_mesh, lik_config, noise=0., **config):
     return obs_mesh
 
 
+
+from jaxpm.pm import pm_forces
+import jax_cosmo as jc
+from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
+from jaxpm.kernels import fftk
+
+def invlaplace_kernel(kvec):
+    kk = sum(ki**2 for ki in kvec)
+    kk_nozeros = jnp.where(kk==0, 1, kk) 
+    return - jnp.where(kk==0, 0, 1 / kk_nozeros)
+
+
+# def pm_forces(positions, mesh_shape, delta_k=None, r_split=0):
+#     """
+#     Computes gravitational forces on particles using a PM scheme
+#     """
+#     kvec = fftk(mesh_shape)
+
+#     if delta_k is None:
+#         delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
+
+#     # Computes gravitational potential
+#     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+#     # Computes gravitational forces
+#     return jnp.stack([cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i)*pot_k), positions) 
+#                       for i in range(3)], axis=-1)
+
+
+
+
+def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
+    """
+    Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
+    """
+    a = jnp.atleast_1d(a)
+    E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
+    delta_k = jnp.fft.rfftn(init_mesh)
+
+    # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
+    # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f? 
+    init_force = pm_forces(positions, delta=init_mesh)
+    dx = growth_factor(cosmo, a) * init_force
+    p = a**2 * growth_rate(cosmo, a) * E * dx
+    f = a**2 * E * dGfa(cosmo, a) * init_force
+
+    if order == 2:
+        kvec = fftk(init_mesh.shape)
+        pot_k = delta_k * invlaplace_kernel(kvec)
+
+        delta2 = 0
+        shear_acc = 0
+        for i, ki in enumerate(kvec):
+            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
+            shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
+            delta2 += shear_ii * shear_acc 
+            shear_acc += shear_ii
+
+            for kj in kvec[i+1:]:
+                # Substract squared strict-up-triangle terms
+                delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
+        
+        init_force2 = pm_forces(positions, delta=delta2)
+        dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
+        f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
+
+        dx += dx2
+        p  += p2
+        f  += f2
+
+    return dx, p, f
+
+
+
+
 def pmrsd_model_fn(latent_params, 
                 mesh_size,                 
                 box_size,
