@@ -67,11 +67,11 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
     pk = np.empty((len(multipoles), *pk0.shape))
     for i_ell, ell in enumerate(multipoles):
         if ell==0:
-            pk[i_ell] = (1 + beta *2/3 + beta**2 /5) * bias**2 * pk0 
+            pk[i_ell] = (1 + beta * 2/3 + beta**2 /5) * bias**2 * pk0 
         elif ell==2:
-            pk[i_ell] = (beta *4/3 + beta**2 *4/7) * bias**2 * pk0 
+            pk[i_ell] = (beta * 4/3 + beta**2 *4/7) * bias**2 * pk0 
         elif ell==4:
-            pk[i_ell] = beta**2 *8/35 * bias**2 * pk0 
+            pk[i_ell] = beta**2 * 8/35 * bias**2 * pk0 
         else: 
             raise NotImplementedError(
                 "Handle only multipoles of order ell=0, 2 ,4. ell={ell} not implemented.") 

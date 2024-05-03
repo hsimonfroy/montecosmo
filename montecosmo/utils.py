@@ -20,6 +20,10 @@ from getdist.gaussian_mixtures import GaussianND
 from getdist import MCSamples
 from collections.abc import Iterable
 
+from jax.scipy.special import logsumexp
+from jax.scipy.stats import norm
+
+
 
 
 
@@ -140,7 +144,7 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None,
 
 
 def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 
-                    extra_fields:list=[], rng_key=jr.key(0), group_by_chain:bool=True) -> MCMC:
+                    extra_fields:list=[], rng_key=jr.key(0), group_by_chain:bool=True, init_params=None) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
     Do `mcmc.num_warmup` warmup steps, followed by `n_runs` times `mcmc.num_samples` sampling steps.
@@ -151,11 +155,12 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None,
         print(f"run {0}/{n_runs} (warmup)")
 
         # Warmup
-        mcmc.warmup(rng_key, collect_warmup=True, extra_fields=extra_fields)
+        mcmc.warmup(rng_key, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
         save_run(mcmc, 0, save_path, var_names, extra_fields, group_by_chain)
 
-        # Handling rng key
+        # Handling rng key and destroy init_params
         key_run = mcmc.post_warmup_state.rng_key
+        init_params = None
     else:
         key_run = rng_key
 
@@ -164,7 +169,7 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None,
         print(f"run {i_run}/{n_runs}")
             
         # Run
-        mcmc.run(key_run, extra_fields=extra_fields)
+        mcmc.run(key_run, extra_fields=extra_fields, init_params=init_params)
         save_run(mcmc, i_run, save_path, var_names, extra_fields)
 
         # Init next run at last state
@@ -240,7 +245,7 @@ def get_gdprior(samples:dict, prior_config:dict, label:str="Prior",
     means, stds = [], []
     for name in samples:
         if name.endswith('_'): # convention for a latent param 
-            lab = "\overline"+prior_config[name[:-1]][0]
+            lab = "\\overline"+prior_config[name[:-1]][0]
             mean, std = 0, 1
         else:
             lab, mean, std = prior_config[name]
@@ -265,7 +270,7 @@ def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
     labels = []
     for name in samples:
         if name.endswith('_'): # convention for a latent param 
-            lab = "\overline"+prior_config[name[:-1]][0]
+            lab = "\\overline"+prior_config[name[:-1]][0]
         else:
             lab = prior_config[name][0]
         labels.append(lab)
@@ -307,34 +312,81 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
 
 
 
-from jax.scipy.special import logsumexp
-from jax.scipy.stats import norm
-
-def hightail(x, low=None, high=jnp.inf):
-    # temp = 1/1.702 # best temperature for norm inf, i.e. Bowling approx
-    temp = 1/2.9687545 # best temperature at 5 sigma
-    energy = jnp.stack(jnp.broadcast_arrays(x, high, high+x), axis=0)
-    return - temp * logsumexp( - energy / temp, axis=0)
 
 def lowtail(x, low=-jnp.inf, high=None):
-    # temp = 1/1.702 # best temperature for norm inf, i.e. Bowling approx
-    temp = 1/2.9687545 # best temperature at 5 sigma
+    temp = 1/6.2842226/2 # best temperature at 12 sigma
     energy = - jnp.stack(jnp.broadcast_arrays(x, low), axis=0)
     return temp * logsumexp( - energy / temp, axis=0)
 
-def body(x, low=-jnp.inf, high=jnp.inf):
-    u = norm.cdf(x)
+def hightail(x, low=None, high=jnp.inf):
+    temp = 1/6.2842226/2 # best temperature at 12 sigma
+    energy = jnp.stack(jnp.broadcast_arrays(x, high), axis=0)
+    return - temp * logsumexp( - energy / temp, axis=0)
+
+def lowbody(x, low=-jnp.inf, high=jnp.inf):
     cdf_low, cdf_high = norm.cdf(low), norm.cdf(high)
-    cdf_y = cdf_low + (cdf_high - cdf_low) * u
+    cdf_y = cdf_low + (cdf_high - cdf_low) * norm.cdf(x)
     return norm.ppf(cdf_y)
 
+def highbody(x, low=-jnp.inf, high=jnp.inf):
+    cdf_nlow, cdf_nhigh = norm.cdf(-low), norm.cdf(-high) # cdf(-x) = 1-cdf(x), more stable
+    cdf_ny = cdf_nhigh - (cdf_nhigh - cdf_nlow) * norm.cdf(-x)
+    return - norm.ppf(cdf_ny)
+
+def body(x, low=-jnp.inf, high=jnp.inf):
+    condlist = [x < 0]
+    funclist = [lowbody, highbody]
+    return jnp.piecewise(x, condlist, funclist, low=low, high=high)    
+
 def std2trunc(x, loc=0, scale=1, low=-jnp.inf, high=jnp.inf):
-    low, high = (low - loc) / scale, (high - loc) / scale
-    lim = 5
-    # condlist = [x < -lim, lim < x]
+    """
+    Transport standard normal variable to a general truncated normal variable. 
+    """
+    scale_nonzero = jnp.where(scale==0, 1, scale)
+    lowhigh = (jnp.stack((low, high)) - loc) / scale_nonzero
+    low, high = jnp.where(scale==0, jnp.stack([-jnp.inf, jnp.inf]), lowhigh)
+    lim = 12 # switch to a more stable approx at 12 sigma
     condlist = [(x < -lim) & (low < -lim), (lim < x) & (lim < high)]
     funclist = [lowtail, hightail, body]
     return loc + scale * jnp.piecewise(x, condlist, funclist, low=low, high=high)
+
+ 
+
+
+def invlowbody(y, low=-jnp.inf, high=jnp.inf):
+    cdf_low, cdf_high = norm.cdf(low), norm.cdf(high)
+    cdf_x = (norm.cdf(y) - cdf_low) / (cdf_high - cdf_low)
+    return norm.ppf(cdf_x)
+
+def invhighbody(y, low=-jnp.inf, high=jnp.inf):
+    cdf_nlow, cdf_nhigh = norm.cdf(-low), norm.cdf(-high) # cdf(-x) = 1-cdf(x), more stable
+    cdf_nx = (cdf_nhigh - norm.cdf(-y)) / (cdf_nhigh - cdf_nlow)
+    return - norm.ppf(cdf_nx)
+
+def invbody(y, low=-jnp.inf, high=jnp.inf):
+    condlist = [y < 0]
+    funclist = [invlowbody, invhighbody]
+    return jnp.piecewise(y, condlist, funclist, low=low, high=high)   
+
+def invhightail(y, low=None, high=jnp.inf):
+    temp = 1/6.2842226/2 # best temperature at 12 sigma
+    energy, b = jnp.split(jnp.stack(jnp.broadcast_arrays(y, high, 1, -1), axis=0), 2)
+    return - temp * logsumexp( - energy / temp, axis=0, b=b)
+
+def invlowtail(y, low=-jnp.inf, high=None):
+    temp = 1/6.2842226/2 # best temperature at 12 sigma
+    energy, b = jnp.split(jnp.stack(jnp.broadcast_arrays(-y, -low, 1, -1), axis=0), 2)
+    return temp * logsumexp( - energy / temp, axis=0, b=b)
+
+def trunc2std(y, loc=0, scale=1, low=-jnp.inf, high=jnp.inf):
+    """
+    Transport a general truncated normal variable to a standard normal variable.
+    """
+    y, low, high = (y - loc) / scale, (low - loc) / scale, (high - loc) / scale
+    lim = 12 # switch to a more stable approx at 12 sigma
+    condlist = [(y < -lim) & (low < -lim), (lim < y) & (lim < high)]
+    funclist = [invlowtail, invhightail, invbody]
+    return jnp.piecewise(y, condlist, funclist, low=low, high=high)
 
 
 ##### To plot a table ####

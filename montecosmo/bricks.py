@@ -1,6 +1,9 @@
+from functools import partial
+
 import numpyro
 import numpyro.distributions as dist
 from numpyro import sample, deterministic
+
 import jax.numpy as jnp
 import jax_cosmo as jc
 from jax_cosmo import Cosmology
@@ -9,25 +12,40 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
+from montecosmo.utils import std2trunc, trunc2std
 
 
 
-def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
+   
+
+def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
-    Return cosmology from latent values.
+    Return cosmological params from latent values.
     """
     cosmo = {}
     for name in ['Omega_m', 'sigma8']:
         _, mean, std = prior_config[name]
-        value = params_[name+'_'] * std + mean
-        # if name == 'Omega_m':
-        #     value = tanh_push(value, 0,0.5) # set value in interval
+        std *= scale_std
+
+        if not inverse:
+            input_name, output_name = name+'_', name
+            trunc_push = std2trunc
+            notrunc_push = lambda x : x * std + mean
+        else:
+            input_name, output_name = name, name+'_'
+            trunc_push = trunc2std
+            notrunc_push = lambda x : (x - mean) / std
+
+        value = params_[input_name]
+        if name == 'Omega_m':
+            value = trunc_push(value, mean, std, 0, 1) # truncate value in interval
+        else:
+            value = notrunc_push(value)
 
         if trace_reparam:
-            value = deterministic(name, value)
-        cosmo[name] = value
+            value = deterministic(output_name, value)
+        cosmo[output_name] = value
     return cosmo
-
 
 ## To reparametrize automaticaly
 # from numpyro.infer.reparam import LocScaleReparam
@@ -38,42 +56,61 @@ def get_cosmo(prior_config, trace_reparam=False, **params_) -> dict:
 #         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
-def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, **params_):
+def get_cosmology(**cosmo) -> Cosmology:
+    """
+    Return full cosmology object.
+    """
+    return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
+                    sigma8 = cosmo['sigma8'])
+
+
+def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inverse=False, **params_) -> dict:
     """
     Return initial conditions at a=1 from latent values.
     """
     # Compute initial power spectrum
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
     kvec = fftk(mesh_size)
-    kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
-    pkmesh = pk_fn(kmesh) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
+    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
+    pk_mesh = pk_fn(k_box) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
 
     # Parametrize
-    init_mesh = jnp.fft.rfftn(params_['init_mesh_']) * pkmesh**0.5
+    name = 'init_mesh'
+    if not inverse:
+        input_name, output_name = name+'_', name
+        init_mesh = jnp.fft.rfftn(params_[input_name]) * pk_mesh**0.5
+    else:
+        input_name, output_name = name, name+'_'
+        init_mesh = jnp.fft.rfftn(params_[input_name]) / pk_mesh**0.5   
 
-    # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
-    # init_mesh = init_mesh * jnp.exp(-.5 * kmesh**2 / k_nyquist**2)
-    # from jax import debug
-    # debug.print('init smoothed')
-    
     init_mesh = jnp.fft.irfftn(init_mesh)
 
     if trace_reparam:
-        init_mesh = deterministic('init_mesh', init_mesh)
-    return dict(init_mesh=init_mesh)
+        init_mesh = deterministic(output_name, init_mesh)
+    return {output_name:init_mesh}
 
 
-def get_biases(prior_config, trace_reparam=False, **params_) -> dict:
+def get_biases(prior_config, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
-    Return biases from latent values.
+    Return biases params from latent values.
     """
     biases = {}
     for name in ['b1', 'b2', 'bs2', 'bn2']:
         _, mean, std = prior_config[name]
-        value = params_[name+'_'] * std + mean
+        std *= scale_std
+
+        if not inverse:
+            input_name, output_name = name+'_', name
+            notrunc_push = lambda x : x * std + mean
+        else:
+            input_name, output_name = name, name+'_'
+            notrunc_push = lambda x : (x - mean) / std
+
+        value = notrunc_push(params_[input_name])
+
         if trace_reparam:
-            value = deterministic(name, value)
-        biases[name] = value
+            value = deterministic(output_name, value)
+        biases[output_name] = value
     return biases
 
 
@@ -83,20 +120,23 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     Return Lagrangian bias expansion weight as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
-        w = 1 + b_1 \\delta + b_2 \left(\\delta^2 - \\braket{\\delta^2}\right) + b_{s^2} \left(s^2 - \\braket{s^2}\right) + b_{\\nabla^2} \\nabla^2 \delta
+        w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
     """    
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
 
-    # mesh_size = init_mesh.shape
-    # delta_k = jnp.fft.rfftn(init_mesh)
-    # kvec = fftk(mesh_size)
+    # Smooth field to mitigate negative weights
+    mesh_size = init_mesh.shape
+    delta_k = jnp.fft.rfftn(init_mesh)
+    kvec = fftk(mesh_size)
+    kk_box = sum((ki  * (m / l))**2 
+                 for ki, m, l in zip(kvec, mesh_size, box_size)) # - laplace kernel in h/Mpc physical units
     # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
-    # kk_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))
-    # delta_k = delta_k * jnp.exp(-.5 * kk_box / k_nyquist**2)
+    # delta_k = delta_k * jnp.exp( - kk_box / k_nyquist**2)
     # init_mesh = jnp.fft.irfftn(delta_k)
 
+    # Init weights
     weights = 1
     
     # Apply b1
@@ -107,36 +147,28 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     delta_sqr_part = delta_part**2
     weights = weights + b2 * (delta_sqr_part - delta_sqr_part.mean())
 
-    # Apply bshear2
-    delta_k = jnp.fft.rfftn(init_mesh)
-    mesh_size = init_mesh.shape
-    kvec = fftk(mesh_size)
-
-    kk = sum(ki**2 for ki in kvec)
-    kk_nozeros = jnp.where(kk==0, 1, kk) 
-    pot_k = delta_k / kk_nozeros 
-    pot_k = jnp.where(kk==0, 0, pot_k) # inverse laplace kernel
+    # Apply bshear2, non-punctual term
+    pot_k = delta_k * invlaplace_kernel(kvec)
 
     shear_sqr = 0  
     for i, ki in enumerate(kvec):
         # Add diagonal terms
-        shear_sqr = shear_sqr + jnp.fft.irfftn(ki**2 * pot_k - delta_k / 3)**2
+        shear_sqr = shear_sqr + jnp.fft.irfftn( - ki**2 * pot_k - delta_k / 3)**2
         for kj in kvec[i+1:]:
             # Add strict-up-triangle terms (counted twice)
-            shear_sqr = shear_sqr + 2 * jnp.fft.irfftn(ki * kj * pot_k)**2
+            shear_sqr = shear_sqr + 2 * jnp.fft.irfftn( - ki * kj * pot_k)**2
 
     shear_sqr_part = cic_read(shear_sqr, pos)
     weights = weights + bs2 * (shear_sqr_part - shear_sqr_part.mean())
 
-    # Apply bnabla2
+    # Apply bnabla2, non-punctual term
     kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_size, box_size)) # laplace kernel in h/Mpc physical units
-    delta_nl = jnp.fft.irfftn(kk_box * delta_k)
+                 for ki, m, l in zip(kvec, mesh_size, box_size)) # - laplace kernel in h/Mpc physical units
+    delta_nl = jnp.fft.irfftn( - kk_box * delta_k)
 
     delta_nl_part = cic_read(delta_nl, pos)
     weights = weights + bn2 * delta_nl_part
 
-    # jax.debug.print('Number of strict negative weights={i}', i=(weights<0).sum())
     return weights
 
 
@@ -148,6 +180,39 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     pk = jc.power.linear_matter_power(cosmo, k, a=a)
     pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape(-1), k, pk).reshape(x.shape)
     return pk_fn
+
+
+
+
+
+
+from jaxpm.pm import pm_forces
+import jax_cosmo as jc
+from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
+from jaxpm.kernels import fftk
+
+# Planck 2015 paper XIII Table 4 final column (best fit)
+Planck15 = partial(Cosmology,
+    Omega_c=0.2589,
+    Omega_b=0.04860,
+    Omega_k=0.0,
+    h=0.6774,
+    n_s=0.9667,
+    sigma8=0.8159,
+    w0=-1.0,
+    wa=0.0,)
+
+# Planck 2018 paper VI Table 2 final column (best fit)
+Planck18 = partial(Cosmology,
+    # Omega_m = 0.3111
+    Omega_c=0.2607,
+    Omega_b=0.0490,
+    Omega_k=0.0,
+    h=0.6766,
+    n_s=0.9665,
+    sigma8=0.8102,
+    w0=-1.0,
+    wa=0.0,)
 
 
 def get_ode_fn(cosmo:Cosmology, mesh_size):
@@ -168,6 +233,75 @@ def get_ode_fn(cosmo:Cosmology, mesh_size):
         return jnp.concatenate((dpos, dvel), axis=-1)
 
     return nbody_ode
+
+
+def invlaplace_kernel(kvec):
+    kk = sum(ki**2 for ki in kvec)
+    kk_nozeros = jnp.where(kk==0, 1, kk) 
+    return - jnp.where(kk==0, 0, 1 / kk_nozeros)
+
+
+# def pm_forces(positions, mesh_shape, delta_k=None, r_split=0):
+#     """
+#     Computes gravitational forces on particles using a PM scheme
+#     """
+#     if delta_k is None:
+#         delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
+
+#     # Computes gravitational potential
+#     kvec = fftk(mesh_shape)
+#     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+#     # Computes gravitational forces
+#     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
+#                       for i in range(3)], axis=-1)
+
+
+def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
+    """
+    Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
+    """
+    a = jnp.atleast_1d(a)
+    E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
+    delta_k = jnp.fft.rfftn(init_mesh)
+
+    # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
+    # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f?
+    # Correct cic_read, cic_paint docstring 
+    init_force = pm_forces(positions, delta=init_mesh)
+    dx = growth_factor(cosmo, a) * init_force
+    p = a**2 * growth_rate(cosmo, a) * E * dx
+    f = a**2 * E * dGfa(cosmo, a) * init_force
+
+    if order == 2:
+        kvec = fftk(init_mesh.shape)
+        pot_k = delta_k * invlaplace_kernel(kvec)
+
+        delta2 = 0
+        shear_acc = 0
+        for i, ki in enumerate(kvec):
+            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
+            shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
+            delta2 += shear_ii * shear_acc 
+            shear_acc += shear_ii
+
+            for kj in kvec[i+1:]:
+                # Substract squared strict-up-triangle terms
+                delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
+        
+        init_force2 = pm_forces(positions, delta=delta2)
+        dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
+        f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
+
+        dx += dx2
+        p  += p2
+        f  += f2
+
+    return dx, p, f
+
+
+
+
 
 
 def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):

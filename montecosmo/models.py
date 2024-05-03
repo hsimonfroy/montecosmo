@@ -9,9 +9,9 @@ import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, vmap, grad, debug
 from jax.tree_util import tree_map
-from functools import partial, wraps
+from functools import partial
 
-from montecosmo.bricks import get_cosmo, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn
+from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn
 from montecosmo.metrics import power_spectrum
 
 from jax.experimental.ode import odeint
@@ -46,28 +46,7 @@ default_config={
             }
 
 
-# Planck 2015 paper XIII Table 4 final column (best fit)
-Planck15 = partial(Cosmology,
-    Omega_c=0.2589,
-    Omega_b=0.04860,
-    Omega_k=0.0,
-    h=0.6774,
-    n_s=0.9667,
-    sigma8=0.8159,
-    w0=-1.0,
-    wa=0.0,)
 
-# Planck 2018 paper VI Table 2 final column (best fit)
-Planck18 = partial(Cosmology,
-    # Omega_m = 0.3111
-    Omega_c=0.2607,
-    Omega_b=0.0490,
-    Omega_k=0.0,
-    h=0.6766,
-    n_s=0.9665,
-    sigma8=0.8102,
-    w0=-1.0,
-    wa=0.0,)
 
 
 
@@ -110,80 +89,6 @@ def likelihood_model(mean_mesh, lik_config, noise=0., **config):
     # obs_mesh = sample('obs_mesh', dist.Poisson(mean_mesh + eps_var)) 
     # obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, (mean_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh
-
-
-
-from jaxpm.pm import pm_forces
-import jax_cosmo as jc
-from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
-from jaxpm.kernels import fftk
-
-def invlaplace_kernel(kvec):
-    kk = sum(ki**2 for ki in kvec)
-    kk_nozeros = jnp.where(kk==0, 1, kk) 
-    return - jnp.where(kk==0, 0, 1 / kk_nozeros)
-
-
-# def pm_forces(positions, mesh_shape, delta_k=None, r_split=0):
-#     """
-#     Computes gravitational forces on particles using a PM scheme
-#     """
-#     kvec = fftk(mesh_shape)
-
-#     if delta_k is None:
-#         delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
-
-#     # Computes gravitational potential
-#     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
-#     # Computes gravitational forces
-#     return jnp.stack([cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i)*pot_k), positions) 
-#                       for i in range(3)], axis=-1)
-
-
-
-
-def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
-    """
-    Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
-    """
-    a = jnp.atleast_1d(a)
-    E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
-    delta_k = jnp.fft.rfftn(init_mesh)
-
-    # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
-    # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f? 
-    init_force = pm_forces(positions, delta=init_mesh)
-    dx = growth_factor(cosmo, a) * init_force
-    p = a**2 * growth_rate(cosmo, a) * E * dx
-    f = a**2 * E * dGfa(cosmo, a) * init_force
-
-    if order == 2:
-        kvec = fftk(init_mesh.shape)
-        pot_k = delta_k * invlaplace_kernel(kvec)
-
-        delta2 = 0
-        shear_acc = 0
-        for i, ki in enumerate(kvec):
-            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
-            delta2 += shear_ii * shear_acc 
-            shear_acc += shear_ii
-
-            for kj in kvec[i+1:]:
-                # Substract squared strict-up-triangle terms
-                delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
-        
-        init_force2 = pm_forces(positions, delta=delta2)
-        dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
-        p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
-        f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
-
-        dx += dx2
-        p  += p2
-        f  += f2
-
-    return dx, p, f
-
 
 
 
@@ -231,7 +136,7 @@ def pmrsd_model_fn(latent_params,
     """
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
-    cosmology = Planck15(Omega_c = cosmo['Omega_m'] - Planck15().Omega_b, sigma8 = cosmo['sigma8'])
+    cosmology = get_cosmology(**cosmo)
     init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_params)
     biases = get_biases(prior_config, trace_reparam, **latent_params)
 
@@ -264,9 +169,9 @@ def pmrsd_model_fn(latent_params,
         else: 
             saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                             stepsize_controller=controller, max_steps=1000, saveat=saveat)
+                             stepsize_controller=controller, max_steps=100, saveat=saveat)
         particles = sol.ys
-        # debug.print("num_steps: {n}", n=sol.stats['num_steps'])
+        debug.print("num_steps: {n}", n=sol.stats['num_steps'])
 
         if trace_meshes >= 2:
             particles = deterministic('pm_part', particles)
@@ -284,11 +189,13 @@ def pmrsd_model_fn(latent_params,
 
     if trace_meshes: 
         particles = deterministic('rsd_part', particles)
-
-    debug.print("{i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
+    
     # CIC paint weighted by Lagrangian bias expansion weights
     biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
-    debug.print("{i}", i=(biased_mesh.mean(), biased_mesh.std()))
+
+    # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
+    # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
+    # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
 
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)
@@ -387,7 +294,7 @@ def get_simulator(model):
         """
         Sample from the model.
         """
-        return partial(_simulator, model)(rng_seed, model_kwargs)
+        return _simulator( model, rng_seed, model_kwargs)
     return simulator
 
 
@@ -407,7 +314,7 @@ def get_logp_fn(model):
         """
         Return the model log probabilty, evaluated on parameters.
         """
-        return partial(_logp_fn, model)(params, model_kwargs)
+        return _logp_fn(model, params, model_kwargs)
     return logp_fn
     
 
@@ -419,7 +326,7 @@ def get_score_fn(model):
         """
         Return the model score, evaluated on parameters.
         """
-        return grad(partial(_logp_fn, model), argnums=0)(params, model_kwargs)
+        return grad(_logp_fn, argnums=1)(model, params, model_kwargs)
     return score_fn
 
 
@@ -435,32 +342,39 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **config):
+def get_param_fn(mesh_size, box_size, prior_config, scale_std=1, trace_reparam=False, **config):
     """
     Return a partial replay model function for given config.
     """
-    def param_fn(Omega_m_=None, sigma8_=None, 
-                   init_mesh_=None, 
-                   b1_=None, b2_=None, bs2_=None, bn2_=None, 
-                   **params_):
+    def param_fn(inverse=False, **params_):
         """
         Partially replay model, i.e. transform latent params into params of interest.
         """
-        if not any([v is None for v in [Omega_m_, sigma8_]]):
-            cosmo = get_cosmo(prior_config, trace_reparam, Omega_m_=Omega_m_, sigma8_=sigma8_)
+        if not inverse:
+            sufx = '_'
+        else:
+            sufx = ''
+        keys = params_.keys()
 
-            if init_mesh_ is not None:
-                cosmology = Planck15(**cosmo)
-                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, init_mesh_=init_mesh_)
+        if all([name+sufx in keys for name in ['Omega_m', 'sigma8']]):
+            cosmo = get_cosmo(prior_config, trace_reparam, inverse, scale_std, **params_)
+
+            if 'init_mesh'+sufx in keys:
+                if not inverse:
+                    cosmology = get_cosmology(**cosmo)
+                else:
+                    cosmology = get_cosmology(**params_)
+
+                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, inverse, **params_)
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
 
-        if not any([v is None for v in [b1_, b2_, bs2_, bn2_]]):
-            biases = get_biases(prior_config, trace_reparam, b1_=b1_, b2_=b2_, bs2_=bs2_, bn2_=bn2_)
+        if all([name+sufx in keys for name in ['b1', 'b2', 'bs2', 'bn2']]):
+            biases = get_biases(prior_config, trace_reparam, inverse, scale_std, **params_)
         else: biases = {}
 
-        params = dict(**cosmo, **init_mesh, **biases)
-        # params = cosmo | init_mesh | biases  # XXX: python>=3.9
+        # params = dict(**cosmo, **init_mesh, **biases)
+        params = cosmo | init_mesh | biases  # XXX: python>=3.9
         return params
     return param_fn
 
@@ -468,7 +382,7 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, **confi
 def print_config(model:partial|dict):
     """
     Print config and infos from a partial model.
-    Alternatively, config can be directly provided.
+    Alternatively, a config can directly be provided.
     """
     if isinstance(model, dict):
         config = model
@@ -491,16 +405,18 @@ def print_config(model:partial|dict):
     print(f"mean_gxy_density: {mean_gxy_density:.3f} gxy/cell\n")
 
 
-def condition_on_config_mean(model, prior_config=None, **config):
+def get_prior_mean(model:partial|dict):
     """
-    Condition model on the mean values of the prior config.
-    If no `prior_config` is provided, extract it from partial model.
+    Return mean values of the prior config from a partial model.
+    Alternatively, a config can directly be provided.
     """
-    if prior_config is None:
-        assert isinstance(model, partial), "No 'prior_config' found."
-        prior_config = model.keywords['prior_config']
-    params = {name+'_':0. for name in prior_config}
-    return condition(model, params)
+    if isinstance(model, dict):
+        config = model
+    else:
+        assert isinstance(model, partial), "No partial model or config provided."
+        config = model.keywords
+    prior_config = config['prior_config']
+    return {name: prior_config[name][1] for name in prior_config}
 
 
 def get_noise_fn(t0, t1, noises, steps=False):
