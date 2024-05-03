@@ -35,12 +35,12 @@ default_config={
             'trace_reparam':False, 
             'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
             # Prior config {name: (label, mean, std)}
-            'prior_config':{'Omega_m':['{\\Omega}_m', 0.3111, 0.15], # XXX: Omega_m<0 implies nan
-                            'sigma8':['{\\sigma}_8', 0.8102, 0.15],
-                            'b1':['{b}_1', 1., 1],
-                            'b2':['{b}_2', 0., 1],
-                            'bs2':['{b}_{s^2}', 0., 1],
-                            'bn2':['{b}_{\\nabla^2}', 0., 1]},
+            'prior_config':{'Omega_m':['{\\Omega}_m', 0.3111, 0.2], # XXX: Omega_m<0 implies nan
+                            'sigma8':['{\\sigma}_8', 0.8102, 0.2],
+                            'b1':['{b}_1', 1., 0.5],
+                            'b2':['{b}_2', 0., 2.],
+                            'bs2':['{b}_{s^2}', 0., 2.],
+                            'bn2':['{b}_{\\nabla^2}', 0., 2.]},
             # Likelihood config
             'lik_config':{'obs_std':1.}                    
             }
@@ -342,7 +342,7 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-def get_param_fn(mesh_size, box_size, prior_config, scale_std=1, trace_reparam=False, **config):
+def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, scale_std=1, **config):
     """
     Return a partial replay model function for given config.
     """
