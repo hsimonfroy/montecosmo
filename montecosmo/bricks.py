@@ -29,7 +29,7 @@ def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **
 
         if not inverse:
             input_name, output_name = name+'_', name
-            trunc_push = std2trunc
+            trunc_push = std2trunc # truncate value in interval
             notrunc_push = lambda x : x * std + mean
         else:
             input_name, output_name = name, name+'_'
@@ -38,7 +38,9 @@ def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **
 
         value = params_[input_name]
         if name == 'Omega_m':
-            value = trunc_push(value, mean, std, 0, 1) # truncate value in interval
+            value = trunc_push(value, mean, std, 0, 1)
+        elif name == 'sigma8':
+            value = trunc_push(value, mean, std, 0)
         else:
             value = notrunc_push(value)
 
@@ -64,7 +66,7 @@ def get_cosmology(**cosmo) -> Cosmology:
                     sigma8 = cosmo['sigma8'])
 
 
-def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inverse=False, **params_) -> dict:
+def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
     Return initial conditions at a=1 from latent values.
     """
@@ -73,6 +75,7 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inv
     kvec = fftk(mesh_size)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
     pk_mesh = pk_fn(k_box) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
+    pk_mesh *= scale_std**2
 
     # Parametrize
     name = 'init_mesh'

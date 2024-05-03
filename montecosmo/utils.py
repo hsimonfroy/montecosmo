@@ -334,11 +334,11 @@ def highbody(x, low=-jnp.inf, high=jnp.inf):
     return - norm.ppf(cdf_ny)
 
 def body(x, low=-jnp.inf, high=jnp.inf):
-    condlist = [x < 0]
+    condlist = [x < 0.]
     funclist = [lowbody, highbody]
     return jnp.piecewise(x, condlist, funclist, low=low, high=high)    
 
-def std2trunc(x, loc=0, scale=1, low=-jnp.inf, high=jnp.inf):
+def std2trunc(x, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     """
     Transport standard normal variable to a general truncated normal variable. 
     """
@@ -364,7 +364,7 @@ def invhighbody(y, low=-jnp.inf, high=jnp.inf):
     return - norm.ppf(cdf_nx)
 
 def invbody(y, low=-jnp.inf, high=jnp.inf):
-    condlist = [y < 0]
+    condlist = [y < 0.]
     funclist = [invlowbody, invhighbody]
     return jnp.piecewise(y, condlist, funclist, low=low, high=high)   
 
@@ -378,7 +378,7 @@ def invlowtail(y, low=-jnp.inf, high=None):
     energy, b = jnp.split(jnp.stack(jnp.broadcast_arrays(-y, -low, 1, -1), axis=0), 2)
     return temp * logsumexp( - energy / temp, axis=0, b=b)
 
-def trunc2std(y, loc=0, scale=1, low=-jnp.inf, high=jnp.inf):
+def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     """
     Transport a general truncated normal variable to a standard normal variable.
     """

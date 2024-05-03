@@ -365,7 +365,7 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, scale_s
                 else:
                     cosmology = get_cosmology(**params_)
 
-                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, inverse, **params_)
+                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, inverse, scale_std, **params_)
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
 
