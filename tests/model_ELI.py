@@ -21,25 +21,28 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
+get_ipython().run_line_magic('matplotlib', 'inline')
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
 
-
-# import mlflow
-# mlflow.set_tracking_uri(uri="http://127.0.0.1:8080")
-# mlflow.set_experiment("ELI")
+import mlflow
+mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
+mlflow.set_experiment("ELI")
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[12]:
+# In[2]:
 
 
+get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb')
 
 
 # ## Inference
 
 # ### Import
 
-# In[2]:
+# In[4]:
 
 
 from montecosmo.models import pmrsd_model, prior_model, get_logp_fn, get_score_fn, get_simulator, get_pk_fn, get_param_fn
@@ -66,12 +69,12 @@ print_config(model)
 # init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array([0]+6*[1/10]))
 # init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), 
 #                         get_param_fn(**config)(inverse=True, **fiduc_params), init_params_)
-# pickle_dump(fiduc_params, save_dir+"fiduc_params_1o10.p")
-# pickle_dump(init_params_, save_dir+"init_params_1o10_.p")
+# pickle_dump(fiduc_params, save_dir+"fiduc_params.p")
+# pickle_dump(init_params_, save_dir+"init_params_.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params_1o10.p")
-init_params_ = pickle_load(save_dir+"init_params_1o10_.p")
+fiduc_params = pickle_load(save_dir+"fiduc_params.p")
+init_params_ = pickle_load(save_dir+"init_params_.p")
 
 # Condition model on observables
 obs_names = ['obs_mesh']
@@ -81,13 +84,7 @@ logp_fn = get_logp_fn(obs_model)
 # print(fiduc_params, init_params_)
 
 
-# In[28]:
-
-
-init_params_['init_mesh_'][:,0,0,0]
-
-
-# In[32]:
+# In[5]:
 
 
 init_params_['init_mesh_'][:,0,0,0]
@@ -95,16 +92,16 @@ init_params_['init_mesh_'][:,0,0,0]
 
 # ### Run
 
-# In[11]:
+# In[8]:
 
 
 # num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 4, 8
-num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 8
+num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 1
 
 # Variables to save
 extra_fields = ['num_steps'] # e.g. 'num_steps'
 # save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
-save_path = save_dir + f"NUTS_ns{num_samples:d}_test4"
+save_path = save_dir + f"NUTS_ns{num_samples:d}_test3"
 # save_path = save_dir + f"NUTS_ns{num_samples:d}"
 
 nuts_kernel = numpyro.infer.NUTS(
@@ -113,7 +110,7 @@ nuts_kernel = numpyro.infer.NUTS(
     # inverse_mass_matrix=variance_as_invM, 
     adapt_mass_matrix=True,
     # dense_mass=[('Omega_c_base', 'sigma8_base')], # XXX: dense matrix for cosmo params joint, diagonal for the rest
-    step_size=1e-9, 
+    step_size=1e-6, 
     adapt_step_size=True,
     max_tree_depth=max_tree_depth,)
 
@@ -149,21 +146,22 @@ mcmc = numpyro.infer.MCMC(
 # mcmc.post_warmup_state = last_state
 
 
-# In[7]:
+# In[46]:
 
 
 # mlflow.end_run()
-# mlflow.start_run(run_name="NUTS, standard")
+# mlflow.start_run(run_name="NUTS, 1 vs. 1/10 init cond")
 # mlflow.log_params(config)
 # mlflow.log_params({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
 
 
-# In[8]:
+# In[9]:
 
 
+init_params_one_ = tree_map(lambda x: x[1], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
-# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
+# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
 
 
@@ -194,10 +192,10 @@ new_state, info = mclmc.step(rng_key, state)
 # # pickle_dump(temp, save_dir+'NUTS_mtd10_2.p')
 
 
-# In[7]:
+# In[49]:
 
 
-start_run, end_run = 0,0
+start_run, end_run = 0,1
 var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 # var_names = None
 
@@ -216,10 +214,10 @@ post_samples = get_param_fn(**config)(**post_samples_)
 
 # ### Chain
 
-# In[8]:
+# In[50]:
 
 
-get_ipython().run_line_magic('matplotlib', 'widget')
+get_ipython().run_line_magic('matplotlib', 'inline')
 def plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
     labels = []
     for name in samples:
@@ -253,89 +251,7 @@ plt.subplot(224)
 plot_fn({name:post_samples[name] for name in ['b1', 'b2','bs2','bn2']})
 plt.legend(), 
 plt.tight_layout()
-# mlflow.log_figure(plt.gcf(), f"NUTS_chain.svg")
-plt.show();
-
-
-# In[ ]:
-
-
-get_ipython().run_line_magic('matplotlib', 'widget')
-def plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
-    labels = []
-    for name in samples:
-        if name.endswith('_'): # convention for a latent value 
-            lab = "\\overline"+prior_config[name[:-1]][0]
-        else:
-            lab = prior_config[name][0]
-        labels.append('$'+lab+'$')
-
-    samples_arr = np.array(list((samples.values()))).T
-
-    plt.plot(samples_arr, label=labels)
-    plt.hlines([fiduc[name] for name in samples], 
-            xmin=0, xmax=len(samples_arr), 
-            ls="--", alpha=0.75,
-            color=[f"C{i}" for i in range(len(samples))],)
-# slice_toplot = np.concatenate([range(i,i+10) for i in [0,5*60-5, 6*60-5]])
-
-plot_fn = partial(plot_chain, fiduc=fiduc_params, **config)
-plt.figure(figsize=(10,6))
-plt.subplot(221)
-plot_fn({name:post_samples_[name] for name in ['Omega_m_','sigma8_']})
-plt.legend(), 
-plt.subplot(222)
-plot_fn({name:post_samples_[name] for name in ['b1_','b2_','bs2_','bn2_']})
-plt.legend(), 
-plt.subplot(223)
-plot_fn({name:post_samples[name] for name in ['Omega_m','sigma8']})
-plt.legend(), 
-plt.subplot(224)
-plot_fn({name:post_samples[name] for name in ['b1', 'b2','bs2','bn2']})
-plt.legend(), 
-plt.tight_layout()
-# mlflow.log_figure(plt.gcf(), f"NUTS_chain.svg")
-plt.show();
-
-
-# In[ ]:
-
-
-get_ipython().run_line_magic('matplotlib', 'widget')
-def plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
-    labels = []
-    for name in samples:
-        if name.endswith('_'): # convention for a latent value 
-            lab = "\\overline"+prior_config[name[:-1]][0]
-        else:
-            lab = prior_config[name][0]
-        labels.append('$'+lab+'$')
-
-    samples_arr = np.array(list((samples.values()))).T
-
-    plt.plot(samples_arr, label=labels)
-    plt.hlines([fiduc[name] for name in samples], 
-            xmin=0, xmax=len(samples_arr), 
-            ls="--", alpha=0.75,
-            color=[f"C{i}" for i in range(len(samples))],)
-# slice_toplot = np.concatenate([range(i,i+10) for i in [0,5*60-5, 6*60-5]])
-
-plot_fn = partial(plot_chain, fiduc=fiduc_params, **config)
-plt.figure(figsize=(10,6))
-plt.subplot(221)
-plot_fn({name:post_samples_[name] for name in ['Omega_m_','sigma8_']})
-plt.legend(), 
-plt.subplot(222)
-plot_fn({name:post_samples_[name] for name in ['b1_','b2_','bs2_','bn2_']})
-plt.legend(), 
-plt.subplot(223)
-plot_fn({name:post_samples[name] for name in ['Omega_m','sigma8']})
-plt.legend(), 
-plt.subplot(224)
-plot_fn({name:post_samples[name] for name in ['b1', 'b2','bs2','bn2']})
-plt.legend(), 
-plt.tight_layout()
-# mlflow.log_figure(plt.gcf(), f"NUTS_chain.svg")
+mlflow.log_figure(plt.gcf(), f"NUTS_1o1_chain.svg")
 plt.show();
 
 
