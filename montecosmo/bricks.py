@@ -37,12 +37,12 @@ def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **
             notrunc_push = lambda x : (x - mean) / std
 
         value = params_[input_name]
-        if name == 'Omega_m':
-            value = trunc_push(value, mean, std, 0, 1)
-        elif name == 'sigma8':
-            value = trunc_push(value, mean, std, 0)
-        else:
-            value = notrunc_push(value)
+        # if name == 'Omega_m':
+        #     value = trunc_push(value, mean, std, 0, 1)
+        # elif name == 'sigma8':
+        #     value = trunc_push(value, mean, std, 0)
+        # else:
+        value = notrunc_push(value)
 
         if trace_reparam:
             value = deterministic(output_name, value)
