@@ -4,7 +4,7 @@
 # # Model Explicit Likelihood Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[1]:
+# In[2]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
@@ -21,21 +21,21 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-get_ipython().run_line_magic('matplotlib', 'inline')
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
+# get_ipython().run_line_magic('matplotlib', 'inline')
+# get_ipython().run_line_magic('load_ext', 'autoreload')
+# get_ipython().run_line_magic('autoreload', '2')
 
-import mlflow
-mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
-mlflow.set_experiment("ELI")
+# import mlflow
+# mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
+# mlflow.set_experiment("ELI")
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[2]:
+# In[3]:
 
 
-get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb')
+# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb')
 
 
 # ## Inference
@@ -84,24 +84,24 @@ logp_fn = get_logp_fn(obs_model)
 # print(fiduc_params, init_params_)
 
 
-# In[5]:
+# In[26]:
 
 
-init_params_['init_mesh_'][:,0,0,0]
+print(fiduc_params.keys(), '\n', init_params_['init_mesh_'][:,0,0,0])
 
 
 # ### Run
 
-# In[8]:
+# In[22]:
 
 
-# num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 4, 8
-num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 1
+num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 20, 8
+# num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 1
 
 # Variables to save
 extra_fields = ['num_steps'] # e.g. 'num_steps'
-# save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
-save_path = save_dir + f"NUTS_ns{num_samples:d}_test3"
+save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
+# save_path = save_dir + f"NUTS_ns{num_samples:d}_test5"
 # save_path = save_dir + f"NUTS_ns{num_samples:d}"
 
 nuts_kernel = numpyro.infer.NUTS(
@@ -158,10 +158,10 @@ mcmc = numpyro.infer.MCMC(
 # In[9]:
 
 
-init_params_one_ = tree_map(lambda x: x[1], init_params_)
+# init_params_one_ = tree_map(lambda x: x[1], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
-# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
+# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
 
 
@@ -192,10 +192,10 @@ new_state, info = mclmc.step(rng_key, state)
 # # pickle_dump(temp, save_dir+'NUTS_mtd10_2.p')
 
 
-# In[49]:
+# In[24]:
 
 
-start_run, end_run = 0,1
+start_run, end_run = 0,0
 var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 # var_names = None
 
@@ -214,7 +214,7 @@ post_samples = get_param_fn(**config)(**post_samples_)
 
 # ### Chain
 
-# In[50]:
+# In[25]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
@@ -251,7 +251,7 @@ plt.subplot(224)
 plot_fn({name:post_samples[name] for name in ['b1', 'b2','bs2','bn2']})
 plt.legend(), 
 plt.tight_layout()
-mlflow.log_figure(plt.gcf(), f"NUTS_1o1_chain.svg")
+# mlflow.log_figure(plt.gcf(), f"NUTS_1o1_chain.svg")
 plt.show();
 
 
