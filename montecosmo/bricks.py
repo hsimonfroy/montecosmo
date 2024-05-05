@@ -20,7 +20,7 @@ from montecosmo.utils import std2trunc, trunc2std
 
 def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
-    Return cosmological params from latent values.
+    Return cosmological params from latent params.
     """
     cosmo = {}
     for name in ['Omega_m', 'sigma8']:
@@ -37,12 +37,12 @@ def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **
             notrunc_push = lambda x : (x - mean) / std
 
         value = params_[input_name]
-        # if name == 'Omega_m':
-        #     value = trunc_push(value, mean, std, 0, 1)
-        # elif name == 'sigma8':
-        #     value = trunc_push(value, mean, std, 0)
-        # else:
-        value = notrunc_push(value)
+        if name == 'Omega_m':
+            value = trunc_push(value, mean, std, 0, 1)
+        elif name == 'sigma8':
+            value = trunc_push(value, mean, std, 0)
+        else:
+            value = notrunc_push(value)
 
         if trace_reparam:
             value = deterministic(output_name, value)
@@ -60,7 +60,7 @@ def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **
 
 def get_cosmology(**cosmo) -> Cosmology:
     """
-    Return full cosmology object.
+    Return full cosmology object from cosmological params.
     """
     return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
                     sigma8 = cosmo['sigma8'])
@@ -68,7 +68,7 @@ def get_cosmology(**cosmo) -> Cosmology:
 
 def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
-    Return initial conditions at a=1 from latent values.
+    Return initial conditions at a=1 from latent params.
     """
     # Compute initial power spectrum
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
@@ -95,7 +95,7 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inv
 
 def get_biases(prior_config, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
-    Return biases params from latent values.
+    Return biases params from latent params.
     """
     biases = {}
     for name in ['b1', 'b2', 'bs2', 'bn2']:
@@ -120,7 +120,7 @@ def get_biases(prior_config, trace_reparam=False, inverse=False, scale_std=1., *
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_size, 
                        b1, b2, bs2, bn2, init_mesh, **params):
     """
-    Return Lagrangian bias expansion weight as in [Modi+2020](http://arxiv.org/abs/1910.07097).
+    Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
@@ -165,8 +165,6 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     weights = weights + bs2 * (shear_sqr_part - shear_sqr_part.mean())
 
     # Apply bnabla2, non-punctual term
-    kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_size, box_size)) # - laplace kernel in h/Mpc physical units
     delta_nl = jnp.fft.irfftn( - kk_box * delta_k)
 
     delta_nl_part = cic_read(delta_nl, pos)

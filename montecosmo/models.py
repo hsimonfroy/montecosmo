@@ -34,7 +34,7 @@ default_config={
             # Debugging
             'trace_reparam':False, 
             'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
-            # Prior config {name: (label, mean, std)}
+            # Prior config {name: [label, mean, std]}
             'prior_config':{'Omega_m':['{\\Omega}_m', 0.3111, 0.2], # XXX: Omega_m<0 implies nan
                             'sigma8':['{\\sigma}_8', 0.8102, 0.2],
                             'b1':['{b}_1', 1., 0.5],
@@ -56,19 +56,13 @@ def prior_model(mesh_size, prior_config, **config):
 
     Return latent params for computing cosmology, initial conditions, and Lagrangian biases.
     """
-
     # Sample latent cosmology and Lagrangian biases
     params_ = {}
     
     # Standard param
     for name in prior_config:
         name_ = name+'_'
-        if name == 'Omega_m':
-            params_[name_] = sample(name_, dist.TruncatedNormal(0, 1, low=(0-prior_config[name][1])/prior_config[name][2], high=(1-prior_config[name][1])/prior_config[name][2]))
-        elif name == 'sigma8':
-            params_[name_] = sample(name_, dist.TruncatedNormal(0, 1,low=(0-prior_config[name][1])/prior_config[name][2]))
-        else:
-            params_[name_] = sample(name_, dist.Normal(0, 1))
+        params_[name_] = sample(name_, dist.Normal(0, 1))
 
     # Sample latent initial conditions
     name_ = 'init_mesh_'

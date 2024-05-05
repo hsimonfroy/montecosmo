@@ -4,7 +4,7 @@
 # # Model Explicit Likelihood Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[2]:
+# In[1]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
@@ -21,28 +21,24 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-# get_ipython().run_line_magic('matplotlib', 'inline')
-# get_ipython().run_line_magic('load_ext', 'autoreload')
-# get_ipython().run_line_magic('autoreload', '2')
 
-# import mlflow
-# mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
-# mlflow.set_experiment("ELI")
+
+
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[3]:
+# In[2]:
 
 
-# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb')
+# !jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb
 
 
 # ## Inference
 
 # ### Import
 
-# In[4]:
+# In[3]:
 
 
 from montecosmo.models import pmrsd_model, prior_model, get_logp_fn, get_score_fn, get_simulator, get_pk_fn, get_param_fn
@@ -69,8 +65,8 @@ print_config(model)
 # init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array([0]+6*[1/10]))
 # init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), 
 #                         get_param_fn(**config)(inverse=True, **fiduc_params), init_params_)
-# pickle_dump(fiduc_params, save_dir+"fiduc_params.p")
-# pickle_dump(init_params_, save_dir+"init_params_.p")
+# pickle_dump(fiduc_params, save_dir+"fiduc_params2.p")
+# pickle_dump(init_params_, save_dir+"init_params_2.p")
 
 # Load fiducial and chain init params
 fiduc_params = pickle_load(save_dir+"fiduc_params.p")
@@ -84,24 +80,27 @@ logp_fn = get_logp_fn(obs_model)
 # print(fiduc_params, init_params_)
 
 
-# In[26]:
+# In[4]:
 
 
-print(fiduc_params.keys(), '\n', init_params_['init_mesh_'][:,0,0,0])
+print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
 
 
 # ### Run
 
-# In[22]:
+# In[8]:
 
 
 num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 20, 8
-# num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 1
+# num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
+# num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
+# num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 8
 
 # Variables to save
 extra_fields = ['num_steps'] # e.g. 'num_steps'
-save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
-# save_path = save_dir + f"NUTS_ns{num_samples:d}_test5"
+save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}"
+# save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
+# save_path = save_dir + f"HMC_ns{num_samples:d}_test9"
 # save_path = save_dir + f"NUTS_ns{num_samples:d}"
 
 nuts_kernel = numpyro.infer.NUTS(
@@ -117,11 +116,11 @@ nuts_kernel = numpyro.infer.NUTS(
 hmc_kernel = numpyro.infer.HMC(
     model=obs_model,
     # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
-    # adapt_mass_matrix=False,
-    step_size=1e-40, 
-    # adapt_step_size=False,
+    adapt_mass_matrix=True,
+    step_size=1e-3, 
+    adapt_step_size=True,
     # num_steps=1,
-    # trajectory_length=, # (2**max_tree_depth-1)*step_size_NUTS/4, compare with default 2pi
+    trajectory_length= 1023 * 3*1e-3 / 4, # (2**max_tree_depth-1)*step_size_NUTS/(2 or 4), compare with default 2pi.
     )
 
 # # Propose MALA step size based on [Chen+2019](http://arxiv.org/abs/1801.02309)
@@ -135,7 +134,7 @@ hmc_kernel = numpyro.infer.HMC(
 #                     step_size=0.001,)
 
 mcmc = numpyro.infer.MCMC(
-    sampler=nuts_kernel,
+    sampler=hmc_kernel,
     num_warmup=num_samples,
     num_samples=num_samples, # for each run
     num_chains=num_chains,
@@ -146,16 +145,18 @@ mcmc = numpyro.infer.MCMC(
 # mcmc.post_warmup_state = last_state
 
 
-# In[46]:
+# In[6]:
 
 
 # mlflow.end_run()
-# mlflow.start_run(run_name="NUTS, 1 vs. 1/10 init cond")
+# mlflow.start_run(run_name="HMC, ss=1e-3, L=1, 1initcond")
 # mlflow.log_params(config)
 # mlflow.log_params({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
+print({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
+print(save_path)
 
 
-# In[9]:
+# In[7]:
 
 
 # init_params_one_ = tree_map(lambda x: x[1], init_params_)
@@ -163,6 +164,13 @@ mcmc = numpyro.infer.MCMC(
 # mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
 mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
+
+
+# In[57]:
+
+
+# laststate = pickle_load(save_path+'_laststate.p')
+# laststate.mean_accept_prob, laststate.adapt_state.step_size
 
 
 # In[ ]:
@@ -179,42 +187,23 @@ new_state, info = mclmc.step(rng_key, state)
 
 # ## Analysis
 
-# In[6]:
+# In[12]:
 
 
-# temp = pickle_load(save_dir+'NUTS_mtd10_2.p')
-# print(temp.keys())
-# temp['bs2_'] = temp['bs_']
-# temp['bn2_'] = temp['bnl_']
-# temp.pop('bs_')
-# temp.pop('bnl_')
-# print(temp.keys())
-# # pickle_dump(temp, save_dir+'NUTS_mtd10_2.p')
-
-
-# In[24]:
-
-
-start_run, end_run = 0,0
+start_run, end_run = 0,16
 var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 # var_names = None
 
-post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
+# post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
+post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1], verbose=True)
 # mlflow.log_params({'n_samples':n_samples, 'n_evals':n_evals})
 # post_samples = [param_vfn(**s) for s in post_samples_]
 post_samples = get_param_fn(**config)(**post_samples_)
 
 
-# In[8]:
-
-
-# post_samples2 = {name[:-1]: post_samples_[name] for name in post_samples_}
-# post_samples2.pop('num_step');
-
-
 # ### Chain
 
-# In[25]:
+# In[10]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
@@ -251,27 +240,59 @@ plt.subplot(224)
 plot_fn({name:post_samples[name] for name in ['b1', 'b2','bs2','bn2']})
 plt.legend(), 
 plt.tight_layout()
-# mlflow.log_figure(plt.gcf(), f"NUTS_1o1_chain.svg")
+# mlflow.log_figure(plt.gcf(), f"NUTS_chain_L1_1o10init_neval836666.svg")
 plt.show();
 
 
 # ### Contours
 
-# In[17]:
+# In[27]:
 
 
-samples
+from numpyro.diagnostics import effective_sample_size, gelman_rubin
+
+def get_metric_traj(metric_fn, samples, num, num_steps=None):
+    def _get_metric_traj(samples):
+        metrics = []
+        length = len(samples[0])
+        for i_filt in np.arange(length, 1, -length// num)[::-1]:
+
+            if num_steps is not None:
+                metrics.append([num_steps[:,:i_filt].sum(), metric_fn(samples[:,:i_filt])])
+            else:
+                metrics.append(metric_fn(samples[:,:i_filt]))
+        return jnp.array(metrics).T
+    return tree_map(_get_metric_traj, samples)
+
+n_toplot = 300
+ESSs = get_metric_traj(effective_sample_size, post_samples, n_toplot, post_samples_['num_steps'])
+GRs = get_metric_traj(gelman_rubin, post_samples, n_toplot, post_samples_['num_steps'])
 
 
-# In[29]:
+# In[35]:
 
 
-from getdist import MCSamples
-samples = post_samples
-names = list(samples.keys())
-gdsamples = MCSamples(samples=list(samples.values()), names=names, labels=names)
-{name: gdsamples.getEffectiveSamples(i) for i, name in enumerate(names)}
-# {name: gdsamples.getGelmanRubin(i) for i, name in enumerate(names)}
+plt.figure(figsize=(12,4))
+plt.subplot(121)
+plot_fn = lambda x, **kwargs: plt.semilogx(x[0], x[1]/x[0], **kwargs)
+for name, val in ESSs.items():
+    plot_fn(val, label='$'+config['prior_config'][name][0]+'$')
+plt.legend()
+
+plt.subplot(122)
+plot_fn = lambda x, **kwargs: plt.plot(*x, **kwargs)
+for name, val in GRs.items():
+    plot_fn(val[:,100:], label='$'+config['prior_config'][name][0]+'$')
+plt.legend()
+plt.tight_layout()
+plt.show();
+
+
+# In[31]:
+
+
+from numpyro.diagnostics import print_summary
+print_summary(post_samples, group_by_chain=True) # NOTE: group_by_chain if several chains
 
 
 # In[ ]:
@@ -288,16 +309,10 @@ post_samples_ = load_runs(load_paths, start_run, end_run, var_names, verbose=Tru
 post_samples = [param_fn(**s) for s in post_samples_]
 
 
-# In[14]:
-
-
-from numpyro.diagnostics import print_summary
-print_summary(post_samples, group_by_chain=False) # NOTE: group_by_chain if several chains
-
-
 # In[16]:
 
 
+get_ipython().run_line_magic('matplotlib', 'inline')
 from montecosmo.utils import get_gdsamples, get_gdprior
 
 gdsamples = get_gdsamples(post_samples, label="NUTS, mtd=10", verbose=True, **config)
