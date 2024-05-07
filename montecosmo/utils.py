@@ -224,11 +224,11 @@ def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:
     for path, start, end in zip(paths, starts, ends):
         samples.append(_load_runs(path, start, end, var_names, conc_axis, verbose))
 
-    if paths is load_path:
-        return samples 
-    else:
-    # if isinstance(load_path, str):
+    if isinstance(load_path, str):
         return samples[0]
+    else:
+    # if paths is load_path:
+        return samples 
     
 
 
@@ -301,11 +301,11 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
     for par, lab in zip(params, label):
         gdsamples.append(_get_gdsamples(par, prior_config, lab, verbose))
 
-    if params is samples:
-        return gdsamples 
-    else:
-    # if isinstance(samples, dict):
+    if isinstance(samples, dict):
         return gdsamples[0]
+    else:
+    # if params is samples:
+        return gdsamples 
     
 
 

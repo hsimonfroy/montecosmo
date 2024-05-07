@@ -21,14 +21,11 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-
-
-
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[2]:
+# In[3]:
 
 
 # !jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb
@@ -38,14 +35,14 @@ save_dir = os.path.expanduser("~/scratch/pickles/")
 
 # ### Import
 
-# In[3]:
+# In[4]:
 
 
 from montecosmo.models import pmrsd_model, prior_model, get_logp_fn, get_score_fn, get_simulator, get_pk_fn, get_param_fn
 from montecosmo.models import print_config, get_prior_mean, default_config as config
 
 # Build and render model
-# config.update(a_lpt=0.5, mesh_size=64*np.ones(3, dtype=int))
+# config.update(a_lpt=0.5, mesh_size=8*np.ones(3, dtype=int))
 model = partial(pmrsd_model, **config)
 print_config(model)
 
@@ -77,10 +74,17 @@ obs_names = ['obs_mesh']
 obs_params = {name: fiduc_params[name] for name in obs_names}
 obs_model = condition(model, obs_params)
 logp_fn = get_logp_fn(obs_model)
+param_fn = get_param_fn(**config)
 # print(fiduc_params, init_params_)
 
 
-# In[4]:
+# In[3]:
+
+
+print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
+
+
+# In[ ]:
 
 
 print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
@@ -88,10 +92,13 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 
 # ### Run
 
-# In[8]:
+
+# ### NUTS, HMC
+
+# In[47]:
 
 
-num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 20, 8
+num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 40, 8
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
 # num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 8
@@ -119,8 +126,7 @@ hmc_kernel = numpyro.infer.HMC(
     adapt_mass_matrix=True,
     step_size=1e-3, 
     adapt_step_size=True,
-    # num_steps=1,
-    trajectory_length= 1023 * 3*1e-3 / 4, # (2**max_tree_depth-1)*step_size_NUTS/(2 or 4), compare with default 2pi.
+    trajectory_length= 1023 * 3*1e-3 / 2, # (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
     )
 
 # # Propose MALA step size based on [Chen+2019](http://arxiv.org/abs/1801.02309)
@@ -135,13 +141,15 @@ hmc_kernel = numpyro.infer.HMC(
 
 mcmc = numpyro.infer.MCMC(
     sampler=hmc_kernel,
+    # num_warmup=0,
     num_warmup=num_samples,
     num_samples=num_samples, # for each run
     num_chains=num_chains,
     chain_method="vectorized",
     progress_bar=True,)
 
-# last_state = pickle_load(save_dir+"NUTS_ns60_mtd10_laststate16.p")
+# last_state = pickle_load(save_dir+"HMC_ns256_x_nc8"+"_laststate.p")
+# print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
 # mcmc.post_warmup_state = last_state
 
 
@@ -164,33 +172,14 @@ print(save_path)
 # mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
 mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
-
-
-# In[57]:
-
-
-# laststate = pickle_load(save_path+'_laststate.p')
-# laststate.mean_accept_prob, laststate.adapt_state.step_size
-
-
-# In[ ]:
-
-
-mclmc = blackjax.mcmc.mclmc.mclmc(
-    logdensity_fn=logdensity_fn,
-    L=L,
-    step_size=step_size
-)
-state = mclmc.init(position)
-new_state, info = mclmc.step(rng_key, state)
-
+raise
 
 # ## Analysis
 
-# In[12]:
+# In[47]:
 
 
-start_run, end_run = 0,16
+start_run, end_run = 0,1
 var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 # var_names = None
 
@@ -198,16 +187,23 @@ var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1], verbose=True)
 # mlflow.log_params({'n_samples':n_samples, 'n_evals':n_evals})
 # post_samples = [param_vfn(**s) for s in post_samples_]
-post_samples = get_param_fn(**config)(**post_samples_)
+post_samples = param_fn(**post_samples_)
+
+
+# In[49]:
+
+
+post_samples_ = tree_map(lambda x: x[1], post_samples_)
+post_samples = tree_map(lambda x: x[1], post_samples)
 
 
 # ### Chain
 
-# In[10]:
+# In[40]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
-def plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
+def _plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
     labels = []
     for name in samples:
         if name.endswith('_'): # convention for a latent value 
@@ -225,28 +221,33 @@ def plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
             color=[f"C{i}" for i in range(len(samples))],)
 # slice_toplot = np.concatenate([range(i,i+10) for i in [0,5*60-5, 6*60-5]])
 
-plot_fn = partial(plot_chain, fiduc=fiduc_params, **config)
-plt.figure(figsize=(10,6))
-plt.subplot(221)
-plot_fn({name:post_samples_[name] for name in ['Omega_m_','sigma8_']})
-plt.legend(), 
-plt.subplot(222)
-plot_fn({name:post_samples_[name] for name in ['b1_','b2_','bs2_','bn2_']})
-plt.legend(), 
-plt.subplot(223)
-plot_fn({name:post_samples[name] for name in ['Omega_m','sigma8']})
-plt.legend(), 
-plt.subplot(224)
-plot_fn({name:post_samples[name] for name in ['b1', 'b2','bs2','bn2']})
-plt.legend(), 
-plt.tight_layout()
-# mlflow.log_figure(plt.gcf(), f"NUTS_chain_L1_1o10init_neval836666.svg")
-plt.show();
+def plot_chain(samples_:dict, prior_config:dict, fiduc:dict, **config):
+    samples = get_param_fn(prior_config=prior_config, **config)(**samples_)
+    plot_fn = partial(_plot_chain, prior_config=prior_config, fiduc=fiduc)
+
+    plt.figure(figsize=(10,6))
+    plt.subplot(221)
+    plot_fn({name:samples_[name] for name in ['Omega_m_','sigma8_']})
+    plt.legend(), 
+    plt.subplot(222)
+    plot_fn({name:samples_[name] for name in ['b1_','b2_','bs2_','bn2_']})
+    plt.legend(), 
+    plt.subplot(223)
+    plot_fn({name:samples[name] for name in ['Omega_m','sigma8']})
+    plt.legend(), 
+    plt.subplot(224)
+    plot_fn({name:samples[name] for name in ['b1', 'b2','bs2','bn2']})
+    plt.legend(), 
+    plt.tight_layout()
+    # mlflow.log_figure(plt.gcf(), f"NUTS_chain_L1_1o10init_neval836666.svg")
+    plt.show();
+
+plot_chain(post_samples_[1], fiduc=fiduc_params, **config)
 
 
 # ### Contours
 
-# In[27]:
+# In[40]:
 
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
@@ -269,59 +270,66 @@ ESSs = get_metric_traj(effective_sample_size, post_samples, n_toplot, post_sampl
 GRs = get_metric_traj(gelman_rubin, post_samples, n_toplot, post_samples_['num_steps'])
 
 
-# In[35]:
+# In[46]:
 
 
 plt.figure(figsize=(12,4))
 plt.subplot(121)
-plot_fn = lambda x, **kwargs: plt.semilogx(x[0], x[1]/x[0], **kwargs)
+i_tostart = 50
+plot_fn = lambda x, **kwargs: plt.plot(x[0], x[1]/x[0], **kwargs)
 for name, val in ESSs.items():
-    plot_fn(val, label='$'+config['prior_config'][name][0]+'$')
+    plot_fn(val[:,i_tostart:], label='$'+config['prior_config'][name][0]+'$')
+plt.xlabel("$n_{\\text{eval}}$"), plt.ylabel("$n_{\\text{ESS}}/n_{\\text{eval}}$")
 plt.legend()
 
 plt.subplot(122)
 plot_fn = lambda x, **kwargs: plt.plot(*x, **kwargs)
 for name, val in GRs.items():
-    plot_fn(val[:,100:], label='$'+config['prior_config'][name][0]+'$')
+    plot_fn(val[:,i_tostart:], label='$'+config['prior_config'][name][0]+'$')
+plt.xlabel("$n_{\\text{eval}}$"), plt.ylabel("$\\hat R$")
 plt.legend()
 plt.tight_layout()
 plt.show();
 
 
-# In[31]:
+# In[44]:
 
 
-from numpyro.diagnostics import print_summary
-print_summary(post_samples, group_by_chain=True) # NOTE: group_by_chain if several chains
-
-
-# In[ ]:
-
-
-paths = ["NUTS_ns4429_mtd3","NUTS_ns243_mtd8","NUTS_ns60_mtd10","NUTS_ns15_mtd12"]
-legend_labels = ["NUTS, mtd=3", "NUTS, mtd=8","NUTS, mtd=10","NUTS, mtd=12"]
-start_run, end_run = [1,1,1,1], [10,5,5,5]
+paths = ["NUTS_ns256_x_nc8","HMC_ns256_x_nc8"]
+mc_labels = ["NUTS","HMC"]
+start_run, end_run = [2,2], [20,20]
 
 load_paths = np.array([os.path.join(save_dir, path) for path in paths])
-var_names = [name+'_' for name in config['prior_config']]
+var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 
-post_samples_ = load_runs(load_paths, start_run, end_run, var_names, verbose=True)
+# post_samples_ = load_runs(load_paths, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
+post_samples_ = load_runs(load_paths, start_run, end_run, var_names, conc_axis=[1], verbose=True)
+
 post_samples = [param_fn(**s) for s in post_samples_]
 
 
-# In[16]:
+# In[45]:
+
+
+from numpyro.diagnostics import print_summary
+for sample in post_samples:
+    print_summary(sample, group_by_chain=True) # NOTE: group_by_chain if several chains
+
+
+# In[42]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
 from montecosmo.utils import get_gdsamples, get_gdprior
 
-gdsamples = get_gdsamples(post_samples, label="NUTS, mtd=10", verbose=True, **config)
-gd1 = gdsamples.copy(label="NUTS, mtd=10, 1$\sigma$-smooth", settings={'smooth_scale_2D':1,'smooth_scale_1D':1,})
+gdsamples = get_gdsamples(post_samples, label=mc_labels, verbose=True, **config)
+for i_gds, gds in enumerate(gdsamples):
+    gdsamples[i_gds] = gds.copy(label=mc_labels[i_gds]+", 1$\sigma$-smooth", settings={'smooth_scale_2D':1,'smooth_scale_1D':1,})
 
 # gdsamples.append(get_gdprior(post_samples, verbose=True, **config))
 g = plots.get_subplot_plotter(width_inch=9)
 # g.settings.solid_colors='tab10_r's
-g.triangle_plot(roots=[gdsamples, gd1] , 
+g.triangle_plot(roots=gdsamples , 
                 title_limit=1, 
                 filled=True, 
                 # param_limits={n:[m-2*s,m+2*s] for n,m,s in zip(names, mean, std)},
