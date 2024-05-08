@@ -98,16 +98,16 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 # In[47]:
 
 
-num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 40, 8
+# num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 40, 8
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
-# num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
+num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
 # num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 8
 
 # Variables to save
 extra_fields = ['num_steps'] # e.g. 'num_steps'
-save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}"
+# save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}"
 # save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
-# save_path = save_dir + f"HMC_ns{num_samples:d}_test9"
+save_path = save_dir + f"HMC_ns{num_samples:d}_test12"
 # save_path = save_dir + f"NUTS_ns{num_samples:d}"
 
 nuts_kernel = numpyro.infer.NUTS(
@@ -168,9 +168,10 @@ print(save_path)
 
 
 # init_params_one_ = tree_map(lambda x: x[1], init_params_)
+init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
-# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
+# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
 raise
 
