@@ -4,10 +4,10 @@
 # # Model Explicit Likelihood Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[1]:
+# In[40]:
 
 
-import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
+import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.66' # NOTE: jax preallocates GPU (default 75%)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,11 +21,15 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
+
+# import mlflow
+# mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
+# mlflow.set_experiment("ELI")
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[3]:
+# In[41]:
 
 
 # !jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb
@@ -35,7 +39,7 @@ save_dir = os.path.expanduser("~/scratch/pickles/")
 
 # ### Import
 
-# In[4]:
+# In[42]:
 
 
 from montecosmo.models import pmrsd_model, prior_model, get_logp_fn, get_score_fn, get_simulator, get_pk_fn, get_param_fn
@@ -43,6 +47,7 @@ from montecosmo.models import print_config, get_prior_mean, default_config as co
 
 # Build and render model
 # config.update(a_lpt=0.5, mesh_size=8*np.ones(3, dtype=int))
+config.update(a_lpt=0.5, mesh_size=64*np.ones(3, dtype=int), fourier=True)
 model = partial(pmrsd_model, **config)
 print_config(model)
 
@@ -78,7 +83,7 @@ param_fn = get_param_fn(**config)
 # print(fiduc_params, init_params_)
 
 
-# In[3]:
+# In[43]:
 
 
 print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
@@ -92,23 +97,29 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 
 # ### Run
 
+# In[44]:
+
+
+init_params_one_ = tree_map(lambda x: x[2], init_params_)
+logp_fn(init_params_one_)
+
 
 # ### NUTS, HMC
 
-# In[47]:
+# In[46]:
 
 
-# num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 40, 8
+# num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 80, 8
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
-num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
-# num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 4, 8
+# num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
+num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 1
 
 # Variables to save
 extra_fields = ['num_steps'] # e.g. 'num_steps'
-# save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}"
-# save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}"
-save_path = save_dir + f"HMC_ns{num_samples:d}_test12"
-# save_path = save_dir + f"NUTS_ns{num_samples:d}"
+# save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}_2"
+# save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}_2"
+# save_path = save_dir + f"HMC_ns{num_samples:d}_test9"
+save_path = save_dir + f"NUTS_ns{num_samples:d}_test_fourier"
 
 nuts_kernel = numpyro.infer.NUTS(
     model=obs_model,
@@ -116,7 +127,7 @@ nuts_kernel = numpyro.infer.NUTS(
     # inverse_mass_matrix=variance_as_invM, 
     adapt_mass_matrix=True,
     # dense_mass=[('Omega_c_base', 'sigma8_base')], # XXX: dense matrix for cosmo params joint, diagonal for the rest
-    step_size=1e-6, 
+    step_size=1e-5, 
     adapt_step_size=True,
     max_tree_depth=max_tree_depth,)
 
@@ -126,7 +137,7 @@ hmc_kernel = numpyro.infer.HMC(
     adapt_mass_matrix=True,
     step_size=1e-3, 
     adapt_step_size=True,
-    trajectory_length= 1023 * 3*1e-3 / 2, # (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
+    trajectory_length= 1023 * 3*1e-3 / 4, # (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
     )
 
 # # Propose MALA step size based on [Chen+2019](http://arxiv.org/abs/1801.02309)
@@ -140,7 +151,7 @@ hmc_kernel = numpyro.infer.HMC(
 #                     step_size=0.001,)
 
 mcmc = numpyro.infer.MCMC(
-    sampler=hmc_kernel,
+    sampler=nuts_kernel,
     # num_warmup=0,
     num_warmup=num_samples,
     num_samples=num_samples, # for each run
@@ -153,7 +164,7 @@ mcmc = numpyro.infer.MCMC(
 # mcmc.post_warmup_state = last_state
 
 
-# In[6]:
+# In[47]:
 
 
 # mlflow.end_run()
@@ -164,17 +175,16 @@ print({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_dep
 print(save_path)
 
 
-# In[7]:
+# In[48]:
 
 
-# init_params_one_ = tree_map(lambda x: x[1], init_params_)
-init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
+# init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
 mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
 # mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
-raise
 
+raise
 # ## Analysis
 
 # In[47]:

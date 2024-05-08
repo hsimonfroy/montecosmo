@@ -41,8 +41,9 @@ default_config={
                             'b2':['{b}_2', 0., 2.],
                             'bs2':['{b}_{s^2}', 0., 2.],
                             'bn2':['{b}_{\\nabla^2}', 0., 2.]},
+            'fourier':False,                    
             # Likelihood config
-            'lik_config':{'obs_std':1.}                    
+            'lik_config':{'obs_std':1.},
             }
 
 
@@ -99,7 +100,8 @@ def pmrsd_model_fn(latent_params,
                 galaxy_density,
                 trace_reparam, 
                 trace_meshes,
-                prior_config,):
+                prior_config,
+                fourier,):
     """
     Parameters
     ----------
@@ -136,7 +138,7 @@ def pmrsd_model_fn(latent_params,
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
     cosmology = get_cosmology(**cosmo)
-    init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, **latent_params)
+    init_mesh = get_init_mesh(cosmology, mesh_size, box_size, fourier, trace_reparam, **latent_params)
     biases = get_biases(prior_config, trace_reparam, **latent_params)
 
     # Create regular grid of particles
@@ -212,6 +214,7 @@ def pmrsd_model(mesh_size,
                   trace_reparam, 
                   trace_meshes,
                   prior_config,
+                  fourier,
                   lik_config,
                   noise=0.):
     """
@@ -265,7 +268,8 @@ def pmrsd_model(mesh_size,
                                 galaxy_density, # in galaxy / (Mpc/h)^3
                                 trace_reparam, 
                                 trace_meshes,
-                                prior_config,)
+                                prior_config,
+                                fourier,)
 
     # Sample from likelihood
     obs_mesh = likelihood_model(gxy_mesh, lik_config, noise)
@@ -341,7 +345,8 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
     return pk_fn
 
 
-def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, scale_std=1, **config):
+def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
+                 trace_reparam=False, scale_std=1, **config):
     """
     Return a partial replay model function for given config.
     """
@@ -364,7 +369,8 @@ def get_param_fn(mesh_size, box_size, prior_config, trace_reparam=False, scale_s
                 else:
                     cosmology = get_cosmology(**params_)
 
-                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, trace_reparam, inverse, scale_std, **params_)
+                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, fourier, 
+                                          trace_reparam, inverse, scale_std, **params_)
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
 

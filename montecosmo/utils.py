@@ -389,23 +389,50 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     return jnp.piecewise(y, condlist, funclist, low=low, high=high)
 
 
-##### To plot a table ####
-# plt.subplot(position=[0,-0.01,1,1]), plt.axis('off')
-# labels = ["\overline"+config['prior_config'][name[:-1]][0] for name in post_samples_]
-# # Define a custom formatting function to vectorize on summary array
-# def format_value(value):
-#     return f"{value:0.2f}"
 
-# summary_dict = numpyro.diagnostics.summary(post_samples_, group_by_chain=False) # NOTE: group_by_chain if several chains
-# summary_subdicts = list(summary_dict.values())
-# summary_table = [list(summary_subdicts[i].values()) for i in range(len(summary_dict))]
-# summary_cols = list(summary_subdicts[0].keys())
 
-# # gd.fig.axes[-1]('tight'), plt.axis('tight'), plt.subplots_adjust(top=2), plt.gcf().patch.set_visible(False), 
-# plt.table(cellText=np.vectorize(format_value)(summary_table),
-#             # rowLabels=list(summary_dic.keys()),
-#             rowLabels=["$"+label+"$" for label in labels], 
-#             colLabels=summary_cols,)
-# # plt.savefig(save_path+"_contour", bbox_inches='tight') # NOTE: tight bbox required for table
-# # mlflow.log_figure(plt.gcf(), f"NUTS_contour.svg", bbox_inches='tight')  # NOTE: tight bbox required for table
-# plt.show();
+def id_rfftn(mesh_size, complex="real"):
+    """
+    Return indices and weights to make a Gaussian tensor of size `mesh_size`
+    distributed as the real Fourier transform of a Gaussian tensor.
+    """
+    sx, sy, sz = mesh_size
+    assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
+    half = sz//2
+    shape = (sx, sy, half+1)
+    weights = jnp.ones(shape)
+    id = jnp.zeros((3,*shape), dtype=int)
+    xyz = jnp.indices(mesh_size)
+
+    if complex == "imag":
+        sli = slice(half+1, None)
+    else:
+        sli = slice(1,half)
+    id = id.at[...,1:-1].set( xyz[...,sli] )
+        
+    for i in [0,half]: # two faces
+        id = id.at[...,1:,1:half,i].set(xyz[...,1:,sli,i])
+        id = id.at[...,1:,half+1:,i].set(xyz[...,1:,sli,i][...,::-1,::-1])
+        if complex == "imag":
+            weights = weights.at[1:,half+1:,i].set(-1)
+
+        for j in [0,half]: # two edges per faces
+            id = id.at[...,1:half,j,i].set(xyz[...,sli,j,i])
+            id = id.at[...,half+1:,j,i].set(xyz[...,sli,j,i][...,::-1])
+            id = id.at[...,0,1:half,i].set(xyz[...,0,sli,i])
+            id = id.at[...,0,half+1:,i].set(xyz[...,0,sli,i][...,::-1])
+            if complex == "imag":
+                weights = weights.at[half+1:,j,i].set(-1)
+                weights = weights.at[0,half+1:,i].set(-1)
+
+            for k in [0,half]: # two points per edges
+                if complex == "imag":
+                    id = id.at[...,k,j,i].set(0)
+                    weights = weights.at[k,j,i].set(0)
+                else:
+                    id = id.at[...,k,j,i].set(xyz[...,k,j,i])
+                    weights = weights.at[k,j,i].set(jnp.array(2**.5))
+    
+    return id, weights
+
+

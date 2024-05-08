@@ -12,13 +12,14 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
-from montecosmo.utils import std2trunc, trunc2std
+from montecosmo.utils import std2trunc, trunc2std, id_rfftn
 
 
 
    
 
-def get_cosmo(prior_config, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
+def get_cosmo(prior_config, 
+              trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
     Return cosmological params from latent params.
     """
@@ -66,7 +67,8 @@ def get_cosmology(**cosmo) -> Cosmology:
                     sigma8 = cosmo['sigma8'])
 
 
-def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
+def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
+                  trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
     Return initial conditions at a=1 from latent params.
     """
@@ -77,23 +79,33 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, trace_reparam=False, inv
     pk_mesh = pk_fn(k_box) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
     pk_mesh *= scale_std**2
 
+
     # Parametrize
     name = 'init_mesh'
     if not inverse:
         input_name, output_name = name+'_', name
-        init_mesh = jnp.fft.rfftn(params_[input_name]) * pk_mesh**0.5
+        init_mesh = params_[input_name]
+        if fourier:
+            id_real, w_real = id_rfftn(mesh_size, complex="real")
+            id_imag, w_imag = id_rfftn(mesh_size, complex="imag")
+            delta_k = init_mesh[*id_real] * w_real + 1j * init_mesh[*id_imag] * w_imag
+        else:
+            delta_k = jnp.fft.rfftn(init_mesh)
+        delta_k = delta_k * pk_mesh**0.5
+
     else:
         input_name, output_name = name, name+'_'
-        init_mesh = jnp.fft.rfftn(params_[input_name]) / pk_mesh**0.5   
+        delta_k = jnp.fft.rfftn(params_[input_name]) / pk_mesh**0.5   
 
-    init_mesh = jnp.fft.irfftn(init_mesh)
+    init_mesh = jnp.fft.irfftn(delta_k)
 
     if trace_reparam:
         init_mesh = deterministic(output_name, init_mesh)
     return {output_name:init_mesh}
 
 
-def get_biases(prior_config, trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
+def get_biases(prior_config, 
+               trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
     """
     Return biases params from latent params.
     """
@@ -344,8 +356,5 @@ def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
     delta_k = jnp.fft.rfftn(init_mesh)
     kaiser_mesh = jnp.fft.irfftn(weights * delta_k)
     return kaiser_mesh
-
-
-
 
 
