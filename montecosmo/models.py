@@ -170,9 +170,9 @@ def pmrsd_model_fn(latent_params,
         else: 
             saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                             stepsize_controller=controller, max_steps=100, saveat=saveat)
+                             stepsize_controller=controller, max_steps=20, saveat=saveat)
         particles = sol.ys
-        debug.print("num_steps: {n}", n=sol.stats['num_steps'])
+        # debug.print("num_steps: {n}", n=sol.stats['num_steps'])
 
         if trace_meshes >= 2:
             particles = deterministic('pm_part', particles)
