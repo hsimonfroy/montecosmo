@@ -4,7 +4,7 @@
 # # Model Explicit Likelihood Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[40]:
+# In[1]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
@@ -21,15 +21,11 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-
-# import mlflow
-# mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
-# mlflow.set_experiment("ELI")
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[41]:
+# In[2]:
 
 
 # !jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb
@@ -39,7 +35,7 @@ save_dir = os.path.expanduser("~/scratch/pickles/")
 
 # ### Import
 
-# In[42]:
+# In[6]:
 
 
 from montecosmo.models import pmrsd_model, prior_model, get_logp_fn, get_score_fn, get_simulator, get_pk_fn, get_param_fn
@@ -68,12 +64,14 @@ print_config(model)
 # init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array([0]+6*[1/10]))
 # init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), 
 #                         get_param_fn(**config)(inverse=True, **fiduc_params), init_params_)
-# pickle_dump(fiduc_params, save_dir+"fiduc_params2.p")
-# pickle_dump(init_params_, save_dir+"init_params_2.p")
+# pickle_dump(fiduc_params, save_dir+"fiduc_params_pm.p")
+# pickle_dump(init_params_, save_dir+"init_params_pm_.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params.p")
-init_params_ = pickle_load(save_dir+"init_params_.p")
+# fiduc_params = pickle_load(save_dir+"fiduc_params.p")
+# init_params_ = pickle_load(save_dir+"init_params_.p")
+fiduc_params = pickle_load(save_dir+"fiduc_params_pm.p")
+init_params_ = pickle_load(save_dir+"init_params_pm_.p")
 
 # Condition model on observables
 obs_names = ['obs_mesh']
@@ -84,7 +82,7 @@ param_fn = get_param_fn(**config)
 # print(fiduc_params, init_params_)
 
 
-# In[43]:
+# In[5]:
 
 
 print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
@@ -98,29 +96,30 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 
 # ### Run
 
-# In[44]:
+# In[5]:
 
 
 init_params_one_ = tree_map(lambda x: x[0], init_params_)
 logp_fn(init_params_one_)
 
 
+
 # ### NUTS, HMC
 
-# In[46]:
+# In[8]:
 
 
-# num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 80, 8
+num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 20, 8
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
-num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 1
+# num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 1
 
 # Variables to save
 extra_fields = ['num_steps'] # e.g. 'num_steps'
 # save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}_2"
-# save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}_2"
-# save_path = save_dir + f"HMC_ns{num_samples:d}_test9"
-save_path = save_dir + f"NUTS_ns{num_samples:d}_test_fourier"
+save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}_pm"
+# save_path = save_dir + f"HMC_ns{num_samples:d}_test12"
+# save_path = save_dir + f"NUTS_ns{num_samples:d}_test_fourier"
 
 nuts_kernel = numpyro.infer.NUTS(
     model=obs_model,
@@ -128,7 +127,7 @@ nuts_kernel = numpyro.infer.NUTS(
     # inverse_mass_matrix=variance_as_invM, 
     adapt_mass_matrix=True,
     # dense_mass=[('Omega_c_base', 'sigma8_base')], # XXX: dense matrix for cosmo params joint, diagonal for the rest
-    step_size=1e-5, 
+    step_size=1e-4, 
     adapt_step_size=True,
     max_tree_depth=max_tree_depth,)
 
@@ -165,11 +164,11 @@ mcmc = numpyro.infer.MCMC(
 # mcmc.post_warmup_state = last_state
 
 
-# In[47]:
+# In[16]:
 
 
 # mlflow.end_run()
-# mlflow.start_run(run_name="HMC, ss=1e-3, L=1, 1initcond")
+# mlflow.start_run(run_name="HMC, ss=1e-3")
 # mlflow.log_params(config)
 # mlflow.log_params({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
 print({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
@@ -181,22 +180,22 @@ print(save_path)
 
 # init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
-# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
+# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
 
-raise
+
 # ## Analysis
 
-# In[47]:
+# In[12]:
 
 
-start_run, end_run = 0,1
+start_run, end_run = 0,0
 var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
 # var_names = None
 
-# post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
-post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1], verbose=True)
+post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
+# post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1], verbose=True)
 # mlflow.log_params({'n_samples':n_samples, 'n_evals':n_evals})
 # post_samples = [param_vfn(**s) for s in post_samples_]
 post_samples = param_fn(**post_samples_)
@@ -211,7 +210,7 @@ post_samples = tree_map(lambda x: x[1], post_samples)
 
 # ### Chain
 
-# In[40]:
+# In[13]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
@@ -251,10 +250,11 @@ def plot_chain(samples_:dict, prior_config:dict, fiduc:dict, **config):
     plot_fn({name:samples[name] for name in ['b1', 'b2','bs2','bn2']})
     plt.legend(), 
     plt.tight_layout()
-    # mlflow.log_figure(plt.gcf(), f"NUTS_chain_L1_1o10init_neval836666.svg")
+    # mlflow.log_figure(plt.gcf(), f"HMC_chain_L1o2_neval1102004.svg")
     plt.show();
 
-plot_chain(post_samples_[1], fiduc=fiduc_params, **config)
+# plot_chain(post_samples_[1], fiduc=fiduc_params, **config)
+plot_chain(post_samples_, fiduc=fiduc_params, **config)
 
 
 # ### Contours

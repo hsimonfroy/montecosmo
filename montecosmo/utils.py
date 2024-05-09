@@ -396,9 +396,9 @@ def id_rfftn(mesh_size, complex="real"):
     Return indices and weights to make a Gaussian tensor of size `mesh_size` (3D)
     distributed as the real Fourier transform of a Gaussian tensor.
     """
-    mesh_size = jnp.array(mesh_size)
+    mesh_size = np.array(mesh_size)
     sx, sy, sz = mesh_size
-    assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
+    # assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
     hx, hy, hz = mesh_size//2
     shape = (sx, sy, hz+1)
     weights = jnp.ones(shape) * (mesh_size.prod() / 2)**.5
@@ -412,19 +412,17 @@ def id_rfftn(mesh_size, complex="real"):
     id = id.at[...,1:-1].set( xyz[...,sliz] )
         
     for k in [0,hz]: # two faces
-        id = id.at[...,1:,1:hy,k].set(xyz[...,1:,sliy,k])
+        id = id.at[...,1:hy,k].set(xyz[...,sliy,k])
         id = id.at[...,1:,hy+1:,k].set(xyz[...,1:,sliy,k][...,::-1,::-1])
+        id = id.at[...,0,hy+1:,k].set(xyz[...,0,sliy,k][...,::-1]) # handle the border
         if complex == "imag":
-            weights = weights.at[1:,hy+1:,k].multiply(-1)
+            weights = weights.at[:,hy+1:,k].multiply(-1)
 
         for j in [0,hy]: # two edges per faces
             id = id.at[...,1:hx,j,k].set(xyz[...,slix,j,k])
             id = id.at[...,hx+1:,j,k].set(xyz[...,slix,j,k][...,::-1])
-            id = id.at[...,0,1:hy,k].set(xyz[...,0,sliy,k])
-            id = id.at[...,0,hy+1:,k].set(xyz[...,0,sliy,k][...,::-1])
             if complex == "imag":
                 weights = weights.at[hx+1:,j,k].multiply(-1)
-                weights = weights.at[0,hy+1:,k].multiply(-1)
 
             for i in [0,hx]: # two points per edges
                 id = id.at[...,i,j,k].set(xyz[...,i,j,k])
