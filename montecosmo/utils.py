@@ -391,9 +391,9 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
 
 
 
-def id_rfftn(mesh_size, complex="real"):
+def id_rfftn(mesh_size, part="real"):
     """
-    Return indices and weights to make a Gaussian tensor of size `mesh_size` (3D)
+    Return indices and weights to make a Gaussian tensor of size ``mesh_size`` (3D)
     distributed as the real Fourier transform of a Gaussian tensor.
     """
     mesh_size = np.array(mesh_size)
@@ -405,7 +405,7 @@ def id_rfftn(mesh_size, complex="real"):
     id = jnp.zeros((3,*shape), dtype=int)
     xyz = jnp.indices(mesh_size)
 
-    if complex == "imag":
+    if part == "imag":
         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
     else:
         slix, sliy, sliz = slice(1,hx), slice(1,hy), slice(1,hz)
@@ -415,18 +415,18 @@ def id_rfftn(mesh_size, complex="real"):
         id = id.at[...,1:hy,k].set(xyz[...,sliy,k])
         id = id.at[...,1:,hy+1:,k].set(xyz[...,1:,sliy,k][...,::-1,::-1])
         id = id.at[...,0,hy+1:,k].set(xyz[...,0,sliy,k][...,::-1]) # handle the border
-        if complex == "imag":
+        if part == "imag":
             weights = weights.at[:,hy+1:,k].multiply(-1)
 
         for j in [0,hy]: # two edges per faces
             id = id.at[...,1:hx,j,k].set(xyz[...,slix,j,k])
             id = id.at[...,hx+1:,j,k].set(xyz[...,slix,j,k][...,::-1])
-            if complex == "imag":
+            if part == "imag":
                 weights = weights.at[hx+1:,j,k].multiply(-1)
 
             for i in [0,hx]: # two points per edges
                 id = id.at[...,i,j,k].set(xyz[...,i,j,k])
-                if complex == "imag":
+                if part == "imag":
                     weights = weights.at[i,j,k].multiply(0)
                 else:
                     weights = weights.at[i,j,k].multiply(2**.5)

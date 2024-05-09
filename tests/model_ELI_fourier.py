@@ -72,7 +72,8 @@ print_config(model)
 # pickle_dump(init_params_, save_dir+"init_params_2.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params_fourier.p")
+fiduc_params = pickle_load(save_dir+"fiduc_params.p")
+# fiduc_params = pickle_load(save_dir+"fiduc_params_fourier.p")
 init_params_ = pickle_load(save_dir+"init_params_fourier_.p")
 
 # Condition model on observables
@@ -128,7 +129,7 @@ nuts_kernel = numpyro.infer.NUTS(
     # inverse_mass_matrix=variance_as_invM, 
     adapt_mass_matrix=True,
     # dense_mass=[('Omega_c_base', 'sigma8_base')], # XXX: dense matrix for cosmo params joint, diagonal for the rest
-    step_size=1e-5, 
+    step_size=1e-6, 
     adapt_step_size=True,
     max_tree_depth=max_tree_depth,)
 
@@ -181,7 +182,8 @@ print(save_path)
 
 # init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=fiduc_params)
+# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
 # mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
 

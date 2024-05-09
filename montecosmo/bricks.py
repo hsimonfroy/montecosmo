@@ -84,24 +84,25 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
     name = 'init_mesh'
     if not inverse:
         input_name, output_name = name+'_', name
-        init_mesh = params_[input_name]
+        init = params_[input_name]
         if fourier:
-            id_real, w_real = id_rfftn(mesh_size, complex="real")
-            id_imag, w_imag = id_rfftn(mesh_size, complex="imag")
-            delta_k = init_mesh[*id_real] * w_real + 1j * init_mesh[*id_imag] * w_imag
+            id_real, w_real = id_rfftn(mesh_size, part="real")
+            id_imag, w_imag = id_rfftn(mesh_size, part="imag")
+            delta_k = init[*id_real] * w_real + 1j * init[*id_imag] * w_imag
         else:
-            delta_k = jnp.fft.rfftn(init_mesh)
+            delta_k = jnp.fft.rfftn(init)
         delta_k = delta_k * pk_mesh**0.5
-
+    
+    # TODO: inverse in Fourier
     else:
         input_name, output_name = name, name+'_'
         delta_k = jnp.fft.rfftn(params_[input_name]) / pk_mesh**0.5   
 
-    init_mesh = jnp.fft.irfftn(delta_k)
+    init = jnp.fft.irfftn(delta_k)
 
     if trace_reparam:
-        init_mesh = deterministic(output_name, init_mesh)
-    return {output_name:init_mesh}
+        init = deterministic(output_name, init)
+    return {output_name:init}
 
 
 def get_biases(prior_config, 
