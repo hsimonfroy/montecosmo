@@ -7,7 +7,7 @@
 # In[48]:
 
 
-import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.50' # NOTE: jax preallocates GPU (default 75%)
+import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,21 +21,14 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-get_ipython().run_line_magic('matplotlib', 'inline')
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
 
-import mlflow
-mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
-mlflow.set_experiment("ELI")
 from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[50]:
+# In[49]:
 
 
-get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb')
 
 
 # ## Inference
@@ -104,120 +97,6 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
 
 
-# ### Run
-
-# In[41]:
-
-
-init_params_one_ = tree_map(lambda x: x[2], init_params_)
-# init_params_one_ = tree_map(lambda x: x[2], {'init_mesh_':init_params_['init_mesh_']})
-print("logp: ",logp_fn(init_params_one_))
-
-
-# ### MCLMC
-
-# In[53]:
-
-
-import blackjax
-
-def MCLMC_run(key, init_state, logdensity, n_samples, transform):
-    init_key, tune_key, run_key = jr.split(key, 3)
-
-    # # create an initial state for the sampler
-    # initial_state = blackjax.mcmc.mclmc.init(
-    #     position=init_state, logdensity_fn=logdensity, rng_key=init_key
-    # )
-
-    # # build the kernel
-    # kernel = blackjax.mcmc.mclmc.build_kernel(
-    #     logdensity_fn=logdensity,
-    #     integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-    # )
-
-    #####
-    # # find values for L and step_size
-    # tunning = blackjax.adaptation.mclmc_adaptation.mclmc_find_L_and_step_size(
-    #     mclmc_kernel=kernel,
-    #     num_steps=n_samples,
-    #     state=initial_state,
-    #     rng_key=tune_key,
-    #     num_effective_samples=1024,
-    # )
-    # state_after_tuning, mclmc_sampler_params = tunning
-    # L = mclmc_sampler_params.L
-    # step_size = mclmc_sampler_params.step_size
-    # initial_state = state_after_tuning
-    #####
-
-    L = 50
-    step_size = 2
-    initial_state = init_state
-    # tunning = (initial_state, {'L':L, 'step_size':step_size})
-
-
-    # use the quick wrapper to build a new kernel with the tuned parameters
-    sampling_alg = blackjax.mclmc(
-        logdensity,
-        L=L,
-        step_size=step_size,
-    )
-
-    # run the sampler
-    last_state, samples, infos = blackjax.util.run_inference_algorithm(
-        rng_key = run_key,
-        initial_state_or_position = initial_state,
-        inference_algorithm = sampling_alg,
-        num_steps = n_samples,
-        transform = transform,
-        progress_bar = True,
-    )
-
-    return last_state, samples, infos
-
-def get_MCLMC_run(logdensity, n_samples, transform):
-    return partial(MCLMC_run, 
-                   logdensity = logdensity,
-                   n_samples = n_samples,
-                   transform = transform,)
-
-
-# In[54]:
-
-
-logdensity = logp_fn
-# n_samples, n_runs, n_chains = 3, 1, 8
-n_samples, n_runs, n_chains = 256, 4, 4
-save_path = save_dir + f"MCLMC_ns{n_samples:d}_x_nc{n_chains}_test1"
-
-run_fn = get_MCLMC_run(logdensity, n_samples, transform=lambda x: x.position)
-key = jr.key(42)
-# last_state = init_params_
-last_state = tree_map(lambda x: x[:n_chains], init_params_)
-
-for i_run in range(1, n_runs+1):
-    print(f"run {i_run}/{n_runs}")
-    key, run_key = jr.split(key, 2)
-    last_state, samples, infos = vmap(run_fn)(jr.split(run_key, n_chains), last_state)
-    pickle_dump(samples, save_path+f"_{i_run}.p")
-    pickle_dump(last_state, save_path+f"_laststate.p")
-
-
-# ### HMCGibbs
-
-# In[5]:
-
-
-# from jax.flatten_util import ravel_pytree
-# def mult_tree(params, factor):
-#     flat, deravel = ravel_pytree(params)
-#     return deravel(flat * factor)
-
-# last_state = pickle_load(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
-# print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
-# invmm = list(last_state.adapt_state.inverse_mass_matrix.values())[0][0]
-# logdensity = lambda x : logp_fn(mult_tree(x, invmm**.5))
-# init_pos = mult_tree(init_params_one_, invmm**(-.5))
 
 
 # In[43]:
@@ -422,22 +301,28 @@ def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples):
 
 
 logdensity = logp_fn
-n_samples, n_runs, n_chains = 3, 1, 8
+n_samples, n_runs, n_chains = 256, 20, 8
 save_path = save_dir + f"HMCGibbs_ns{n_samples:d}_x_nc{n_chains}"
 
 step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
-run_fn = get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)
+run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
 key = jr.key(42)
-last_state = vmap(init_state_fn)(init_params_)
+# last_state = vmap(init_state_fn)(init_params_)
+last_state = pickle_load(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate20.p")
+print(last_state)
 
-for i_run in range(1, n_runs+1):
+# for i_run in range(1, n_runs+1):
+i_shift = 20
+for i_run in range(i_shift+1, i_shift+n_runs+1):
     print(f"run {i_run}/{n_runs}")
     key, run_key = jr.split(key, 2)
-    last_state, samples, infos = vmap(run_fn)(jr.split(run_key, n_chains), last_state)
+    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
     pickle_dump(samples | infos, save_path+f"_{i_run}.p")
     pickle_dump(last_state, save_path+f"_laststate.p")
 
 
+
+raise
 # ### NUTS, HMC
 
 # In[108]:

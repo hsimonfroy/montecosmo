@@ -18,7 +18,7 @@ from numpyro.infer import MCMC
 from numpyro.diagnostics import print_summary
 from getdist.gaussian_mixtures import GaussianND
 from getdist import MCSamples
-from collections.abc import Iterable
+from typing import Iterable, Callable
 
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
@@ -178,37 +178,41 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None,
     return mcmc
 
 
-def _load_runs(load_path:str, start_run:int, end_run:int, var_names:Iterable[str]=None, conc_axis:int=0, verbose=False):
+def _load_runs(load_path:str, start_run:int, end_run:int, 
+               var_names:Iterable[str]=None, conc_axis:int|Iterable[int]=0, transform:Callable=lambda x:x, verbose=False):
     if verbose:
-        print(f"loading: {os.path.basename(load_path)}")
+        print(f"loading: {os.path.basename(load_path)}, from run {start_run} to run {end_run} (included)")
 
     for i_run in range(start_run, end_run+1):
         # Load
         samples_part = pickle_load(load_path+f"_{i_run}.p")   
         if var_names is None: # NOTE: var_names should not be a consumable iterator
             var_names = list(samples_part.keys())
-        samples_part = {key: samples_part[key][None] for key in var_names}
+        samples_part = {key: samples_part[key] for key in var_names}
+        samples_part = transform(samples_part)
 
         # Init or append samples
         if i_run == start_run:
-            samples = samples_part
+            samples = tree_map(lambda x: x[None], samples_part)
         else:
             # samples = {key: jnp.concatenate((samples[key], samples_part[key])) for key in var_names}
-            samples = tree_map(lambda x,y: jnp.concatenate((x, y), axis=0), samples, samples_part)
+            samples = tree_map(lambda x,y: jnp.concatenate((x, y[None]), axis=0), samples, samples_part)
             del samples_part  
         
     for axis in jnp.atleast_1d(conc_axis):
         samples = tree_map(lambda x: jnp.concatenate(x, axis=axis), samples)
             
     if verbose:
-        # print(f"total run length: {samples[list(samples.keys())[0]].shape[0]}")
-        n_samples, n_evals = samples['num_steps'].shape, samples['num_steps'].sum(axis=-1)
-        print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
+        if 'num_steps' in samples.keys():
+            n_samples, n_evals = samples['num_steps'].shape, samples['num_steps'].sum(axis=-1)
+            print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
+        else:
+            print(f"first variable length: {len(samples[list(samples.keys())[0]])}")
     return samples
 
 
 def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:int|Iterable[int], 
-              var_names:Iterable[str]=None, verbose=False, conc_axis:int=0):
+              var_names:Iterable[str]=None, conc_axis:int|Iterable[int]=0, transform:Callable=lambda x:x, verbose=False):
     """
     Load and append runs (or extra fields) saved in different files with same name except index.
 
@@ -222,7 +226,7 @@ def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:
     samples = []
 
     for path, start, end in zip(paths, starts, ends):
-        samples.append(_load_runs(path, start, end, var_names, conc_axis, verbose))
+        samples.append(_load_runs(path, start, end, var_names, conc_axis, transform, verbose))
 
     if isinstance(load_path, str):
         return samples[0]
