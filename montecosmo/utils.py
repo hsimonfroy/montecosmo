@@ -99,6 +99,7 @@ def set_plotting_options(use_TeX):
     params = {'text.usetex': use_TeX,
             #   'ps.useafm': True,
             #   'pdf.use14corefonts': True,
+              'font.family': "roman"
               } # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
     plt.rcParams.update(params)
 
@@ -208,6 +209,7 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
             print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
         else:
             print(f"first variable length: {len(samples[list(samples.keys())[0]])}")
+        print("")
     return samples
 
 

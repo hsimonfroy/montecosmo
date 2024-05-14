@@ -98,230 +98,6 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 
 
 
-
-# In[43]:
-
-
-import blackjax
-import blackjax.progress_bar
-
-def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init, parameters):
-    """
-    General MWG kernel.
-
-    Updates each component of ``state`` conditioned on all the others using a component-specific MCMC algorithm
-
-    Parameters
-    ----------
-    rng_key
-        The PRNG key.
-    state
-        Dictionary where each item is the state of an MCMC algorithm, i.e., an object of type ``AlgorithmState``.
-    logdensity_fn
-        The log-density function on all components, where the arguments are the keys of ``state``.
-    step_fn
-        Dictionary with the same keys as ``state``,
-        each element of which is an MCMC stepping functions on the corresponding component.
-    init
-        Dictionary with the same keys as ``state``,
-        each elemtn of chi is an MCMC initializer corresponding to the stepping functions in `step_fn`.
-    parameters
-        Dictionary with the same keys as ``state``, each of which is a dictionary of parameters to
-        the MCMC algorithm for the corresponding component.
-
-    Returns
-    -------
-    Dictionary containing the updated ``state``.
-    """
-    rng_keys = jr.split(rng_key, num=len(state))
-    rng_keys = dict(zip(state.keys(), rng_keys))
-
-    # avoid modifying argument state as JAX functions should be pure
-    state = state.copy()
-    infos = {}
-    infos['num_steps'] = 0
-
-    for k in state.keys():
-        # logdensity of component k conditioned on all other components in state
-        def logdensity_k(value):
-            union = {}
-            for _k in state.keys():
-                union |= state[_k].position
-            union |= value # update component k
-            return logdensity_fn(union) # **kwargs
-
-        # give state[k] the right log_density
-        state[k] = init[k](
-            position=state[k].position,
-            logdensity_fn=logdensity_k
-        )
-
-        # update state[k]
-        state[k], info = step_fn[k](
-            rng_key=rng_keys[k],
-            state=state[k],
-            logdensity_fn=logdensity_k,
-            **parameters[k]
-        )
-
-        # register only relevant infos
-        num_steps = info.num_integration_steps
-        infos['infos_'+k] = {"acceptance_rate": info.acceptance_rate, 
-                    "num_integration_steps": num_steps}
-        infos['num_steps'] += num_steps
-        
-    return state, infos
-
-def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init, parameters, n_samples):
-    
-    @blackjax.progress_bar.progress_bar_scan(n_samples)
-    def one_step(state, xs):
-        _, rng_key = xs
-        state, infos = mwg_kernel_general(
-            rng_key=rng_key,
-            state=state,
-            logdensity_fn=logdensity_fn,
-            step_fn=step_fn,
-            init=init,
-            parameters=parameters
-        )
-        # positions = {k: state[k].position for k in state.keys()}
-        union = {}
-        for _k in state.keys():
-            union |= state[_k].position
-        # union = mult_tree(union, invmm**.5)
-        return state, (union, infos)
-
-    keys = jr.split(rng_key, n_samples)
-    xs = (jnp.arange(n_samples), keys)
-    last_state, (positions, infos) = lax.scan(one_step, initial_state, xs) # scan compile
-
-    return last_state, positions, infos
-
-
-
-
-def HMCGibbs_init(logdensity, kernel="hmc"):
-
-    if kernel == "hmc":
-        mwg_init_x = blackjax.hmc.init
-        mwg_init_y = blackjax.hmc.init
-        mwg_step_fn_x = blackjax.hmc.build_kernel()
-        mwg_step_fn_y = blackjax.hmc.build_kernel()  # default integrator, etc.
-        parameters = {
-            "mesh_": {
-                "inverse_mass_matrix": jnp.ones(64**3),
-                "num_integration_steps": 256,
-                "step_size": 3*1e-3
-            },
-            "rest_": {
-                "inverse_mass_matrix": jnp.ones(6),
-                "num_integration_steps": 64,
-                "step_size": 3*1e-3
-            }
-        }
-    elif kernel == "nuts":
-        mwg_init_x = blackjax.nuts.init
-        mwg_init_y = blackjax.nuts.init
-        mwg_step_fn_x = blackjax.nuts.build_kernel()
-        mwg_step_fn_y = blackjax.nuts.build_kernel()  # default integrator, etc.
-        parameters = {
-            "mesh_": {
-                "inverse_mass_matrix": jnp.ones(64**3),
-                "step_size": 3*1e-3
-            },
-            "rest_": {
-                "inverse_mass_matrix": jnp.ones(6),
-                "step_size": 3*1e-3
-            }
-        }
-
-    step_fn = {
-        "mesh_": mwg_step_fn_x,
-        "rest_": mwg_step_fn_y
-    }
-
-    init_fn={
-        "mesh_": mwg_init_x,
-        "rest_": mwg_init_y
-    }
-
-
-    def init_state_fn(init_pos):
-        return get_init_state(init_pos, logdensity, init_fn)
-
-
-    return step_fn, init_fn, parameters, init_state_fn
-
-
-def get_init_state(init_pos, logdensity, init_fn):
-    init_pos_block1 = {name:init_pos[name] for name in ['init_mesh_']}
-    init_pos_block2 = {name:init_pos[name] for name in ['Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_']}
-    init_state = {
-        "mesh_": init_fn['mesh_'](
-            position = init_pos_block1,
-            logdensity_fn = lambda x: logdensity(x |init_pos_block2)
-        ),
-        "rest_": init_fn['rest_'](
-            position = init_pos_block2,
-            logdensity_fn = lambda y: logdensity(y | init_pos_block1)
-        )
-    }
-    return init_state
-
-
-def HMCGibbs_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples):
-
-    last_state, samples, infos = sampling_loop_general(
-    rng_key = rng_key,
-    initial_state = init_state,
-    logdensity_fn = logdensity,
-    step_fn = step_fn,
-    init = init_fn,
-    parameters = parameters,
-    n_samples = n_samples,)
-    return last_state, samples, infos
-
-
-def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples):
-    return partial(HMCGibbs_run, 
-                   logdensity=logdensity, 
-                   step_fn=step_fn, 
-                   init_fn=init_fn, 
-                   parameters=parameters, 
-                   n_samples=n_samples,)
-
-
-# warmup = blackjax.window_adaptation(blackjax.hmc, logp_fn, num_integration_steps=10)
-# rng_key, warmup_key, sample_key = jr.split(jr.key(0), 3)
-# (state, parameters), infos = warmup.run(warmup_key, init_params_one_, num_steps=10)
-
-
-# In[44]:
-
-
-logdensity = logp_fn
-n_samples, n_runs, n_chains = 256, 20, 8
-save_path = save_dir + f"HMCGibbs_ns{n_samples:d}_x_nc{n_chains}"
-
-step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
-run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
-key = jr.key(42)
-# last_state = vmap(init_state_fn)(init_params_)
-last_state = pickle_load(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate20.p")
-print(last_state)
-
-# for i_run in range(1, n_runs+1):
-i_shift = 20
-for i_run in range(i_shift+1, i_shift+n_runs+1):
-    print(f"run {i_run}/{n_runs}")
-    key, run_key = jr.split(key, 2)
-    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
-    pickle_dump(samples | infos, save_path+f"_{i_run}.p")
-    pickle_dump(last_state, save_path+f"_laststate.p")
-
-raise
-
 # ### NUTS, HMC
 
 # In[108]:
@@ -359,12 +135,6 @@ hmc_kernel = numpyro.infer.HMC(
     )
 
 
-def gibbs_fn(rng_key, gibbs_sites, hmc_sites):
-    pass
-hmcgibbs_kernel = numpyro.infer.HMCGibbs(hmc_kernel, 
-                                         gibbs_fn=gibbs_fn, 
-                                         mgibbs_sites=['Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_'])
-
 # # Propose MALA step size based on [Chen+2019](http://arxiv.org/abs/1801.02309)
 # L_smoothness, m_strong_convex = 1, 1 # log density regularity properties
 # condition_number = L_smoothness / m_strong_convex
@@ -376,7 +146,7 @@ hmcgibbs_kernel = numpyro.infer.HMCGibbs(hmc_kernel,
 #                     step_size=0.001,)
 
 mcmc = numpyro.infer.MCMC(
-    sampler=nuts_kernel,
+    sampler=hmc_kernel,
     num_warmup=0,
     # num_warmup=num_samples,
     num_samples=num_samples, # for each run
@@ -408,10 +178,10 @@ print(save_path)
 # init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
 # mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
 # mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, rng_key=jr.key(3), extra_fields=extra_fields, init_params=init_params_)
 # mlflow.log_metric('halt',1)
 
-
+raise
 # ## Analysis
 
 # In[23]:
