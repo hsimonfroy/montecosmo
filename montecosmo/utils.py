@@ -95,16 +95,16 @@ def color_switch(color, reverse=False):
     return color
 
 
-def set_plotting_options(use_TeX):
-    params = {'text.usetex': use_TeX,
+def set_plotting_options(usetex):
+    params = {'text.usetex': usetex,
             #   'ps.useafm': True,
             #   'pdf.use14corefonts': True,
-              'font.family': "roman"
+              'font.family': 'roman' if usetex else None,
               } # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
     plt.rcParams.update(params)
 
 
-def theme_switch(dark_theme=False, use_TeX=False):
+def theme_switch(dark_theme=False, usetex=False):
     """
     Set Matplotlib theme and return an adequate color switching function.
     """
@@ -113,7 +113,7 @@ def theme_switch(dark_theme=False, use_TeX=False):
     else: 
         plt.style.use('default')
     rc('animation', html='html5') # handle Matplotlib animations
-    set_plotting_options(use_TeX)
+    set_plotting_options(usetex)
     theme = partial(color_switch, reverse=dark_theme)
     return theme
 

@@ -105,7 +105,49 @@ print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['i
 import blackjax
 import blackjax.progress_bar
 
-def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init, parameters):
+def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
+    rng_keys = jr.split(rng_key, num=len(state))
+    rng_keys = dict(zip(state.keys(), rng_keys))
+
+    # avoid modifying argument state as JAX functions should be pure
+    state = state.copy()
+    infos = {}
+    infos['num_steps'] = 0
+    params = {}
+    positions = {}
+
+    for k in state.keys():
+        # logdensity of component k conditioned on all other components in state
+        union = {}
+        for _k in state.keys():
+            union |= state[_k].position
+
+        def logdensity_k(value):
+            return logdensity_fn(union | value) # update component k
+
+        # give state[k] the right log_density NOTE: unnecessary if we only pass position to warmup
+        # state[k] = init_fn[k](
+        #     position=state[k].position,
+        #     logdensity_fn=logdensity_k
+        # )
+
+        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logdensity_k, **parameters[k])
+        rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
+        (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
+
+        # register only relevant infos
+        num_steps = info.info.num_integration_steps
+        infos['infos_'+k] = {"acceptance_rate": info.info.acceptance_rate, 
+                                "num_integration_steps": num_steps}
+        infos['num_steps'] += num_steps
+        # positions[k] = info.state.position
+        positions |= info.state.position
+    
+    return (state, params), (positions, infos)
+
+
+
+def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, parameters):
     """
     General MWG kernel.
 
@@ -143,15 +185,15 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init, parameters)
 
     for k in state.keys():
         # logdensity of component k conditioned on all other components in state
-        def logdensity_k(value):
-            union = {}
-            for _k in state.keys():
-                union |= state[_k].position
-            union |= value # update component k
-            return logdensity_fn(union) # **kwargs
+        union = {}
+        for _k in state.keys():
+            union |= state[_k].position
 
+        def logdensity_k(value):
+            return logdensity_fn(union | value) # update component k
+        
         # give state[k] the right log_density
-        state[k] = init[k](
+        state[k] = init_fn[k](
             position=state[k].position,
             logdensity_fn=logdensity_k
         )
@@ -167,12 +209,15 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init, parameters)
         # register only relevant infos
         num_steps = info.num_integration_steps
         infos['infos_'+k] = {"acceptance_rate": info.acceptance_rate, 
-                    "num_integration_steps": num_steps}
+                                "num_integration_steps": num_steps}
         infos['num_steps'] += num_steps
-        
-    return state, infos
+    
+        return state, infos
+    
 
-def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init, parameters, n_samples):
+
+
+def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init_fn, parameters, n_samples):
     
     @blackjax.progress_bar.progress_bar_scan(n_samples)
     def one_step(state, xs):
@@ -182,7 +227,7 @@ def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init, 
             state=state,
             logdensity_fn=logdensity_fn,
             step_fn=step_fn,
-            init=init,
+            init_fn=init_fn,
             parameters=parameters
         )
         # positions = {k: state[k].position for k in state.keys()}
@@ -196,7 +241,7 @@ def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init, 
     xs = (jnp.arange(n_samples), keys)
     last_state, (positions, infos) = lax.scan(one_step, initial_state, xs) # scan compile
 
-    return last_state, positions, infos
+    return last_state, (positions, infos)
 
 
 
@@ -204,37 +249,35 @@ def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init, 
 def HMCGibbs_init(logdensity, kernel="hmc"):
 
     if kernel == "hmc":
-        mwg_init_x = blackjax.hmc.init
-        mwg_init_y = blackjax.hmc.init
-        mwg_step_fn_x = blackjax.hmc.build_kernel()
-        mwg_step_fn_y = blackjax.hmc.build_kernel()  # default integrator, etc.
+        ker_api = blackjax.hmc
         parameters = {
             "mesh_": {
-                "inverse_mass_matrix": jnp.ones(64**3),
+                # "inverse_mass_matrix": jnp.ones(64**3),
                 "num_integration_steps": 256,
-                "step_size": 3*1e-3
+                # "step_size": 3*1e-3
             },
             "rest_": {
-                "inverse_mass_matrix": jnp.ones(6),
+                # "inverse_mass_matrix": jnp.ones(6),
                 "num_integration_steps": 64,
-                "step_size": 3*1e-3
+                # "step_size": 3*1e-3
             }
         }
     elif kernel == "nuts":
-        mwg_init_x = blackjax.nuts.init
-        mwg_init_y = blackjax.nuts.init
-        mwg_step_fn_x = blackjax.nuts.build_kernel()
-        mwg_step_fn_y = blackjax.nuts.build_kernel()  # default integrator, etc.
+        ker_api = blackjax.nuts
         parameters = {
             "mesh_": {
-                "inverse_mass_matrix": jnp.ones(64**3),
-                "step_size": 3*1e-3
+                # "inverse_mass_matrix": jnp.ones(64**3),
+                # "step_size": 3*1e-3
             },
             "rest_": {
-                "inverse_mass_matrix": jnp.ones(6),
-                "step_size": 3*1e-3
+                # "inverse_mass_matrix": jnp.ones(6),
+                # "step_size": 3*1e-3
             }
         }
+    mwg_init_x = ker_api.init
+    mwg_init_y = ker_api.init
+    mwg_step_fn_x = ker_api.build_kernel()
+    mwg_step_fn_y = ker_api.build_kernel()
 
     step_fn = {
         "mesh_": mwg_step_fn_x,
@@ -270,26 +313,31 @@ def get_init_state(init_pos, logdensity, init_fn):
     return init_state
 
 
-def HMCGibbs_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples):
+def HMCGibbs_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples, warmup=True):
+    if warmup:
+        (last_state, parameters), (samples, infos) = mwg_warmup(rng_key, init_state, logdensity, init_fn, parameters, n_samples)
+        return (last_state, parameters), samples, infos
 
-    last_state, samples, infos = sampling_loop_general(
-    rng_key = rng_key,
-    initial_state = init_state,
-    logdensity_fn = logdensity,
-    step_fn = step_fn,
-    init = init_fn,
-    parameters = parameters,
-    n_samples = n_samples,)
-    return last_state, samples, infos
+    else:
+        last_state, (samples, infos) = sampling_loop_general(
+        rng_key = rng_key,
+        initial_state = init_state,
+        logdensity_fn = logdensity,
+        step_fn = step_fn,
+        init_fn = init_fn,
+        parameters = parameters,
+        n_samples = n_samples,)
+        return last_state, samples, infos
 
 
-def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples):
+def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=0):
     return partial(HMCGibbs_run, 
                    logdensity=logdensity, 
                    step_fn=step_fn, 
                    init_fn=init_fn, 
                    parameters=parameters, 
-                   n_samples=n_samples,)
+                   n_samples=n_samples,
+                   warmup=warmup)
 
 
 # warmup = blackjax.window_adaptation(blackjax.hmc, logp_fn, num_integration_steps=10)
@@ -302,17 +350,22 @@ def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples):
 
 logdensity = logp_fn
 n_samples, n_runs, n_chains = 256, 20, 8
-save_path = save_dir + f"HMCGibbs_ns{n_samples:d}_x_nc{n_chains}"
+save_path = save_dir + f"NUTSGibbs_ns{n_samples:d}_x_nc{n_chains}"
 
 step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
-run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
+warmup_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=True)))
 key = jr.key(42)
-# last_state = vmap(init_state_fn)(init_params_)
-last_state = pickle_load(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate20.p")
-print(last_state)
+# last_state = jit(vmap(init_state_fn))(init_params_)
+last_state = pickle_load(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
 
-# for i_run in range(1, n_runs+1):
-i_shift = 20
+
+(last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), n_chains), last_state)
+print(parameters,'\n=======\n')
+pickle_dump(samples | infos, save_path+f"_{0}.p")
+pickle_dump(last_state, save_path+f"_laststate.p")
+
+run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
+i_shift = 0
 for i_run in range(i_shift+1, i_shift+n_runs+1):
     print(f"run {i_run}/{n_runs}")
     key, run_key = jr.split(key, 2)
@@ -563,7 +616,7 @@ from montecosmo.utils import get_gdsamples, get_gdprior
 
 gdsamples = get_gdsamples(post_samples, label=mc_labels, verbose=True, **config)
 for i_gds, gds in enumerate(gdsamples):
-    gdsamples[i_gds] = gds.copy(label=mc_labels[i_gds]+", 1$\sigma$-smooth", settings={'smooth_scale_2D':1,'smooth_scale_1D':1,})
+    gdsamples[i_gds] = gds.copy(label=mc_labels[i_gds]+", 1$\\sigma$-smooth", settings={'smooth_scale_2D':1,'smooth_scale_1D':1,})
 
 # gdsamples.append(get_gdprior(post_samples, verbose=True, **config))
 g = plots.get_subplot_plotter(width_inch=9)
