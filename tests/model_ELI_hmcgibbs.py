@@ -369,7 +369,8 @@ i_shift = 0
 for i_run in range(i_shift+1, i_shift+n_runs+1):
     print(f"run {i_run}/{n_runs}")
     key, run_key = jr.split(key, 2)
-    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
+    # last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
+    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state, parameters=parameters)
     pickle_dump(samples | infos, save_path+f"_{i_run}.p")
     pickle_dump(last_state, save_path+f"_laststate.p")
 
