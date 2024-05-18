@@ -212,7 +212,7 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, paramete
                                 "num_integration_steps": num_steps}
         infos['num_steps'] += num_steps
     
-        return state, infos
+    return state, infos
     
 
 
