@@ -131,7 +131,7 @@ def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
         #     logdensity_fn=logdensity_k
         # )
 
-        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logdensity_k, **parameters[k])
+        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logdensity_k, **parameters[k], progress_bar=True)
         rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
         (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
 
