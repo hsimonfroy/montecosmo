@@ -95,16 +95,18 @@ def color_switch(color, reverse=False):
     return color
 
 
-def set_plotting_options(usetex):
+def set_plotting_options(usetex=False, font_size=10):
     params = {'text.usetex': usetex,
             #   'ps.useafm': True,
             #   'pdf.use14corefonts': True,
               'font.family': 'roman' if usetex else None,
-              } # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
+              'font.size':font_size,} # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
     plt.rcParams.update(params)
+    # import matplotlib as mpl
+    # mpl.rcParams.update(mpl.rcParamsDefault)
 
 
-def theme_switch(dark_theme=False, usetex=False):
+def theme_switch(dark_theme=False, usetex=False, font_size=10):
     """
     Set Matplotlib theme and return an adequate color switching function.
     """
@@ -113,7 +115,7 @@ def theme_switch(dark_theme=False, usetex=False):
     else: 
         plt.style.use('default')
     rc('animation', html='html5') # handle Matplotlib animations
-    set_plotting_options(usetex)
+    set_plotting_options(usetex, font_size)
     theme = partial(color_switch, reverse=dark_theme)
     return theme
 
@@ -440,3 +442,13 @@ def id_rfftn(mesh_size, part="real"):
     return id, weights
 
 
+
+
+def r2rfftn(mesh):
+    """
+    Make a Gaussian tensor (3D) distributed as the real Fourier transform of a Gaussian tensor.
+    """
+    mesh_size = mesh.shape
+    id_real, w_real = id_rfftn(mesh_size, part="real")
+    id_imag, w_imag = id_rfftn(mesh_size, part="imag")
+    return mesh[*id_real] * w_real + 1j * mesh[*id_imag] * w_imag
