@@ -403,6 +403,7 @@ def id_rfftn(mesh_size, part="real"):
     """
     Return indices and weights to make a Gaussian tensor of size ``mesh_size`` (3D)
     distributed as the real Fourier transform of a Gaussian tensor.
+    Handle the Hermitian symmetry, specificaly at middle faces, edges, and points.
     """
     mesh_size = np.array(mesh_size)
     sx, sy, sz = mesh_size
@@ -440,7 +441,6 @@ def id_rfftn(mesh_size, part="real"):
                     weights = weights.at[i,j,k].multiply(2**.5)
     
     return id, weights
-
 
 
 
