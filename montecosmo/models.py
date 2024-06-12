@@ -34,7 +34,7 @@ default_config={
             # Debugging
             'trace_reparam':False, 
             'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
-            # Prior config {name: [label, mean, std]}
+            # Prior config {name: [label, loc, scale]}
             'prior_config':{'Omega_m':['{\\Omega}_m', 0.3111, 0.2], # XXX: Omega_m<0 implies nan
                             'sigma8':['{\\sigma}_8', 0.8102, 0.2],
                             'b1':['{b}_1', 1., 0.5],
@@ -346,7 +346,7 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
 
 
 def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
-                 trace_reparam=False, scale_std=1, **config):
+                 trace_reparam=False, scaling=1, **config):
     """
     Return a partial replay model function for given config.
     """
@@ -361,7 +361,7 @@ def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
         keys = params_.keys()
 
         if all([name+sufx in keys for name in ['Omega_m', 'sigma8']]):
-            cosmo = get_cosmo(prior_config, trace_reparam, inverse, scale_std, **params_)
+            cosmo = get_cosmo(prior_config, trace_reparam, inverse, scaling, **params_)
 
             if 'init_mesh'+sufx in keys:
                 if not inverse:
@@ -370,12 +370,12 @@ def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
                     cosmology = get_cosmology(**params_)
 
                 init_mesh = get_init_mesh(cosmology, mesh_size, box_size, fourier, 
-                                          trace_reparam, inverse, scale_std, **params_)
+                                          trace_reparam, inverse, scaling, **params_)
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
 
         if all([name+sufx in keys for name in ['b1', 'b2', 'bs2', 'bn2']]):
-            biases = get_biases(prior_config, trace_reparam, inverse, scale_std, **params_)
+            biases = get_biases(prior_config, trace_reparam, inverse, scaling, **params_)
         else: biases = {}
 
         # params = dict(**cosmo, **init_mesh, **biases)

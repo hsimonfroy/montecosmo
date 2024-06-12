@@ -19,29 +19,29 @@ from montecosmo.utils import std2trunc, trunc2std, id_rfftn
    
 
 def get_cosmo(prior_config, 
-              trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
+              trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
     """
     Return cosmological params from latent params.
     """
     cosmo = {}
     for name in ['Omega_m', 'sigma8']:
-        _, mean, std = prior_config[name]
-        std *= scale_std
+        _, loc, scale = prior_config[name]
+        scale *= scaling
 
         if not inverse:
             input_name, output_name = name+'_', name
             trunc_push = std2trunc # truncate value in interval
-            notrunc_push = lambda x : x * std + mean
+            notrunc_push = lambda x : x * scale + loc
         else:
             input_name, output_name = name, name+'_'
             trunc_push = trunc2std
-            notrunc_push = lambda x : (x - mean) / std
+            notrunc_push = lambda x : (x - loc) / scale
 
         value = params_[input_name]
         if name == 'Omega_m':
-            value = trunc_push(value, mean, std, 0, 1)
+            value = trunc_push(value, loc, scale, 0, 1)
         elif name == 'sigma8':
-            value = trunc_push(value, mean, std, 0)
+            value = trunc_push(value, loc, scale, 0)
         else:
             value = notrunc_push(value)
 
@@ -68,7 +68,7 @@ def get_cosmology(**cosmo) -> Cosmology:
 
 
 def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
-                  trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
+                  trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
     """
     Return initial conditions at a=1 from latent params.
     """
@@ -77,7 +77,7 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
     kvec = fftk(mesh_size)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
     pk_mesh = pk_fn(k_box) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
-    pk_mesh *= scale_std**2
+    pk_mesh *= scaling**2
 
 
     # Parametrize
@@ -106,21 +106,21 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
 
 
 def get_biases(prior_config, 
-               trace_reparam=False, inverse=False, scale_std=1., **params_) -> dict:
+               trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
     """
     Return biases params from latent params.
     """
     biases = {}
     for name in ['b1', 'b2', 'bs2', 'bn2']:
-        _, mean, std = prior_config[name]
-        std *= scale_std
+        _, loc, scale = prior_config[name]
+        scale *= scaling
 
         if not inverse:
             input_name, output_name = name+'_', name
-            notrunc_push = lambda x : x * std + mean
+            notrunc_push = lambda x : x * scale + loc
         else:
             input_name, output_name = name, name+'_'
-            notrunc_push = lambda x : (x - mean) / std
+            notrunc_push = lambda x : (x - loc) / scale
 
         value = notrunc_push(params_[input_name])
 
