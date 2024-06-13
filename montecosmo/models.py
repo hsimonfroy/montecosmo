@@ -73,21 +73,21 @@ def prior_model(mesh_size, prior_config, **config):
 
 
 
-def likelihood_model(mean_mesh, lik_config, noise=0., **config):
+def likelihood_model(loc_mesh, lik_config, noise=0., **config):
     """
     A likelihood for cosmological model.
 
-    Return an observed mesh sampled from a mean mesh with observational variance.
+    Return an observed mesh sampled from a location mesh with observational variance.
     """
     # TODO: prior on obs_std?
     sigma = jnp.sqrt(lik_config['obs_std']**2+noise**2)
 
     # Normal noise
-    obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, sigma))
+    obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, sigma))
     # Poisson noise
     # eps_var = 0.1 # add epsilon variance to prevent zero variance
-    # obs_mesh = sample('obs_mesh', dist.Poisson(mean_mesh + eps_var)) 
-    # obs_mesh = sample('obs_mesh', dist.Normal(mean_mesh, (mean_mesh  + eps_var)**.5)) # Normal approx
+    # obs_mesh = sample('obs_mesh', dist.Poisson(loc_mesh + eps_var)) 
+    # obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, (loc_mesh  + eps_var)**.5)) # Normal approx
     return obs_mesh
 
 
@@ -179,24 +179,24 @@ def pmrsd_model_fn(latent_params,
 
         particles = particles[-1]
     
-    # Uncomment only to trace bias mesh without rsd
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
-    if trace_meshes: 
-        biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
+    # # Uncomment only to trace bias mesh without rsd
+    # biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
+    # if trace_meshes: 
+    #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
     # RSD displacement at a_obs
     dx = rsd(cosmology, a_obs, particles[:,3:])
     particles = particles.at[:,:3].add(dx)
 
-    # if trace_meshes: 
-    #     particles = deterministic('rsd_part', particles)
+    if trace_meshes: 
+        particles = deterministic('rsd_part', particles)
     
     # CIC paint weighted by Lagrangian bias expansion weights
     biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
 
-    # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
-    # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
-    # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
+    debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
+    debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
+    debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
 
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)
@@ -410,9 +410,9 @@ def print_config(model:partial|dict):
     print(f"mean_gxy_density: {mean_gxy_density:.3f} gxy/cell\n")
 
 
-def get_prior_mean(model:partial|dict):
+def get_prior_loc(model:partial|dict):
     """
-    Return mean values of the prior config from a partial model.
+    Return location values of the prior config from a partial model.
     Alternatively, a config can directly be provided.
     """
     if isinstance(model, dict):

@@ -12,7 +12,7 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
-from montecosmo.utils import std2trunc, trunc2std, id_rfftn
+from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
 
 
 
@@ -86,19 +86,20 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
         input_name, output_name = name+'_', name
         init = params_[input_name]
         if fourier:
-            id_real, w_real = id_rfftn(mesh_size, part="real")
-            id_imag, w_imag = id_rfftn(mesh_size, part="imag")
-            delta_k = init[*id_real] * w_real + 1j * init[*id_imag] * w_imag
+            delta_k = rg2cgh(init)
         else:
             delta_k = jnp.fft.rfftn(init)
-        delta_k = delta_k * pk_mesh**0.5
+        delta_k *= pk_mesh**0.5
+        init = jnp.fft.irfftn(delta_k)
     
-    # TODO: inverse in Fourier
     else:
         input_name, output_name = name, name+'_'
-        delta_k = jnp.fft.rfftn(params_[input_name]) / pk_mesh**0.5   
-
-    init = jnp.fft.irfftn(delta_k)
+        delta_k = jnp.fft.rfftn(params_[input_name])
+        delta_k /= pk_mesh**0.5   
+        if fourier:
+            init = cgh2rg(delta_k)
+        else:
+            init = jnp.fft.irfftn(delta_k)
 
     if trace_reparam:
         init = deterministic(output_name, init)

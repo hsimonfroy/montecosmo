@@ -399,56 +399,118 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
 
 
 
-def id_rfftn(mesh_size, part="real"):
+# def id_cgh(mesh_size, part="real"):
+#     """
+#     Return indices and weights to permute a real Gaussian tensor of size ``mesh_size`` (3D)
+#     into a complex Gaussian Hermitian tensor. 
+#     Handle the Hermitian symmetry, specificaly at border faces, edges, and vertices.
+#     """
+#     mesh_size = np.array(mesh_size)
+#     sx, sy, sz = mesh_size
+#     # assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
+#     hx, hy, hz = mesh_size//2
+#     kmesh_size = (sx, sy, hz+1)
+#     weights = jnp.ones(kmesh_size) * (mesh_size.prod() / 2)**.5
+#     id = jnp.zeros((3,*kmesh_size), dtype=int)
+#     xyz = jnp.indices(mesh_size)
+
+#     if part == "imag":
+#         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
+#     else:
+#         slix, sliy, sliz = slice(1,hx), slice(1,hy), slice(1,hz)
+#     id = id.at[...,1:-1].set( xyz[...,sliz] )
+        
+#     for k in [0,hz]: # two faces
+#         id = id.at[...,1:hy,k].set(xyz[...,sliy,k])
+#         id = id.at[...,1:,hy+1:,k].set(xyz[...,1:,sliy,k][...,::-1,::-1])
+#         id = id.at[...,0,hy+1:,k].set(xyz[...,0,sliy,k][...,::-1]) # handle the border
+#         if part == "imag":
+#             weights = weights.at[:,hy+1:,k].multiply(-1)
+
+#         for j in [0,hy]: # two edges per faces
+#             id = id.at[...,1:hx,j,k].set(xyz[...,slix,j,k])
+#             id = id.at[...,hx+1:,j,k].set(xyz[...,slix,j,k][...,::-1])
+#             if part == "imag":
+#                 weights = weights.at[hx+1:,j,k].multiply(-1)
+
+#             for i in [0,hx]: # two points per edges
+#                 id = id.at[...,i,j,k].set(xyz[...,i,j,k])
+#                 if part == "imag":
+#                     weights = weights.at[i,j,k].multiply(0)
+#                 else:
+#                     weights = weights.at[i,j,k].multiply(2**.5)
+    
+#     return id, weights
+
+
+
+def id_cgh(mesh_size, part="real"):
     """
-    Return indices and weights to make a Gaussian tensor of size ``mesh_size`` (3D)
-    distributed as the real Fourier transform of a Gaussian tensor.
-    Handle the Hermitian symmetry, specificaly at middle faces, edges, and points.
+    Return indices and weights to permute a real Gaussian tensor of size ``mesh_size`` (3D)
+    into a complex Gaussian Hermitian tensor. 
+    Handle the Hermitian symmetry, specificaly at border faces, edges, and vertices.
     """
     mesh_size = np.array(mesh_size)
     sx, sy, sz = mesh_size
     # assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
     hx, hy, hz = mesh_size//2
-    shape = (sx, sy, hz+1)
-    weights = jnp.ones(shape) * (mesh_size.prod() / 2)**.5
-    id = jnp.zeros((3,*shape), dtype=int)
-    xyz = jnp.indices(mesh_size)
+    kmesh_size = (sx, sy, hz+1)
+    weights = np.ones(kmesh_size) * (mesh_size.prod() / 2)**.5
+    id = np.zeros((3,*kmesh_size), dtype=int)
+    xyz = np.indices(mesh_size)
 
     if part == "imag":
         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
     else:
         slix, sliy, sliz = slice(1,hx), slice(1,hy), slice(1,hz)
-    id = id.at[...,1:-1].set( xyz[...,sliz] )
+    id[...,1:-1] = xyz[...,sliz]
         
     for k in [0,hz]: # two faces
-        id = id.at[...,1:hy,k].set(xyz[...,sliy,k])
-        id = id.at[...,1:,hy+1:,k].set(xyz[...,1:,sliy,k][...,::-1,::-1])
-        id = id.at[...,0,hy+1:,k].set(xyz[...,0,sliy,k][...,::-1]) # handle the border
+        id[...,1:hy,k] = xyz[...,sliy,k]
+        id[...,1:,hy+1:,k] = xyz[...,1:,sliy,k][...,::-1,::-1]
+        id[...,0,hy+1:,k] = xyz[...,0,sliy,k][...,::-1] # handle the border
         if part == "imag":
-            weights = weights.at[:,hy+1:,k].multiply(-1)
+            weights[:,hy+1:,k] *= -1
 
         for j in [0,hy]: # two edges per faces
-            id = id.at[...,1:hx,j,k].set(xyz[...,slix,j,k])
-            id = id.at[...,hx+1:,j,k].set(xyz[...,slix,j,k][...,::-1])
+            id[...,1:hx,j,k] = xyz[...,slix,j,k]
+            id[...,hx+1:,j,k] = xyz[...,slix,j,k][...,::-1]
             if part == "imag":
-                weights = weights.at[hx+1:,j,k].multiply(-1)
+                weights[hx+1:,j,k] *= -1
 
             for i in [0,hx]: # two points per edges
-                id = id.at[...,i,j,k].set(xyz[...,i,j,k])
+                id[...,i,j,k] = xyz[...,i,j,k]
                 if part == "imag":
-                    weights = weights.at[i,j,k].multiply(0)
+                    weights[i,j,k] *= 0
                 else:
-                    weights = weights.at[i,j,k].multiply(2**.5)
+                    weights[i,j,k] *= 2**.5
     
     return id, weights
 
 
 
-def r2rfftn(mesh):
+def rg2cgh(mesh):
     """
-    Make a Gaussian tensor (3D) distributed as the real Fourier transform of a Gaussian tensor.
+    Permute a real Gaussian tensor (3D) into a complex Gaussian Hermitian tensor.
+    The output would therefore be distributed as the real Fourier transform of a Gaussian tensor.
     """
     mesh_size = mesh.shape
-    id_real, w_real = id_rfftn(mesh_size, part="real")
-    id_imag, w_imag = id_rfftn(mesh_size, part="imag")
+    id_real, w_real = id_cgh(mesh_size, part="real")
+    id_imag, w_imag = id_cgh(mesh_size, part="imag")
     return mesh[*id_real] * w_real + 1j * mesh[*id_imag] * w_imag
+
+
+
+def cgh2rg(kmesh):
+    """
+    Permute a complex Gaussian Hermitian tensor into a real Gaussian tensor (3D).
+    """
+    kmesh_size = kmesh.shape
+    mesh_size = *kmesh_size[:2], 2*(kmesh_size[2]-1)
+    id_real, w_real = id_cgh(mesh_size, part="real")
+    id_imag, w_imag = id_cgh(mesh_size, part="imag")
+    
+    mesh = jnp.zeros(mesh_size)
+    mesh = mesh.at[*id_imag].set(kmesh.imag / w_imag)
+    mesh = mesh.at[*id_real].set(kmesh.real / w_real)
+    return mesh
