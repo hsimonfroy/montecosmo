@@ -76,7 +76,7 @@ def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
     kvec = fftk(mesh_size)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
-    pk_mesh = pk_fn(k_box) * (mesh_size.prod() / box_size.prod()) # NOTE: convert from (Mpc/h)^3 to cell units
+    pk_mesh = pk_fn(k_box) * (mesh_size / box_size).prod() # NOTE: convert from (Mpc/h)^3 to cell units
     pk_mesh *= scaling**2
 
 

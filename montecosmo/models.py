@@ -40,7 +40,8 @@ default_config={
                             'b1':['{b}_1', 1., 0.5],
                             'b2':['{b}_2', 0., 2.],
                             'bs2':['{b}_{s^2}', 0., 2.],
-                            'bn2':['{b}_{\\nabla^2}', 0., 2.]},
+                            'bn2':['{b}_{\\nabla^2}', 0., 2.],
+                            'init_mesh':['{\\delta}_L', None, None]},
             'fourier':False,                    
             # Likelihood config
             'lik_config':{'obs_std':1.},
@@ -55,19 +56,18 @@ def prior_model(mesh_size, prior_config, **config):
     """
     A prior for cosmological model. 
 
-    Return latent params for computing cosmology, initial conditions, and Lagrangian biases.
+    Return standardized params for computing cosmology, initial conditions, and Lagrangian biases.
     """
-    # Sample latent cosmology and Lagrangian biases
     params_ = {}
     
-    # Standard param
     for name in prior_config:
         name_ = name+'_'
-        params_[name_] = sample(name_, dist.Normal(0, 1))
-
-    # Sample latent initial conditions
-    name_ = 'init_mesh_'
-    params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+        if name == 'init_mesh':
+            # Sample standardized initial conditions
+            params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+        else:
+            # Sample standardized cosmology and biases
+            params_[name_] = sample(name_, dist.Normal(0, 1))
 
     return params_
 
@@ -81,6 +81,12 @@ def likelihood_model(loc_mesh, lik_config, noise=0., **config):
     """
     # TODO: prior on obs_std?
     sigma = jnp.sqrt(lik_config['obs_std']**2+noise**2)
+
+    mesh_size, box_size = config['mesh_size'], config['box_size']
+    pk_fn = get_pk_fn(mesh_size, box_size)
+    loc_mesh = pk_fn(loc_mesh)
+    loc_mesh *= (mesh_size / box_size).prod()
+    sigma *= 3
 
     # Normal noise
     obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, sigma))
@@ -164,15 +170,17 @@ def pmrsd_model_fn(latent_params,
     if a_lpt < a_obs:
         terms = ODETerm(get_ode_fn(cosmology, mesh_size))
         solver = Dopri5()
-        controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0.4, icoeff=1, dcoeff=0)
+        # controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0.4, icoeff=1, dcoeff=0)
+        controller = PIDController(rtol=1e-2, atol=1e-2, pcoeff=0.4, icoeff=1, dcoeff=0)
         if trace_meshes < 2: 
             saveat = SaveAt(t1=True)
         else: 
             saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                             stepsize_controller=controller, max_steps=20, saveat=saveat)
+                             stepsize_controller=controller, max_steps=8, saveat=saveat)
         particles = sol.ys
-        # debug.print("num_steps: {n}", n=sol.stats['num_steps'])
+
+        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
 
         if trace_meshes >= 2:
             particles = deterministic('pm_part', particles)
@@ -272,7 +280,8 @@ def pmrsd_model(mesh_size,
                                 fourier,)
 
     # Sample from likelihood
-    obs_mesh = likelihood_model(gxy_mesh, lik_config, noise)
+    # obs_mesh = likelihood_model(gxy_mesh, lik_config, noise)
+    obs_mesh = likelihood_model(gxy_mesh, lik_config, noise, mesh_size=mesh_size, box_size=box_size)
     return obs_mesh
 
 
@@ -358,12 +367,11 @@ def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
             sufx = '_'
         else:
             sufx = ''
-        keys = params_.keys()
 
-        if all([name+sufx in keys for name in ['Omega_m', 'sigma8']]):
+        if all([name+sufx in params_ for name in ['Omega_m', 'sigma8']]):
             cosmo = get_cosmo(prior_config, trace_reparam, inverse, scaling, **params_)
 
-            if 'init_mesh'+sufx in keys:
+            if 'init_mesh'+sufx in params_:
                 if not inverse:
                     cosmology = get_cosmology(**cosmo)
                 else:
@@ -374,7 +382,7 @@ def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
 
-        if all([name+sufx in keys for name in ['b1', 'b2', 'bs2', 'bn2']]):
+        if all([name+sufx in params_ for name in ['b1', 'b2', 'bs2', 'bn2']]):
             biases = get_biases(prior_config, trace_reparam, inverse, scaling, **params_)
         else: biases = {}
 
@@ -415,13 +423,21 @@ def get_prior_loc(model:partial|dict):
     Return location values of the prior config from a partial model.
     Alternatively, a config can directly be provided.
     """
+    # Get prior config
     if isinstance(model, dict):
         config = model
     else:
         assert isinstance(model, partial), "No partial model or config provided."
         config = model.keywords
     prior_config = config['prior_config']
-    return {name: prior_config[name][1] for name in prior_config}
+
+    # Get locs
+    loc_dic = {}
+    for name in prior_config:
+        mean = prior_config[name][1]
+        if mean is not None:
+            loc_dic |= {name: mean}
+    return loc_dic
 
 
 def get_noise_fn(t0, t1, noises, steps=False):

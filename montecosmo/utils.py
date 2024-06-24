@@ -185,9 +185,11 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None,
 
 
 def _load_runs(load_path:str, start_run:int, end_run:int, 
-               var_names:Iterable[str]=None, conc_axis:int|Iterable[int]=0, transform:Callable=lambda x:x, verbose=False):
+               var_names:Iterable[str]=None, conc_axis:int|Iterable[int]=0, 
+               transform:Callable|Iterable[Callable]=lambda x:x, verbose=False):
     if verbose:
         print(f"loading: {os.path.basename(load_path)}, from run {start_run} to run {end_run} (included)")
+    transform = np.atleast_1d(transform)
 
     for i_run in range(start_run, end_run+1):
         # Load
@@ -195,7 +197,8 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
         if var_names is None: # NOTE: var_names should not be a consumable iterator
             var_names = list(samples_part.keys())
         samples_part = {key: samples_part[key] for key in var_names}
-        samples_part = transform(samples_part)
+        for trans in transform:
+            samples_part = trans(samples_part)
 
         # Init or append samples
         if i_run == start_run:
@@ -209,8 +212,8 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
         samples = tree_map(lambda x: jnp.concatenate(x, axis=axis), samples)
             
     if verbose:
-        if 'num_steps' in samples.keys():
-            n_samples, n_evals = samples['num_steps'].shape, samples['num_steps'].sum(axis=-1)
+        if 'n_evals' in samples.keys():
+            n_samples, n_evals = samples['n_evals'].shape, samples['n_evals'].sum(axis=-1)
             print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
         else:
             print(f"first variable length: {len(samples[list(samples.keys())[0]])}")
@@ -244,43 +247,43 @@ def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:
 
 
 
-def get_gdprior(samples:dict, prior_config:dict, label:str="Prior",
-                   verbose:bool=False, **config):
-    """
-    Construct getdist MCSamples from prior config.
+# def get_gdprior(samples:dict, prior_config:dict, label:str="Prior",
+#                    verbose:bool=False, **config):
+#     """
+#     Construct getdist MCSamples from prior config.
 
-    Only uses keys from samples.
-    """
-    names = list(samples.keys())
-    labels = []
-    means, stds = [], []
-    for name in samples:
-        if name.endswith('_'): # convention for a latent param 
-            lab = "\\overline"+prior_config[name[:-1]][0]
-            mean, std = 0, 1
-        else:
-            lab, mean, std = prior_config[name]
-        labels.append(lab)
-        means.append(mean)
-        stds.append(std)
+#     Only uses keys from samples.
+#     """
+#     names = list(samples.keys())
+#     labels = []
+#     means, stds = [], []
+#     for name in samples:
+#         if name.endswith('_'): # convention for a latent param 
+#             lab = "\\overline"+prior_config[name[:-1]][0]
+#             mean, std = 0, 1
+#         else:
+#             lab, mean, std = prior_config[name]
+#         labels.append(lab)
+#         means.append(mean)
+#         stds.append(std)
 
-    means, stds = np.array(means), np.array(stds)
-    gdsamples = GaussianND(means, np.diag(stds**2), names=names, labels=labels, label=label)
+#     means, stds = np.array(means), np.array(stds)
+#     gdsamples = GaussianND(means, np.diag(stds**2), names=names, labels=labels, label=label)
 
-    if verbose:
-        if label is not None:
-            print('# '+label)
-        else:
-            print("# <unspecified label>")
-        print("GaussianND object has no samples.\n")
-    return gdsamples
+#     if verbose:
+#         if label is not None:
+#             print('# '+label)
+#         else:
+#             print("# <unspecified label>")
+#         print("GaussianND object has no samples.\n")
+#     return gdsamples
 
 
 def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
                    verbose:bool=False, **config):
     labels = []
     for name in samples:
-        if name.endswith('_'): # convention for a latent param 
+        if name.endswith('_'): # convention for a standardized latent param 
             lab = "\\overline"+prior_config[name[:-1]][0]
         else:
             lab = prior_config[name][0]
