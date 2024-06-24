@@ -25,7 +25,7 @@ def get_cosmo(prior_config,
     """
     cosmo = {}
     for name in ['Omega_m', 'sigma8']:
-        _, loc, scale = prior_config[name]
+        label, loc, scale = prior_config[name]
         scale *= scaling
 
         if not inverse:
@@ -39,7 +39,7 @@ def get_cosmo(prior_config,
 
         value = params_[input_name]
         if name == 'Omega_m':
-            value = trunc_push(value, loc, scale, 0, 1)
+            value = trunc_push(value, loc, scale, 0.05, 1) # 0.05 > Omega_b
         elif name == 'sigma8':
             value = trunc_push(value, loc, scale, 0)
         else:

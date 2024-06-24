@@ -194,9 +194,9 @@ def pmrsd_model_fn(latent_params,
     # CIC paint weighted by Lagrangian bias expansion weights
     biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
 
-    debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
-    debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
-    debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
+    # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
+    # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
+    # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
 
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)
@@ -346,7 +346,7 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
 
 
 def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
-                 trace_reparam=False, scaling=1, **config):
+                 trace_reparam=False, scaling=1., **config):
     """
     Return a partial replay model function for given config.
     """

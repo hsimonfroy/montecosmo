@@ -136,6 +136,9 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None,
 
     if extra_fields:
         extra = mcmc.get_extra_fields(group_by_chain)
+        if "num_steps" in extra.keys(): # renaming num_steps into clearer n_evals
+            n_evals = extra.pop("num_steps")
+            samples.update(n_evals=n_evals)
         samples.update(extra)
         del extra
 
