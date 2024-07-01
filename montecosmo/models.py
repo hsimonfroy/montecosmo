@@ -97,7 +97,6 @@ def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, 
     # return obs_pk
 
     # Normal noise
-    debug.print("ha")
     sigma2 /= (galaxy_density * (box_size / mesh_size).prod())
     obs_mesh = sample('obs', dist.Normal(loc_mesh, jnp.sqrt(sigma2)))
     # Poisson noise

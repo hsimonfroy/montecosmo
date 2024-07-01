@@ -299,7 +299,7 @@ def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
         else:
             print("# <unspecified label>")
         print(gdsamples.getNumSampleSummaryText())
-        print_summary(samples, group_by_chain=False) # NOTE: group_by_chain if several chains
+        print_summary(samples, group_by_chain=True) # NOTE: group_by_chain if several chains
 
     return gdsamples
 
@@ -309,18 +309,17 @@ def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iter
     """
     Construct getdist MCSamples from samples. 
     """
-    params = np.atleast_1d(samples)
+    samples = np.atleast_1d(samples)
     label = np.atleast_1d(label)
-    assert len(params)==len(label), "lists must have the same lengths."
+    assert len(samples)==len(label), "lists must have the same lengths."
     gdsamples = []
 
-    for par, lab in zip(params, label):
-        gdsamples.append(_get_gdsamples(par, prior_config, lab, verbose))
+    for samp, lab in zip(samples, label):
+        gdsamples.append(_get_gdsamples(samp, prior_config, lab, verbose))
 
     if isinstance(samples, dict):
         return gdsamples[0]
     else:
-    # if params is samples:
         return gdsamples 
     
 
