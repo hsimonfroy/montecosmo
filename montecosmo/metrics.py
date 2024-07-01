@@ -21,39 +21,41 @@ def _initialize_pk(mesh_size, box_size, kmin, dk, los):
     kmesh = sum(ki**2 for ki in kvec)**0.5
 
     dig = jnp.digitize(kmesh.reshape(-1), kedges)
-    Nsum = jnp.bincount(dig, weights=W.reshape(-1), length=len(kedges)+1)
+    ksum = jnp.bincount(dig, weights=W.reshape(-1), length=len(kedges)+1)
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
     kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 
     mumesh = mumesh / kmesh_nozeros 
     mumesh = jnp.where(kmesh==0, 0, mumesh)
     
-    return dig, Nsum, W, kedges, mumesh
+    return dig, ksum, W, kedges, mumesh
 
 
-def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.]), multipoles=0):
-    # Initialize values related to powerspectra (mode bins and weights)
+def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.]), multipoles=0, Nk=False):
+    # Initialize values related to powerspectra (wavenumber bins and edges)
     los = los / jnp.linalg.norm(los)
     multipoles = jnp.atleast_1d(multipoles)
-    dig, Nsum, W, kedges, mumesh = _initialize_pk(mesh_size, box_size, kmin, dk, los)
+    dig, ksum, W, kedges, mumesh = _initialize_pk(mesh_size, box_size, kmin, dk, los)
 
-    # Absolute value of FFT
-    fft_image = jnp.fft.fftn(field)
-    pk = jnp.real(fft_image * jnp.conj(fft_image)) # TODO: cross pk
+    # Square modulus of FFT
+    field_k = jnp.fft.fftn(field)
+    field2_k = jnp.real(field_k * jnp.conj(field_k)) # TODO: cross pk
 
-    # bincount_vfn = vmap(lambda w: jnp.bincount(dig, w, length=kedges.size+1))
-    Psum = jnp.empty((len(multipoles), *Nsum.shape))
+    Psum = jnp.empty((len(multipoles), *ksum.shape))
     for i_ell, ell in enumerate(multipoles):
-        real_weights = W * pk * (2*ell+1) * legendre(ell, mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
+        real_weights = W * field2_k * (2*ell+1) * legendre(ell, mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
     # Normalization for powerspectra
-    P = (Psum / Nsum).at[:,1:-1].get() * jnp.prod(box_size)
+    P = (Psum / ksum).at[:,1:-1].get() * jnp.prod(box_size)
     norm = jnp.prod(mesh_size.astype(jnp.float32))**2
 
     # Find central values of each bin
     kbins = kedges[:-1] + (kedges[1:] - kedges[:-1]) / 2
-    return jnp.concatenate([kbins[None], P / norm])
-
+    pk = jnp.concatenate([kbins[None], P / norm])
+    if Nk:
+        return pk, ksum[1:-1]
+    else:
+        return pk
 
 
 def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):

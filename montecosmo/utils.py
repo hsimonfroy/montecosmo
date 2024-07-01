@@ -185,16 +185,17 @@ def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None,
 
 
 def _load_runs(load_path:str, start_run:int, end_run:int, 
-               var_names:Iterable[str]=None, conc_axis:int|Iterable[int]=0, 
-               transform:Callable|Iterable[Callable]=lambda x:x, verbose=False):
+               var_names:str|Iterable[str]=None, conc_axis:int|Iterable[int]=0, 
+               transform:Callable|Iterable[Callable]=[], verbose=False):
     if verbose:
         print(f"loading: {os.path.basename(load_path)}, from run {start_run} to run {end_run} (included)")
+    var_names = np.atleast_1d(var_names)
     transform = np.atleast_1d(transform)
 
     for i_run in range(start_run, end_run+1):
         # Load
         samples_part = pickle_load(load_path+f"_{i_run}.p")   
-        if var_names is None: # NOTE: var_names should not be a consumable iterator
+        if None in var_names: # NOTE: var_names should not be a consumable iterator
             var_names = list(samples_part.keys())
         samples_part = {key: samples_part[key] for key in var_names}
         for trans in transform:
@@ -222,7 +223,8 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
 
 
 def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:int|Iterable[int], 
-              var_names:Iterable[str]=None, conc_axis:int|Iterable[int]=0, transform:Callable=lambda x:x, verbose=False):
+              var_names:str|Iterable[str]=None, conc_axis:int|Iterable[int]=0, 
+              transform:Callable|Iterable[Callable]=[], verbose=False):
     """
     Load and append runs (or extra fields) saved in different files with same name except index.
 

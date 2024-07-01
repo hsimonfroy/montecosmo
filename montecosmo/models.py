@@ -12,7 +12,7 @@ from jax.tree_util import tree_map
 from functools import partial
 
 from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn
-from montecosmo.metrics import power_spectrum
+from montecosmo.metrics import power_spectrum, _initialize_pk
 
 from jax.experimental.ode import odeint
 from jaxpm.pm import lpt, make_ode_fn
@@ -73,23 +73,33 @@ def prior_model(mesh_size, prior_config, **config):
 
 
 
-def likelihood_model(loc_mesh, lik_config, noise=0., **config):
+def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, noise=0., **config):
     """
     A likelihood for cosmological model.
 
     Return an observed mesh sampled from a location mesh with observational variance.
     """
     # TODO: prior on obs_std?
-    sigma = jnp.sqrt(lik_config['obs_std']**2+noise**2)
+    # # Scale mesh by galaxy density
+    # gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) 
+    sigma2 = lik_config['obs_std']**2+noise**2
 
-    mesh_size, box_size = config['mesh_size'], config['box_size']
-    pk_fn = get_pk_fn(mesh_size, box_size)
-    loc_mesh = pk_fn(loc_mesh)
-    loc_mesh *= (mesh_size / box_size).prod()
-    sigma *= 3
+    # # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
+    # multipoles = jnp.array([0,2,4])
+    # sli_multip = slice(1,1+jnp.shape(multipoles)[0])
+    # loc_pk, Nk = get_pk_fn(mesh_size, box_size, multipoles=multipoles, Nk=True)(loc_mesh)
+    # sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
+    
+    # debug.print("ho")
+    # loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean power spectrum
+    # obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], jnp.sqrt(sigma2))))
+    # obs_pk = deterministic('obs_pk', obs_pk)
+    # return obs_pk
 
     # Normal noise
-    obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, sigma))
+    debug.print("ha")
+    sigma2 /= (galaxy_density * (box_size / mesh_size).prod())
+    obs_mesh = sample('obs', dist.Normal(loc_mesh, jnp.sqrt(sigma2)))
     # Poisson noise
     # eps_var = 0.1 # add epsilon variance to prevent zero variance
     # obs_mesh = sample('obs_mesh', dist.Poisson(loc_mesh + eps_var)) 
@@ -98,12 +108,11 @@ def likelihood_model(loc_mesh, lik_config, noise=0., **config):
 
 
 
-def pmrsd_model_fn(latent_params, 
+def pmrsd_fn(latent_params, 
                 mesh_size,                 
                 box_size,
                 a_lpt,
                 a_obs, 
-                galaxy_density,
                 trace_reparam, 
                 trace_meshes,
                 prior_config,
@@ -209,9 +218,8 @@ def pmrsd_model_fn(latent_params,
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)
     
-    # Scale mesh by galaxy density
-    gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod())
-    return gxy_mesh
+    return biased_mesh
+
 
 
 def pmrsd_model(mesh_size,
@@ -268,20 +276,23 @@ def pmrsd_model(mesh_size,
     latent_params = prior_model(mesh_size, prior_config)
 
     # Compute deterministic model function
-    gxy_mesh = pmrsd_model_fn(latent_params,
-                                mesh_size,
-                                box_size,
-                                a_lpt,
-                                a_obs, 
-                                galaxy_density, # in galaxy / (Mpc/h)^3
-                                trace_reparam, 
-                                trace_meshes,
-                                prior_config,
-                                fourier,)
+    biased_mesh = pmrsd_fn(latent_params,
+                            mesh_size,
+                            box_size,
+                            a_lpt,
+                            a_obs, 
+                            trace_reparam, 
+                            trace_meshes,
+                            prior_config,
+                            fourier,)
 
     # Sample from likelihood
-    # obs_mesh = likelihood_model(gxy_mesh, lik_config, noise)
-    obs_mesh = likelihood_model(gxy_mesh, lik_config, noise, mesh_size=mesh_size, box_size=box_size)
+    obs_mesh = likelihood_model(biased_mesh,
+                                mesh_size,
+                                box_size,
+                                galaxy_density, # in galaxy / (Mpc/h)^3
+                                lik_config, 
+                                noise,) 
     return obs_mesh
 
 
@@ -342,7 +353,7 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, **config):
+def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, Nk=False, **config):
     """
     Return power spectrum function for given config.
     """
@@ -350,7 +361,7 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
         """
         Return mesh power spectrum.
         """
-        return power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles)
+        return power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles, Nk)
     return pk_fn
 
 
@@ -414,7 +425,8 @@ def print_config(model:partial|dict):
     print(f"delta_k:          {delta_k:.5f} h/Mpc")
     print(f"k_nyquist:        {k_nyquist:.5f} h/Mpc")
 
-    mean_gxy_density = config['galaxy_density'] * config['box_size'].prod() / config['mesh_size'].prod()
+    mean_gxy_density = config['galaxy_density'] * (config['box_size'] / config['mesh_size']).prod()
+    # NOTE: careful about mesh_size int overflow, perform float cast before
     print(f"mean_gxy_density: {mean_gxy_density:.3f} gxy/cell\n")
 
 

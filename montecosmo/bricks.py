@@ -161,22 +161,22 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     weights = weights + b1 * delta_part
 
     # Apply b2
-    delta_sqr_part = delta_part**2
-    weights = weights + b2 * (delta_sqr_part - delta_sqr_part.mean())
+    delta2_part = delta_part**2
+    weights = weights + b2 * (delta2_part - delta2_part.mean())
 
     # Apply bshear2, non-punctual term
     pot_k = delta_k * invlaplace_kernel(kvec)
 
-    shear_sqr = 0  
+    shear2 = 0  
     for i, ki in enumerate(kvec):
         # Add diagonal terms
-        shear_sqr = shear_sqr + jnp.fft.irfftn( - ki**2 * pot_k - delta_k / 3)**2
+        shear2 = shear2 + jnp.fft.irfftn( - ki**2 * pot_k - delta_k / 3)**2
         for kj in kvec[i+1:]:
             # Add strict-up-triangle terms (counted twice)
-            shear_sqr = shear_sqr + 2 * jnp.fft.irfftn( - ki * kj * pot_k)**2
+            shear2 = shear2 + 2 * jnp.fft.irfftn( - ki * kj * pot_k)**2
 
-    shear_sqr_part = cic_read(shear_sqr, pos)
-    weights = weights + bs2 * (shear_sqr_part - shear_sqr_part.mean())
+    shear2_part = cic_read(shear2, pos)
+    weights = weights + bs2 * (shear2_part - shear2_part.mean())
 
     # Apply bnabla2, non-punctual term
     delta_nl = jnp.fft.irfftn( - kk_box * delta_k)
