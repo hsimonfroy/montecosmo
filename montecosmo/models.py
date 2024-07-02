@@ -7,7 +7,7 @@ from numpyro.infer.util import log_density
 import numpy as np
 
 import jax.numpy as jnp
-from jax import random, jit, vmap, grad, debug
+from jax import random as jr, jit, vmap, grad, debug
 from jax.tree_util import tree_map
 from functools import partial
 
@@ -47,7 +47,16 @@ default_config={
             'lik_config':{'obs_std':1.},
             }
 
-
+bench_config = {
+        # Blocks to recombine variables
+        'blocks_config':{'cosmo':['Omega_m','sigma8'], 
+                         'biases':['b1','b2','bs2','bn2'], 
+                         'init':['init_mesh']},
+        # Chain subsampling
+        'n_cell':None,
+        'rng_key':jr.key(0),
+        'thinning':1,
+        }
 
 
 

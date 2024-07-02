@@ -1,45 +1,22 @@
 from __future__ import annotations # for Union typing | in python<3.10
 
-import os
 from pickle import dump, load, HIGHEST_PROTOCOL
+from functools import wraps, partial
 
 import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
 from jax import jit, vmap, grad
 from jax.tree_util import tree_map
-from functools import wraps, partial
 
 import matplotlib.pyplot as plt
 from matplotlib import rc
 from matplotlib.colors import to_rgba_array
 
-from numpyro.infer import MCMC
-from numpyro.diagnostics import print_summary
-from getdist.gaussian_mixtures import GaussianND
-from getdist import MCSamples
-from typing import Iterable, Callable
-
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
 
 
-
-
-
-def get_jit(*args, **kwargs):
-    """
-    Return custom jit function that preserves function name and documentation.
-    !!! example
-        ```python
-            @get_jit(static_argnums=(0))
-            def my_func(x,y):
-                return x+y
-        ```
-    """
-    def custom_jit(fun):
-        return wraps(fun)(jit(fun, *args, **kwargs))
-    return custom_jit
 
 
 def pickle_dump(obj, path):
@@ -120,132 +97,23 @@ def theme_switch(dark_theme=False, usetex=False, font_size=10):
     return theme
 
 
-
-
-
-def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, 
-             extra_fields:list=[], group_by_chain:bool=True):
+def get_jit(*args, **kwargs):
     """
-    Save one run of MCMC sampling, with extra fields and last state.
-    If `var_names` is None, save all the variables.
+    Return custom jit function that preserves function name and documentation.
+    !!! example
+        ```python
+            @get_jit(static_argnums=(0))
+            def my_func(x,y):
+                return x+y
+        ```
     """
-    # Save samples (and extra fields)
-    samples = mcmc.get_samples(group_by_chain)
-    if var_names is not None:
-        samples = {key: samples[key] for key in var_names}
-
-    if extra_fields:
-        extra = mcmc.get_extra_fields(group_by_chain)
-        if "num_steps" in extra.keys(): # renaming num_steps into clearer n_evals
-            n_evals = extra.pop("num_steps")
-            samples.update(n_evals=n_evals)
-        samples.update(extra)
-        del extra
-
-    pickle_dump(samples, save_path+f"_{i_run}.p")
-    del samples
-
-    # Save or overwrite last state
-    pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
+    def custom_jit(fun):
+        return wraps(fun)(jit(fun, *args, **kwargs))
+    return custom_jit
 
 
-def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 
-                    extra_fields:list=[], rng_key=jr.key(0), group_by_chain:bool=True, init_params=None) -> MCMC:
-    """
-    Warmup and run MCMC, saving the specified variables and extra fields.
-    Do `mcmc.num_warmup` warmup steps, followed by `n_runs` times `mcmc.num_samples` sampling steps.
-    If `var_names` is None, save all the variables.
-    """
-    # Warmup sampling
-    if mcmc.num_warmup>=1:
-        print(f"run {0}/{n_runs} (warmup)")
-
-        # Warmup
-        mcmc.warmup(rng_key, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
-        save_run(mcmc, 0, save_path, var_names, extra_fields, group_by_chain)
-
-        # Handling rng key and destroy init_params
-        key_run = mcmc.post_warmup_state.rng_key
-        init_params = None
-    else:
-        key_run = rng_key
-
-    # Run sampling
-    for i_run in range(1, n_runs+1):
-        print(f"run {i_run}/{n_runs}")
-            
-        # Run
-        mcmc.run(key_run, extra_fields=extra_fields, init_params=init_params)
-        save_run(mcmc, i_run, save_path, var_names, extra_fields)
-
-        # Init next run at last state
-        mcmc.post_warmup_state = mcmc.last_state
-        key_run = mcmc.post_warmup_state.rng_key
-    return mcmc
 
 
-def _load_runs(load_path:str, start_run:int, end_run:int, 
-               var_names:str|Iterable[str]=None, conc_axis:int|Iterable[int]=0, 
-               transform:Callable|Iterable[Callable]=[], verbose=False):
-    if verbose:
-        print(f"loading: {os.path.basename(load_path)}, from run {start_run} to run {end_run} (included)")
-    var_names = np.atleast_1d(var_names)
-    transform = np.atleast_1d(transform)
-
-    for i_run in range(start_run, end_run+1):
-        # Load
-        samples_part = pickle_load(load_path+f"_{i_run}.p")   
-        if None in var_names: # NOTE: var_names should not be a consumable iterator
-            var_names = list(samples_part.keys())
-        samples_part = {key: samples_part[key] for key in var_names}
-        for trans in transform:
-            samples_part = trans(samples_part)
-
-        # Init or append samples
-        if i_run == start_run:
-            samples = tree_map(lambda x: x[None], samples_part)
-        else:
-            # samples = {key: jnp.concatenate((samples[key], samples_part[key])) for key in var_names}
-            samples = tree_map(lambda x,y: jnp.concatenate((x, y[None]), axis=0), samples, samples_part)
-            del samples_part  
-        
-    for axis in jnp.atleast_1d(conc_axis):
-        samples = tree_map(lambda x: jnp.concatenate(x, axis=axis), samples)
-            
-    if verbose:
-        if 'n_evals' in samples.keys():
-            n_samples, n_evals = samples['n_evals'].shape, samples['n_evals'].sum(axis=-1)
-            print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
-        else:
-            print(f"first variable length: {len(samples[list(samples.keys())[0]])}")
-        print("")
-    return samples
-
-
-def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:int|Iterable[int], 
-              var_names:str|Iterable[str]=None, conc_axis:int|Iterable[int]=0, 
-              transform:Callable|Iterable[Callable]=[], verbose=False):
-    """
-    Load and append runs (or extra fields) saved in different files with same name except index.
-
-    Both runs `start_run` and `end_run` are included.
-    If `var_names` is None, load all the variables.
-    """
-    paths = np.atleast_1d(load_path)
-    starts = np.atleast_1d(start_run)
-    ends = np.atleast_1d(end_run)
-    assert len(paths)==len(starts)==len(ends), "lists must have the same lengths."
-    samples = []
-
-    for path, start, end in zip(paths, starts, ends):
-        samples.append(_load_runs(path, start, end, var_names, conc_axis, transform, verbose))
-
-    if isinstance(load_path, str):
-        return samples[0]
-    else:
-    # if paths is load_path:
-        return samples 
-    
 
 
 
@@ -281,46 +149,46 @@ def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:
 #     return gdsamples
 
 
-def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
-                   verbose:bool=False, **config):
-    labels = []
-    for name in samples:
-        if name.endswith('_'): # convention for a standardized latent param 
-            lab = "\\overline"+prior_config[name[:-1]][0]
-        else:
-            lab = prior_config[name][0]
-        labels.append(lab)
+# def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
+#                    verbose:bool=False, **config):
+#     labels = []
+#     for name in samples:
+#         if name.endswith('_'): # convention for a standardized latent param 
+#             lab = "\\overline"+prior_config[name[:-1]][0]
+#         else:
+#             lab = prior_config[name][0]
+#         labels.append(lab)
 
-    gdsamples = MCSamples(samples=list(samples.values()), names=list(samples.keys()), labels=labels, label=label)
+#     gdsamples = MCSamples(samples=list(samples.values()), names=list(samples.keys()), labels=labels, label=label)
 
-    if verbose:
-        if label is not None:
-            print('# '+gdsamples.getLabel())
-        else:
-            print("# <unspecified label>")
-        print(gdsamples.getNumSampleSummaryText())
-        print_summary(samples, group_by_chain=True) # NOTE: group_by_chain if several chains
+#     if verbose:
+#         if label is not None:
+#             print('# '+gdsamples.getLabel())
+#         else:
+#             print("# <unspecified label>")
+#         print(gdsamples.getNumSampleSummaryText())
+#         print_summary(samples, group_by_chain=True) # NOTE: group_by_chain if several chains
 
-    return gdsamples
+#     return gdsamples
 
 
-def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iterable[str]=None, 
-                  verbose:bool=False, **config):
-    """
-    Construct getdist MCSamples from samples. 
-    """
-    samples = np.atleast_1d(samples)
-    label = np.atleast_1d(label)
-    assert len(samples)==len(label), "lists must have the same lengths."
-    gdsamples = []
+# def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iterable[str]=None, 
+#                   verbose:bool=False, **config):
+#     """
+#     Construct getdist MCSamples from samples. 
+#     """
+#     samples = np.atleast_1d(samples)
+#     label = np.atleast_1d(label)
+#     assert len(samples)==len(label), "lists must have the same lengths."
+#     gdsamples = []
 
-    for samp, lab in zip(samples, label):
-        gdsamples.append(_get_gdsamples(samp, prior_config, lab, verbose))
+#     for samp, lab in zip(samples, label):
+#         gdsamples.append(_get_gdsamples(samp, prior_config, lab, verbose))
 
-    if isinstance(samples, dict):
-        return gdsamples[0]
-    else:
-        return gdsamples 
+#     if isinstance(samples, dict):
+#         return gdsamples[0]
+#     else:
+#         return gdsamples 
     
 
 
