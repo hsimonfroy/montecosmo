@@ -149,46 +149,6 @@ def get_jit(*args, **kwargs):
 #     return gdsamples
 
 
-# def _get_gdsamples(samples:dict, prior_config:dict, label:str=None,
-#                    verbose:bool=False, **config):
-#     labels = []
-#     for name in samples:
-#         if name.endswith('_'): # convention for a standardized latent param 
-#             lab = "\\overline"+prior_config[name[:-1]][0]
-#         else:
-#             lab = prior_config[name][0]
-#         labels.append(lab)
-
-#     gdsamples = MCSamples(samples=list(samples.values()), names=list(samples.keys()), labels=labels, label=label)
-
-#     if verbose:
-#         if label is not None:
-#             print('# '+gdsamples.getLabel())
-#         else:
-#             print("# <unspecified label>")
-#         print(gdsamples.getNumSampleSummaryText())
-#         print_summary(samples, group_by_chain=True) # NOTE: group_by_chain if several chains
-
-#     return gdsamples
-
-
-# def get_gdsamples(samples:dict|Iterable[dict], prior_config:dict, label:str|Iterable[str]=None, 
-#                   verbose:bool=False, **config):
-#     """
-#     Construct getdist MCSamples from samples. 
-#     """
-#     samples = np.atleast_1d(samples)
-#     label = np.atleast_1d(label)
-#     assert len(samples)==len(label), "lists must have the same lengths."
-#     gdsamples = []
-
-#     for samp, lab in zip(samples, label):
-#         gdsamples.append(_get_gdsamples(samp, prior_config, lab, verbose))
-
-#     if isinstance(samples, dict):
-#         return gdsamples[0]
-#     else:
-#         return gdsamples 
     
 
 
@@ -271,51 +231,6 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     funclist = [invlowtail, invhightail, invbody]
     return jnp.piecewise(y, condlist, funclist, low=low, high=high)
 
-
-
-
-# def id_cgh(mesh_size, part="real"):
-#     """
-#     Return indices and weights to permute a real Gaussian tensor of size ``mesh_size`` (3D)
-#     into a complex Gaussian Hermitian tensor. 
-#     Handle the Hermitian symmetry, specificaly at border faces, edges, and vertices.
-#     """
-#     mesh_size = np.array(mesh_size)
-#     sx, sy, sz = mesh_size
-#     # assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
-#     hx, hy, hz = mesh_size//2
-#     kmesh_size = (sx, sy, hz+1)
-#     weights = jnp.ones(kmesh_size) * (mesh_size.prod() / 2)**.5
-#     id = jnp.zeros((3,*kmesh_size), dtype=int)
-#     xyz = jnp.indices(mesh_size)
-
-#     if part == "imag":
-#         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
-#     else:
-#         slix, sliy, sliz = slice(1,hx), slice(1,hy), slice(1,hz)
-#     id = id.at[...,1:-1].set( xyz[...,sliz] )
-        
-#     for k in [0,hz]: # two faces
-#         id = id.at[...,1:hy,k].set(xyz[...,sliy,k])
-#         id = id.at[...,1:,hy+1:,k].set(xyz[...,1:,sliy,k][...,::-1,::-1])
-#         id = id.at[...,0,hy+1:,k].set(xyz[...,0,sliy,k][...,::-1]) # handle the border
-#         if part == "imag":
-#             weights = weights.at[:,hy+1:,k].multiply(-1)
-
-#         for j in [0,hy]: # two edges per faces
-#             id = id.at[...,1:hx,j,k].set(xyz[...,slix,j,k])
-#             id = id.at[...,hx+1:,j,k].set(xyz[...,slix,j,k][...,::-1])
-#             if part == "imag":
-#                 weights = weights.at[hx+1:,j,k].multiply(-1)
-
-#             for i in [0,hx]: # two points per edges
-#                 id = id.at[...,i,j,k].set(xyz[...,i,j,k])
-#                 if part == "imag":
-#                     weights = weights.at[i,j,k].multiply(0)
-#                 else:
-#                     weights = weights.at[i,j,k].multiply(2**.5)
-    
-#     return id, weights
 
 
 

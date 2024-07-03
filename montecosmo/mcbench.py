@@ -101,6 +101,7 @@ def separate(dic, blocks, rest=True):
         parts.append(dic)
     return parts
 
+
 def recombine(dic, blocks_dic, rest=True):
     """
     Recombine by block a dict via stacking.
@@ -116,27 +117,6 @@ def recombine(dic, blocks_dic, rest=True):
     if rest:
         combined |= dic
     return combined
-
-# def recombine(dic, blocks_dic, rest=True, axis=-1):
-#     """
-#     Recombine by block a dict.
-#     """
-#     combined = {}
-#     dic = dic.copy()
-#     for name, b in blocks_dic.items():
-#         parts = [dic.pop(k) for k in b]
-#         n_dims = [np.ndim(a) for a in parts]
-#         max_dim = np.max(n_dims + [axis])
-#         for i, nd in enumerate(n_dims):
-#             if nd == max_dim-1:
-#                 parts[i] = np.expand_dims(parts[i], axis)
-#             else:
-#                 assert nd == max_dim, "arrays must differ by at most one axis." 
-#         parts = np.concatenate(parts, axis=axis)
-#         combined[name] = parts
-#     if rest:
-#         combined |= dic
-#     return combined
 
 
 def flatten_dic(dic, axis=0):
@@ -209,18 +189,6 @@ def name_latent(samples, names):
         elif name + '_' in samples:    
             new_names.append(name + '_')
     return new_names
-
-# def name_latent(samples, names):
-#     # Handle standardized latent params
-#     names = names.copy()
-#     if all([k in samples for k in names]):
-#         pass
-#     elif all([k + '_' in samples for k in names]):
-#         for i, b in enumerate(names):
-#             names[i] = b + '_' # convention for standardized latent value 
-#     else:
-#         raise KeyError(f"at least one key missing among {names}")
-#     return names
 
 def separate_latent(samples, blocks, rest=True):
     blocks = blocks.copy()
@@ -384,34 +352,6 @@ class MCBench:
 
         return gdsamples
     
-    # @staticmethod
-    # def _get_gdsamples(samples:dict, labels:dict, label:str=None, verbose:bool=False):
-    #     samples_conc = tree_map(lambda x: jnp.concatenate(x, 0), samples) # concatenate all chains
-    #     vals, labs = [], []
-    #     for name in samples_conc:
-    #         val, lab = samples_conc[name], labels[name]
-    #         if jnp.ndim(val) == 1:
-    #             val = jnp.expand_dims(val, -1)
-    #         vals.append(val.T) # each value must be n_dims x n_samples
-
-    #         if np.ndim(lab) == 0:
-    #             lab = np.expand_dims(lab, -1)
-    #         labs.append(lab) # each label must be n_dims
-
-    #     vals = jnp.concatenate(vals, axis=0)
-    #     labs = np.concatenate(labs, axis=0)
-    #     gdsamples = MCSamples(samples=list(vals), names=labs, labels=labs, label=label)
-
-    #     if verbose:
-    #         if label is not None:
-    #             print('# '+gdsamples.getLabel())
-    #         else:
-    #             print("# <unspecified label>")
-    #         print(gdsamples.getNumSampleSummaryText())
-    #         print_summary(samples, group_by_chain=True) # NOTE: group_by_chain if several chains
-
-    #     return gdsamples
-
 
     def get_gdsamples(self, samples:dict|Iterable[dict], label:str|Iterable[str]=None, verbose:bool=False):
         """
