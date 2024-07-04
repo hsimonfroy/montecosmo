@@ -26,9 +26,10 @@ default_config={
             # Mesh and box parameters
             'mesh_size':64 * np.array([1 ,1 ,1 ]), # int
             'box_size':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
-            # Scale factors
+            # LSS formation
             'a_lpt':0.5, 
             'a_obs':0.5,
+            'lpt_order':2,
             # Galaxies
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Debugging
@@ -122,44 +123,13 @@ def pmrsd_fn(latent_params,
                 mesh_size,                 
                 box_size,
                 a_lpt,
-                a_obs, 
+                a_obs,
+                lpt_order, 
                 trace_reparam, 
                 trace_meshes,
                 prior_config,
                 fourier,):
-    """
-    Parameters
-    ----------
-    latent_params : dict
-        Latent parameters typically drawn from prior.
-
-    mesh_size : array_like of int
-        Size of the mesh.
-
-    box_size : array_like
-        Size of the box in Mpc/h. Typically aim for cell lengths between 1 and 10 Mpc/h.
-
-    a_lpt : float
-        Scale factor to which compute Lagrangian Perturbation Theory (LPT) displacement.
-        If equal to a_obs, no Particule Mesh (PM) step is computed.
-
-    a_obs : float
-        Scale factor of observations.
-        If equal to a_lpt, no Particule Mesh (PM) step is computed.
-
-    galaxy_density : float
-        Galaxy density in galaxy / (Mpc/h)^3.
-
-    trace_reparam : bool
-        If True, trace reparametrized deterministic parameters.
-
-    trace_meshes : bool, int
-        If True, trace intermediary meshes.
-        If int, number of PM mesh snapshots (LPT included) to trace.
-
-    prior_config : dict
-        Prior configuration.
-    """
+    
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
     cosmology = get_cosmology(**cosmo)
@@ -173,13 +143,12 @@ def pmrsd_fn(latent_params,
     lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_size, **biases, **init_mesh)
 
     # LPT displacement at a_lpt
-    lpt_order = 2
     debug.print("{i}", i=lpt_order)
     cosmology._workspace = {}  # HACK: temporary fix
     dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt, order=lpt_order)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
     # and correct by growth factor to get forces at wanted scale factor
-    particles = jnp.concatenate((x_part + dx, p_part), axis=-1)
+    particles = jnp.stack([x_part + dx, p_part])
 
     # PM displacement from a_lpt to a_obs
     # assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
@@ -201,7 +170,7 @@ def pmrsd_fn(latent_params,
                              stepsize_controller=controller, max_steps=8, saveat=saveat)
         particles = sol.ys
 
-        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
 
         if trace_meshes >= 2:
             particles = deterministic('pm_part', particles)
@@ -209,19 +178,19 @@ def pmrsd_fn(latent_params,
         particles = particles[-1]
     
     # # Uncomment only to trace bias mesh without rsd
-    # biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
+    # biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[0], lbe_weights)
     # if trace_meshes: 
     #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
     # RSD displacement at a_obs
-    dx = rsd(cosmology, a_obs, particles[:,3:])
-    particles = particles.at[:,:3].add(dx)
+    dx = rsd(cosmology, a_obs, particles[1])
+    particles = particles.at[0].add(dx)
 
     if trace_meshes: 
         particles = deterministic('rsd_part', particles)
     
     # CIC paint weighted by Lagrangian bias expansion weights
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[:,:3], lbe_weights)
+    biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[0], lbe_weights)
 
     # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
     # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
@@ -235,16 +204,17 @@ def pmrsd_fn(latent_params,
 
 
 def pmrsd_model(mesh_size,
-                  box_size,
-                  a_lpt,
-                  a_obs, 
-                  galaxy_density, # in galaxy / (Mpc/h)^3
-                  trace_reparam, 
-                  trace_meshes,
-                  prior_config,
-                  fourier,
-                  lik_config,
-                  noise=0.):
+                box_size,
+                a_lpt,
+                a_obs, 
+                lpt_order,
+                galaxy_density, # in galaxy / (Mpc/h)^3
+                trace_reparam, 
+                trace_meshes,
+                prior_config,
+                fourier,
+                lik_config,
+                noise=0.):
     """
     A cosmological forward model, with LPT and PM displacements, Lagrangian bias, and RSD.
     The relevant variables can be traced.
@@ -292,7 +262,8 @@ def pmrsd_model(mesh_size,
                             mesh_size,
                             box_size,
                             a_lpt,
-                            a_obs, 
+                            a_obs,
+                            lpt_order, 
                             trace_reparam, 
                             trace_meshes,
                             prior_config,

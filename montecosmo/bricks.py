@@ -238,7 +238,7 @@ def get_ode_fn(cosmo:Cosmology, mesh_size):
         state is a phase space state array [*position, *velocities]
         """
         pos, vel = state
-        forces = pm_forces(pos, mesh_shape=mesh_size) * 1.5 * cosmo.Omega_m
+        forces = pm_forces(pos, mesh_size=mesh_size) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -257,15 +257,15 @@ def invlaplace_kernel(kvec):
     return - jnp.where(kk==0, 0, 1 / kk_nozeros)
 
 
-def pm_forces(positions, mesh_shape, delta_k=None, r_split=0):
+def pm_forces(positions, mesh_size, delta_k=None, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
     if delta_k is None:
-        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
+        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_size), positions))
 
     # Computes gravitational potential
-    kvec = fftk(mesh_shape)
+    kvec = fftk(mesh_size)
     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
     # Computes gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
@@ -279,18 +279,18 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
     a = jnp.atleast_1d(a)
     E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
     delta_k = jnp.fft.rfftn(init_mesh)
-    shape = init_mesh.shape
+    mesh_size = init_mesh.shape
 
     # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
     # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f?
     # Correct cic_read, cic_paint docstring 
-    init_force = pm_forces(positions, mesh_shape=shape, delta_k=delta_k)
+    init_force = pm_forces(positions, mesh_size, delta_k=delta_k)
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
-        kvec = fftk()
+        kvec = fftk(mesh_size)
         pot_k = delta_k * invlaplace_kernel(kvec)
 
         delta2 = 0
@@ -305,7 +305,7 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
                 # Substract squared strict-up-triangle terms
                 delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
         
-        init_force2 = pm_forces(positions, delta=delta2)
+        init_force2 = pm_forces(positions, mesh_size, delta_k=jnp.fft.rfftn(delta2))
         dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
         f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
