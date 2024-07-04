@@ -204,7 +204,8 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
 from jaxpm.pm import pm_forces
 import jax_cosmo as jc
 from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
-from jaxpm.kernels import fftk
+from jaxpm.kernels import fftk, gradient_kernel, longrange_kernel
+from jaxpm.painting import cic_paint, cic_read
 
 # Planck 2015 paper XIII Table 4 final column (best fit)
 Planck15 = partial(Cosmology,
@@ -236,7 +237,7 @@ def get_ode_fn(cosmo:Cosmology, mesh_size):
         """
         state is a phase space state array [*position, *velocities]
         """
-        pos, vel = state[:,:3], state[:,3:]
+        pos, vel = state
         forces = pm_forces(pos, mesh_shape=mesh_size) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
@@ -245,7 +246,7 @@ def get_ode_fn(cosmo:Cosmology, mesh_size):
         # Computes the update of velocity (kick)
         dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
 
-        return jnp.concatenate((dpos, dvel), axis=-1)
+        return jnp.stack([dpos, dvel])
 
     return nbody_ode
 
@@ -256,19 +257,19 @@ def invlaplace_kernel(kvec):
     return - jnp.where(kk==0, 0, 1 / kk_nozeros)
 
 
-# def pm_forces(positions, mesh_shape, delta_k=None, r_split=0):
-#     """
-#     Computes gravitational forces on particles using a PM scheme
-#     """
-#     if delta_k is None:
-#         delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
+def pm_forces(positions, mesh_shape, delta_k=None, r_split=0):
+    """
+    Computes gravitational forces on particles using a PM scheme
+    """
+    if delta_k is None:
+        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
 
-#     # Computes gravitational potential
-#     kvec = fftk(mesh_shape)
-#     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
-#     # Computes gravitational forces
-#     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
-#                       for i in range(3)], axis=-1)
+    # Computes gravitational potential
+    kvec = fftk(mesh_shape)
+    pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+    # Computes gravitational forces
+    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
+                      for i in range(3)], axis=-1)
 
 
 def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
@@ -278,17 +279,18 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
     a = jnp.atleast_1d(a)
     E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
     delta_k = jnp.fft.rfftn(init_mesh)
+    shape = init_mesh.shape
 
     # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
     # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f?
     # Correct cic_read, cic_paint docstring 
-    init_force = pm_forces(positions, delta=init_mesh)
+    init_force = pm_forces(positions, mesh_shape=shape, delta_k=delta_k)
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
-        kvec = fftk(init_mesh.shape)
+        kvec = fftk()
         pot_k = delta_k * invlaplace_kernel(kvec)
 
         delta2 = 0

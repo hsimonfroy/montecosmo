@@ -4,6 +4,9 @@ import jax.numpy as jnp
 from jaxpm.growth import growth_rate, growth_factor
 
 
+##################
+# Power spectrum #
+##################
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
 
     W = jnp.ones(mesh_size)
@@ -31,7 +34,7 @@ def _initialize_pk(mesh_size, box_size, kmin, dk, los):
     return dig, ksum, W, kedges, mumesh
 
 
-def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.]), multipoles=0, Nk=False):
+def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.]), multipoles=0, kcount=False):
     # Initialize values related to powerspectra (wavenumber bins and edges)
     los = los / jnp.linalg.norm(los)
     multipoles = jnp.atleast_1d(multipoles)
@@ -52,7 +55,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
     # Find central values of each bin
     kbins = kedges[:-1] + (kedges[1:] - kedges[:-1]) / 2
     pk = jnp.concatenate([kbins[None], P / norm])
-    if Nk:
+    if kcount:
         return pk, ksum[1:-1]
     else:
         return pk
@@ -96,3 +99,50 @@ def legendre(ell, x):
     # for vmaping on condition, see https://github.com/google/jax/issues/8409
     return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
 
+
+
+
+###################
+# Density regions #
+###################
+def qbi(x, proba=.95, axis=0, side='bi'):
+    """
+    Compute the Quantile Based Interval (QBI), 
+    i.e. the interval of proba `proba` from quantile q1 to quantile q2, where:
+
+    q1, q2 = (1-proba)/2, (1+proba)/2, for 'side==bi' Bilateral QBI (alias Equal-Tailed Interval)
+
+    q1, q2 = 0, proba, for 'side==low' Low lateral QBI
+
+    q1, q2 = 1-proba, 1, for 'side==high' High lateral QBI
+    """
+    if side == 'bi':
+        p_low, p_high = (1-proba)/2, (1+proba)/2
+    if side == 'low':
+        p_low, p_high = 0, proba
+    if side == 'high':
+        p_low, p_high = 1-proba, 1
+    q_low = jnp.quantile(x, p_low, axis=axis)
+    q_high = jnp.quantile(x, p_high, axis=axis)
+    return jnp.stack([q_low, q_high], axis=axis)
+    
+
+def hdi(x, proba=.95, axis=0):
+    """
+    Compute the Highest Density Interval (HDI),
+    i.e. the smallest interval of proba `proba`.
+    """
+    x = np.moveaxis(x, axis, 0)
+    x_sort = jnp.sort(x, axis=0)
+    n = x.shape[0]
+    # Round for better estimation at low number of sample, and handle also the case proba close to 1.
+    i_length = min(int(jnp.round(proba * n)), n-1)
+
+    intervals_low = x_sort[: (n - i_length)] # no need to consider all low bounds
+    intervals_high = x_sort[i_length:]  # no need to consider all high bounds
+    intervals_length = intervals_high - intervals_low # all intervals with given proba
+    i_low = intervals_length.argmin(axis=0)
+    i_high = i_low + i_length
+    hdi_low = jnp.take_along_axis(x_sort, i_low[None], 0)[0]
+    hdi_high = jnp.take_along_axis(x_sort, i_high[None], 0)[0]
+    return jnp.stack([hdi_low, hdi_high], axis=axis)

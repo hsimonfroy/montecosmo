@@ -11,11 +11,11 @@ from jax import random as jr, jit, vmap, grad, debug
 from jax.tree_util import tree_map
 from functools import partial
 
-from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn
+from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn, lpt
 from montecosmo.metrics import power_spectrum, _initialize_pk
 
 from jax.experimental.ode import odeint
-from jaxpm.pm import lpt, make_ode_fn
+# from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 
@@ -56,6 +56,8 @@ bench_config = {
         'n_cell':None,
         'rng_key':jr.key(0),
         'thinning':1,
+        # Power spectrum
+        'multipoles':[0,2,4],
         }
 
 
@@ -171,8 +173,10 @@ def pmrsd_fn(latent_params,
     lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_size, **biases, **init_mesh)
 
     # LPT displacement at a_lpt
+    lpt_order = 2
+    debug.print("{i}", i=lpt_order)
     cosmology._workspace = {}  # HACK: temporary fix
-    dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt)
+    dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt, order=lpt_order)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
     # and correct by growth factor to get forces at wanted scale factor
     particles = jnp.concatenate((x_part + dx, p_part), axis=-1)
@@ -221,7 +225,7 @@ def pmrsd_fn(latent_params,
 
     # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
     # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
-    # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
+    # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
 
     if trace_meshes: 
         biased_mesh = deterministic('bias_mesh', biased_mesh)
@@ -361,7 +365,7 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, Nk=False, **config):
+def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, kcount=False, **config):
     """
     Return power spectrum function for given config.
     """
@@ -369,7 +373,7 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]
         """
         Return mesh power spectrum.
         """
-        return power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles, Nk)
+        return power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles, kcount)
     return pk_fn
 
 

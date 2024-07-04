@@ -76,7 +76,7 @@ def set_plotting_options(usetex=False, font_size=10):
     params = {'text.usetex': usetex,
             #   'ps.useafm': True,
             #   'pdf.use14corefonts': True,
-              'font.family': 'roman' if usetex else None,
+              'font.family': 'roman' if usetex else 'sans-serif',
               'font.size':font_size,} # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
     plt.rcParams.update(params)
     # import matplotlib as mpl

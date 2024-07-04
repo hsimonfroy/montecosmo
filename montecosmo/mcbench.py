@@ -17,7 +17,8 @@ from getdist import MCSamples
 from getdist.gaussian_mixtures import GaussianND
 
 from montecosmo.utils import pickle_dump, pickle_load
-from montecosmo.models import get_param_fn
+from montecosmo.models import get_param_fn, get_pk_fn
+from montecosmo.metrics import hdi, qbi
 
 ###########
 # Loading #
@@ -155,7 +156,7 @@ def thin(dic, thinning=1, moments=None, axis=0):
     dic = tree_map(lambda x: jnp.atleast_1d(x), dic)
     out = tree_map(lambda x:
                       jnp.stack(tree_map(aggr_fn, 
-                                         jnp.array_split(x, jnp.ceil(x.shape[axis]/thinning), axis%x.ndim)), 
+                            jnp.array_split(x, max(jnp.round(x.shape[axis]/thinning), 1), axis%x.ndim)), 
                         axis%x.ndim), dic)
     return out
 
@@ -223,10 +224,12 @@ class MCBench:
         self.n_cell = bench_config['n_cell']
         self.thinning = bench_config['thinning']
         self.rng_key = bench_config['rng_key']
+        self.multipoles = bench_config['multipoles']
 
         self.separate_latent = partial(separate_latent, blocks=[list(self.prior_config.keys())])
         self.recombine_latent = partial(recombine_latent, blocks_dic=self.blocks_config)
 
+        self.pk_fn = get_pk_fn(multipoles=self.multipoles, **model_config)
         self.param_fn = get_param_fn(**model_config)
         @jit
         def param_chains(samples):
@@ -279,15 +282,19 @@ class MCBench:
 
     def set_fiduc(self, fiduc_trace):
         self.fiduc_trace = fiduc_trace
-        fiduc = self.param_fn(**fiduc_trace)
-        fiduc_ = self.param_fn(inverse=True, **fiduc)
-        self.fiduc = self.choice_fn(fiduc)
-        self.fiduc_ = self.choice_fn(fiduc_)
-        if self.n_cell is not None and self.n_cell <= 2**15:
-            self.ffiduc = flatten_dic(self.fiduc)
-            self.ffiduc_ = flatten_dic(self.fiduc_)
+        self.fiduc = self.param_fn(**fiduc_trace)
+        self.fiduc_ = self.param_fn(inverse=True, **self.fiduc)
+
+        if self.n_cell is None:
+            self.fiduc_pk = self.pk_fn(self.fiduc['init_mesh'])
         else:
-            print("dict quite large to flatten, try reducing n_cell")
+            self.fiduc = self.choice_fn(self.fiduc)
+            self.fiduc_ = self.choice_fn(self.fiduc_)
+            if self.n_cell <= 2**10:
+                self.ffiduc = flatten_dic(self.fiduc)
+                self.ffiduc_ = flatten_dic(self.fiduc_)
+            else:
+                print("dict quite large to flatten, try reducing n_cell")
 
     def label_chains(self, samples):
         latent = self.separate_latent(samples, rest=False)[0]
@@ -304,33 +311,6 @@ class MCBench:
                     labels[ids] = label + sufx
             dic[name] = labels
         return dic
-
-
-    @staticmethod
-    def _plot_chains(values, fiduc, labels):
-        values = jnp.concatenate(values, axis=0) # concatenate all chains
-        cmap = plt.get_cmap('Dark2')
-        colors = [cmap(i) for i in range(len(values))]
-        # colors = [f"C{i}" for i in range(len(values))]
-        plt.gca().set_prop_cycle(color=colors)
-        
-        labels = ['$'+lab+'$' for lab in labels]
-        plt.plot(values, label=labels)
-        plt.hlines(fiduc, xmin=0, xmax=len(values), 
-            ls="--", alpha=0.75, color=colors,)
-
-    def plot_chains(self, samples, fiduc):
-        labels = self.label_chains(samples)
-        samples = self.recombine_latent(samples, rest=False)
-        fiduc = self.recombine_latent(fiduc, rest=False)
-        labels = self.recombine_latent(labels, rest=False)
-        
-        n_plot = len(samples)
-        for i_k, k in enumerate(samples):
-            plt.subplot(1, n_plot, i_k+1)
-            plt.title(k)
-            self._plot_chains(samples[k], fiduc[k], labels[k])
-            plt.legend()
 
 
     @staticmethod
@@ -352,7 +332,6 @@ class MCBench:
 
         return gdsamples
     
-
     def get_gdsamples(self, samples:dict|Iterable[dict], label:str|Iterable[str]=None, verbose:bool=False):
         """
         Construct getdist MCSamples from samples. 
@@ -362,10 +341,10 @@ class MCBench:
         assert len(samples)==len(label), "lists must have the same lengths."
         gdsamples = []
 
-        for mcsamp, mclab in zip(samples, label):
-            latent = self.separate_latent(mcsamp, rest=False)[0]
+        for samp, lab in zip(samples, label):
+            latent = self.separate_latent(samp, rest=False)[0]
             labels = self.label_chains(latent)
-            gdsamples.append(self._get_gdsamples(latent, labels, mclab, verbose))
+            gdsamples.append(self._get_gdsamples(latent, labels, lab, verbose))
 
         if isinstance(samples, dict):
             return gdsamples[0]
@@ -373,6 +352,92 @@ class MCBench:
             return gdsamples 
 
 
+
+    @staticmethod
+    def _plot_chains(values, fiduc, labels, cmap='tab10', max_lines=10):
+        values = jnp.concatenate(values, axis=0) # concatenate all chains
+        # In case values, fiduc, and labels have not been flattened already
+        values = values.reshape(len(values), -1)[:,:max_lines]
+        fiduc = fiduc.reshape(-1)[:max_lines]
+        labels = labels.reshape(-1)[:max_lines]
+
+        cmap = plt.get_cmap(cmap)
+        colors = [cmap(i) for i in range(values.shape[1])]
+        plt.gca().set_prop_cycle(color=colors)
+
+        labels = ['$'+lab+'$' for lab in labels]
+        plt.plot(values, label=labels)
+        plt.hlines(fiduc, xmin=0, xmax=values.shape[0], 
+            ls="--", alpha=0.75, color=colors,)
+
+    def plot_chains(self, samples, fiduc, cmap='tab10'):
+        labels = self.label_chains(samples)
+        samples = self.recombine_latent(samples, rest=False)
+        fiduc = self.recombine_latent(fiduc, rest=False)
+        labels = self.recombine_latent(labels, rest=False)
+        
+        n_plot = len(samples)
+        for i_k, k in enumerate(samples):
+            plt.subplot(1, n_plot, i_k+1)
+            plt.title(k)
+            self._plot_chains(samples[k], fiduc[k], labels[k], cmap)
+            plt.legend()
+
+
+
+
+    def interval_pk(self, samples, proba=.95):
+        proba = jnp.atleast_1d(proba)
+        samples_conc = tree_map(lambda x: jnp.concatenate(x, 0), samples) # concatenate all chains
+        name = name_latent(samples, ['init_mesh'])[0]
+
+        pks = vmap(self.pk_fn)(samples_conc[name])
+        med_pk = jnp.median(pks, 0)
+        intervals = []
+        for p in proba:
+            intervals.append(hdi(pks, p, 0)) # hdi or qbi
+        return med_pk, jnp.stack(intervals)
+
+    def _plot_pk(self, samples, proba=.95, label=None, color=None):
+        proba = jnp.atleast_1d(proba)
+        med_pk, interv_pk = self.interval_pk(samples, proba)
+        plot_fn = lambda pk, i_ell, **kwargs: plt.plot(pk[0], pk[0]*pk[i_ell+1], **kwargs)
+        plotfill_fn = lambda pklow, pkup, i_ell, **kwargs: plt.fill_between(
+            pklow[0], pklow[0]*pklow[i_ell+1], pklow[0]*pkup[i_ell+1], **kwargs)
+        
+        n_plot = len(self.multipoles)
+        for i_ell, ell in enumerate(self.multipoles):
+            plt.subplot(1, n_plot, i_ell+1)
+            plot_fn(med_pk, i_ell, linestyle='--', color=color)
+
+            for i_p, p in enumerate(proba):
+                if i_p == 0: lab = label
+                else: lab = None
+                plotfill_fn(interv_pk[i_p,0], interv_pk[i_p,1], i_ell, 
+                    label=lab, alpha=float(1-p)**(1/2), color=color)
+
+            plt.xlabel("$k$ [h/Mpc]"), plt.ylabel(f"$k P_{ell}$ [Mpc/h]$^2$")
+            plt.legend()
+
+    def plot_fiduc_pk(self, label=None, color=None):
+        plot_fn = lambda pk, i_ell, **kwargs: plt.plot(pk[0], pk[0]*pk[i_ell+1], **kwargs)
+        n_plot = len(self.multipoles)
+        for i_ell, ell in enumerate(self.multipoles):
+            plt.subplot(1, n_plot, i_ell+1)
+            plot_fn(self.fiduc_pk, i_ell, color=color, label=label)
+            plt.xlabel("$k$ [h/Mpc]"), plt.ylabel(f"$k P_{ell}$ [Mpc/h]$^2$")
+            plt.legend()
+
+    def plot_pk(self, samples, proba=.95, label=None, cmap='tab10'):
+        samples = np.atleast_1d(samples)
+        label = np.atleast_1d(label)
+        assert len(samples)==len(label), "lists must have the same lengths."
+        cmap = plt.get_cmap(cmap)
+        color = [cmap(i) for i in range(len(samples))]
+
+        self.plot_fiduc_pk(label='true', color='k')
+        for samp, lab, col in zip(samples, label, color):
+            self._plot_pk(samp, proba, label=lab, color=col)
 
 
 
