@@ -295,15 +295,22 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
 
         delta2 = 0
         shear_acc = 0
-        for i, ki in enumerate(kvec):
+        # for i, ki in enumerate(kvec):
+        for i in range(3):
             # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
+            # shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
+            nabla_i_nabla_i = gradient_kernel(kvec, i)**2
+            shear_ii = jnp.fft.irfftn(nabla_i_nabla_i * pot_k)
             delta2 += shear_ii * shear_acc 
             shear_acc += shear_ii
 
-            for kj in kvec[i+1:]:
+            # for kj in kvec[i+1:]:
+            for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
-                delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
+                # delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
+                nabla_i_nabla_j = gradient_kernel(kvec, i) * gradient_kernel(kvec, j)
+                delta2 -= jnp.fft.irfftn(nabla_i_nabla_j * pot_k)**2
+
         
         init_force2 = pm_forces(positions, mesh_size, delta_k=jnp.fft.rfftn(delta2))
         dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second

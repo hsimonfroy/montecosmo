@@ -10,10 +10,9 @@ from jaxpm.growth import growth_rate, growth_factor
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
 
     W = jnp.ones(mesh_size)
-    # W = np.empty(mesh_size, dtype='f4')
     # W[...] = 2.0
     # W[..., 0] = 1.0
-    # W[..., -1] = 1.0 # XXX: Why?
+    # W[..., -1] = 1.0 # NOTE: weights only needed when rfftn instead of fftn.
 
     kmax = np.pi * np.min(mesh_size) / np.max(box_size) + dk / 2
     kedges = jnp.arange(kmin, kmax, dk)
