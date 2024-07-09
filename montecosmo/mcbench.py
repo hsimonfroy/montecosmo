@@ -18,7 +18,8 @@ from getdist.gaussian_mixtures import GaussianND
 
 from montecosmo.utils import pickle_dump, pickle_load
 from montecosmo.models import get_param_fn, get_pk_fn
-from montecosmo.metrics import hdi, qbi
+from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
+
 
 ###########
 # Loading #
@@ -52,7 +53,7 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
         samples = tree_map(lambda x: jnp.concatenate(x, axis=axis), samples)
             
     if verbose:
-        if 'n_evals' in samples.keys():
+        if 'n_evals' in samples:
             n_samples, n_evals = samples['n_evals'].shape, samples['n_evals'].sum(axis=-1)
             print(f"total n_samples: {n_samples}, total n_evals: {n_evals}")
         else:
@@ -209,7 +210,13 @@ def label_latent(name, prior_config, **config):
     else:
         return prior_config[name][0]
     
-
+def _metric_traj(metric_fn, n, values, *args):
+    filt_ends = jnp.round(jnp.arange(1,n+1)/n*values.shape[1]).astype(int)
+    filt_fn = lambda end: metric_fn(values[:,:end], *args)
+    metrics = []
+    for end in filt_ends:
+        metrics.append(filt_fn(end))
+    return jnp.stack(metrics)
 
 
 
@@ -246,7 +253,7 @@ class MCBench:
             infos = ['n_evals']
             for k in infos:
                 if k in rest:
-                    rest[k] = thin(rest[k], thinning, 1, axis)
+                    rest[k] = thin(rest[k], thinning, 1, axis) # sum n_evals
             return latent | rest
 
         def choice_cell_chains(rng_key, samples, n, axis=[-3,-2,-1]):
@@ -282,7 +289,7 @@ class MCBench:
 
     def set_fiduc(self, fiduc_trace):
         self.fiduc_trace = fiduc_trace
-        self.fiduc = self.param_fn(**fiduc_trace)
+        self.fiduc = self.param_fn(**self.fiduc_trace)
         self.fiduc_ = self.param_fn(inverse=True, **self.fiduc)
 
         if self.n_cell is None:
@@ -296,19 +303,23 @@ class MCBench:
             else:
                 print("dict quite large to flatten, try reducing n_cell")
 
-    def label_chains(self, samples):
-        latent = self.separate_latent(samples, rest=False)[0]
+    def label_chains(self, samples, axis=2, dollars=True):
+        latent, = self.separate_latent(samples, rest=False)
+        if dollars:
+            presuf = "$"
+        else:
+            presuf = ""
         dic = {}
         for name in latent:
-            shape = np.shape(latent[name])[2:]
+            shape = np.shape(latent[name])[axis:]
             label = label_latent(name, self.prior_config)
             if len(shape) == 0:
-                labels = label
+                labels = presuf + label + presuf
             else:
                 labels = np.full(shape, "", dtype='<U32')
                 for ids in product(*map(range, shape)):
                     sufx = "[{}]".format(",".join(map(str, ids)))
-                    labels[ids] = label + sufx
+                    labels[ids] = presuf + label + sufx + presuf
             dic[name] = labels
         return dic
 
@@ -342,8 +353,8 @@ class MCBench:
         gdsamples = []
 
         for samp, lab in zip(samples, label):
-            latent = self.separate_latent(samp, rest=False)[0]
-            labels = self.label_chains(latent)
+            latent, = self.separate_latent(samp, rest=False)
+            labels = self.label_chains(latent, dollars=False)
             gdsamples.append(self._get_gdsamples(latent, labels, lab, verbose))
 
         if isinstance(samples, dict):
@@ -354,19 +365,19 @@ class MCBench:
 
 
     @staticmethod
-    def _plot_chains(values, fiduc, labels, cmap='tab10', max_lines=10):
+    def _plot_chains(values, fiduc, labels, cmap='tab10'):
         values = jnp.concatenate(values, axis=0) # concatenate all chains
         # In case values, fiduc, and labels have not been flattened already
+        max_lines = 10
         values = values.reshape(len(values), -1)[:,:max_lines]
         fiduc = fiduc.reshape(-1)[:max_lines]
         labels = labels.reshape(-1)[:max_lines]
 
         cmap = plt.get_cmap(cmap)
-        colors = [cmap(i) for i in range(values.shape[1])]
+        colors = [cmap(i) for i in range(values.shape[-1])]
         plt.gca().set_prop_cycle(color=colors)
 
-        labels = ['$'+lab+'$' for lab in labels]
-        plt.plot(values, label=labels)
+        plt.plot(values, label=np.squeeze(labels))
         plt.hlines(fiduc, xmin=0, xmax=values.shape[0], 
             ls="--", alpha=0.75, color=colors,)
 
@@ -380,8 +391,12 @@ class MCBench:
         for i_k, k in enumerate(samples):
             plt.subplot(1, n_plot, i_k+1)
             plt.title(k)
+            # labs = ['$'+lab+'$' for lab in labels[k]]
             self._plot_chains(samples[k], fiduc[k], labels[k], cmap)
             plt.legend()
+
+
+
 
 
 
@@ -435,7 +450,8 @@ class MCBench:
         cmap = plt.get_cmap(cmap)
         color = [cmap(i) for i in range(len(samples))]
 
-        self.plot_fiduc_pk(label='true', color='k')
+        if hasattr(self, 'fiduc_pk'):
+            self.plot_fiduc_pk(label='true', color='k')
         for samp, lab, col in zip(samples, label, color):
             self._plot_pk(samp, proba, label=lab, color=col)
 
@@ -443,6 +459,77 @@ class MCBench:
 
 
 
+
+    def metric_traj(self, metric_fn, samples, true=None, n=1):
+        samples = samples.copy()
+        # Handle infos
+        infos = {}
+        for k in ['n_evals']:
+            info = samples.pop(k, None)
+            if info is not None:
+                traj_fn = partial(_metric_traj, lambda x:x.sum(), n)
+                infos[k] = traj_fn(info) # sum n_evals
+
+        traj_fn = partial(_metric_traj, metric_fn, n)
+        if true is None:
+            samples = tree_map(traj_fn, samples)
+        else:
+            samples = tree_map(traj_fn, samples, true)
+
+        return samples | infos
+
+
+# def get_filtration_ends(length, n):
+#     return jnp.stack(tree_map(lambda x: jnp.take(x, -1), jnp.array_split(jnp.arange(length), n)))
+        
+# from jax.lax import dynamic_slice, fori_loop
+    # filt_fn = lambda end: metric_fn(dynamic_slice(values, ([0]*values.ndim), (len(values), end, *values.shape[2:])), *args)
+    # def body_fn(i, out):
+    #     out = out.at[i].set(filt_fn(i))
+    #     return out
+    # return fori_loop(0, n, body_fn, out)
+    # return vmap(filt_fn)(filt_ends)
+
+
+
+    @staticmethod
+    def _plot_metric_traj(x, y, labels, ylabel=None, cmap='tab10'):
+        cmap = plt.get_cmap(cmap)
+        colors = [cmap(i) for i in range(y.shape[-1])]
+        plt.gca().set_prop_cycle(color=colors)
+
+        x = [] if x is None else [x]
+        plt.semilogy(*x, y, label=np.squeeze(labels))
+
+        if plt.rcParams['text.usetex']:
+            plt.xlabel("$N_{\\textrm{eval}}$")
+        else:
+            plt.xlabel("$N_{\\text{eval}}$")
+        plt.ylabel(ylabel)
+
+
+    def plot_metric_traj(self, traj, ylabel=None, cmap='tab10'):
+        n_evals = traj.copy().pop('n_evals', None)
+        labels = self.label_chains(traj, axis=1)
+        traj = self.recombine_latent(traj, rest=False)
+        labels = self.recombine_latent(labels, rest=False)
+        
+        n_plot = len(traj)
+        for i_k, k in enumerate(traj):
+            plt.subplot(1, n_plot, i_k+1)
+            plt.title(k)
+            # labs = ['$'+lab+'$' for lab in np.atleast_1d(labels[k])]
+            self._plot_metric_traj(n_evals, traj[k], labels[k], ylabel, cmap)
+            plt.legend()
+    
+    def plot_metric_combtraj(self, traj, ylabel=None, cmap='tab10'):
+        traj = traj.copy()
+        n_evals = traj.pop('n_evals', None)
+        values = jnp.array(list(traj.values())).T
+        labels = np.array(list(traj.keys()))
+
+        self._plot_metric_traj(n_evals, values, labels, ylabel, cmap)
+        plt.legend()
 
 
 

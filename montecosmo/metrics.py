@@ -2,6 +2,9 @@ import numpy as np
 import jax.numpy as jnp
 # from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
+from numpyro.diagnostics import effective_sample_size, gelman_rubin
+# from blackjax.diagnostics import effective_sample_size
+
 
 
 ##################
@@ -37,6 +40,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
     # Initialize values related to powerspectra (wavenumber bins and edges)
     los = los / jnp.linalg.norm(los)
     multipoles = jnp.atleast_1d(multipoles)
+    mesh_size, box_size = jnp.array(mesh_size), jnp.array(box_size)
     dig, ksum, W, kedges, mumesh = _initialize_pk(mesh_size, box_size, kmin, dk, los)
 
     # Square modulus of FFT
@@ -109,11 +113,11 @@ def qbi(x, proba=.95, axis=0, side='bi'):
     Compute the Quantile Based Interval (QBI), 
     i.e. the interval of proba `proba` from quantile q1 to quantile q2, where:
 
-    q1, q2 = (1-proba)/2, (1+proba)/2, for 'side==bi' Bilateral QBI (alias Equal-Tailed Interval)
+    q1, q2 = (1-proba)/2, (1+proba)/2, for 'side==bi' bilateral QBI (alias Equal-Tailed Interval)
 
-    q1, q2 = 0, proba, for 'side==low' Low lateral QBI
+    q1, q2 = 0, proba, for 'side==low' low lateral QBI
 
-    q1, q2 = 1-proba, 1, for 'side==high' High lateral QBI
+    q1, q2 = 1-proba, 1, for 'side==high' high lateral QBI
     """
     if side == 'bi':
         p_low, p_high = (1-proba)/2, (1+proba)/2
@@ -145,3 +149,47 @@ def hdi(x, proba=.95, axis=0):
     hdi_low = jnp.take_along_axis(x_sort, i_low[None], 0)[0]
     hdi_high = jnp.take_along_axis(x_sort, i_high[None], 0)[0]
     return jnp.stack([hdi_low, hdi_high], axis=axis)
+
+
+
+#################
+# Chain metrics #
+#################
+def geomean(x, axis=None):
+    return jnp.exp( jnp.log(x).mean(axis=axis) )
+
+def grmean(x, axis=None):
+    """cf. https://arxiv.org/pdf/1812.09384"""
+    return (1 + geomean(x**2 - 1, axis=axis) )**.5
+
+def multi_ess(x, axis=None):
+    return geomean(effective_sample_size(x), axis=axis)
+
+def multi_gr(x, axis=None):
+    return grmean(gelman_rubin(x), axis=axis)
+
+
+
+
+sqrerr_moments_fn = lambda m, m_true: (m.mean(axis=(0,1))-m_true)**2
+def sqrerr_moments(moments, moments_true):
+    # Get mean and std from runs and chains
+    m1_hat, m2_hat = moments.mean(axis=(0,1))
+    m1, m2 = moments_true
+    std_hat, std = (m2_hat - m1_hat**2)**.5, (m2 - m1**2)**.5 # Huygens formula
+    # Compute normalized errors
+    err_loc, err_scale = (m1_hat - m1) / std, (std_hat - std) / (std / 2**.5) # asymptotically N(0, 1/n_eff)
+    mse_loc, mse_scale = (err_loc**2).mean(), (err_scale**2).mean() # asymptotically 1/n_eff * chi^2(d)/d
+    return jnp.stack([mse_loc, mse_scale])
+
+def sqrerr_moments2(moments, moments_true):
+    # Get mean and std from runs
+    n_chains = moments.shape[1]
+    m_hat = moments.mean(axis=(0))
+    m1_hat, m2_hat = m_hat[:,0], m_hat[:,1]
+    m1, m2 = moments_true
+    std_hat, std = (m2_hat - m1_hat**2)**.5, (m2 - m1**2)**.5 # Huygens formula
+    # Compute normalized errors
+    err_loc, err_scale = (m1_hat - m1) / std, (std_hat - std) / (std / 2**.5) # asymptotically N(0, n_chain/n_eff)
+    mse_loc, mse_scale = (err_loc**2).mean(), (err_scale**2).mean() # asymptotically n_chain/n_eff * chi^2(d*n_chain)/(d*n_chain) 
+    return jnp.stack([mse_loc, mse_scale]) / n_chains # asymptotically 1/n_eff * chi^2(d*n_chain)/(d*n_chain) 

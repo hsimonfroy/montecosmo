@@ -4,7 +4,7 @@ import numpyro
 import numpyro.distributions as dist
 from numpyro import sample, deterministic
 
-import jax.numpy as jnp
+from jax import numpy as jnp, debug
 import jax_cosmo as jc
 from jax_cosmo import Cosmology
 from jaxpm.kernels import fftk
@@ -12,7 +12,9 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
+from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
+
 
 
 
@@ -197,6 +199,20 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     return pk_fn
 
 
+def nbody(cosmo:Cosmology, mesh_size, particles, a_lpt, a_obs, trace_meshes):
+    terms = ODETerm(get_ode_fn(cosmo, mesh_size))
+    solver = Dopri5()
+    # controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0.4, icoeff=1, dcoeff=0)
+    controller = PIDController(rtol=1e-2, atol=1e-2, pcoeff=0.4, icoeff=1, dcoeff=0)
+    if trace_meshes < 2: 
+        saveat = SaveAt(t1=True)
+    else: 
+        saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
+    sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
+                            stepsize_controller=controller, max_steps=8, saveat=saveat)
+    particles = sol.ys
+    # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+    return particles
 
 
 

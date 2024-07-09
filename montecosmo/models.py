@@ -6,20 +6,17 @@ from numpyro.handlers import seed, condition, trace
 from numpyro.infer.util import log_density
 import numpy as np
 
-import jax.numpy as jnp
-from jax import random as jr, jit, vmap, grad, debug
+from jax import numpy as jnp, random as jr, jit, vmap, grad, debug
 from jax.tree_util import tree_map
 from functools import partial
 
-from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lagrangian_weights, rsd, get_ode_fn, lpt
+from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lpt, nbody, lagrangian_weights, rsd 
 from montecosmo.metrics import power_spectrum, _initialize_pk
 
 from jax.experimental.ode import odeint
 # from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
-from jax_cosmo import Cosmology
 
-from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
 
 
 default_config={
@@ -143,7 +140,7 @@ def pmrsd_fn(latent_params,
     lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_size, **biases, **init_mesh)
 
     # LPT displacement at a_lpt
-    debug.print("{i}", i=lpt_order)
+    # debug.print("{i}", i=lpt_order)
     cosmology._workspace = {}  # HACK: temporary fix
     dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt, order=lpt_order)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
@@ -158,19 +155,7 @@ def pmrsd_fn(latent_params,
         particles = deterministic('pm_part', particles[None])[0]
 
     if a_lpt < a_obs:
-        terms = ODETerm(get_ode_fn(cosmology, mesh_size))
-        solver = Dopri5()
-        # controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0.4, icoeff=1, dcoeff=0)
-        controller = PIDController(rtol=1e-2, atol=1e-2, pcoeff=0.4, icoeff=1, dcoeff=0)
-        if trace_meshes < 2: 
-            saveat = SaveAt(t1=True)
-        else: 
-            saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
-        sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                             stepsize_controller=controller, max_steps=8, saveat=saveat)
-        particles = sol.ys
-
-        debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        particles = nbody(cosmology, mesh_size, particles, a_lpt, a_obs, trace_meshes)
 
         if trace_meshes >= 2:
             particles = deterministic('pm_part', particles)
