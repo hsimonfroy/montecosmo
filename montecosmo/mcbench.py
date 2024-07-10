@@ -1,7 +1,7 @@
 
 import os
 from functools import wraps, partial
-from itertools import product
+from itertools import product, cycle
 from typing import Iterable, Callable
 
 import numpy as np
@@ -328,10 +328,13 @@ class MCBench:
     def _get_gdsamples(samples:dict, labels:dict, label:str=None, verbose:bool=False):
         samples_conc = tree_map(lambda x: jnp.concatenate(x, 0), samples) # concatenate all chains
         samples_conc = flatten_dic(samples_conc, axis=1)
-        values = list(samples_conc.values())
-        names = list(samples_conc.keys())
-        labels = list(flatten_dic(labels, axis=0).values())
-        gdsamples = MCSamples(samples=values, names=names, labels=labels, label=label)
+        labels = flatten_dic(labels, axis=0)
+        values, names, labs = [], [], []
+        for k in samples_conc:
+            values.append(samples_conc[k])
+            names.append(k)
+            labs.append(labels[k])
+        gdsamples = MCSamples(samples=values, names=names, labels=labs, label=label)
 
         if verbose:
             if label is not None:
@@ -391,7 +394,6 @@ class MCBench:
         for i_k, k in enumerate(samples):
             plt.subplot(1, n_plot, i_k+1)
             plt.title(k)
-            # labs = ['$'+lab+'$' for lab in labels[k]]
             self._plot_chains(samples[k], fiduc[k], labels[k], cmap)
             plt.legend()
 
@@ -401,12 +403,9 @@ class MCBench:
 
 
 
-    def interval_pk(self, samples, proba=.95):
+    def interval_pk(self, meshes, proba=.95):
         proba = jnp.atleast_1d(proba)
-        samples_conc = tree_map(lambda x: jnp.concatenate(x, 0), samples) # concatenate all chains
-        name = name_latent(samples, ['init_mesh'])[0]
-
-        pks = vmap(self.pk_fn)(samples_conc[name])
+        pks = vmap(self.pk_fn)(meshes)
         med_pk = jnp.median(pks, 0)
         intervals = []
         for p in proba:
@@ -415,7 +414,10 @@ class MCBench:
 
     def _plot_pk(self, samples, proba=.95, label=None, color=None):
         proba = jnp.atleast_1d(proba)
-        med_pk, interv_pk = self.interval_pk(samples, proba)
+        name, = name_latent(samples, ['init_mesh'])
+        # Concatenate all chains and get location and dispersion parameters
+        med_pk, interv_pk = self.interval_pk(jnp.concatenate(samples[name]), proba)
+
         plot_fn = lambda pk, i_ell, **kwargs: plt.plot(pk[0], pk[0]*pk[i_ell+1], **kwargs)
         plotfill_fn = lambda pklow, pkup, i_ell, **kwargs: plt.fill_between(
             pklow[0], pklow[0]*pklow[i_ell+1], pklow[0]*pkup[i_ell+1], **kwargs)
@@ -478,60 +480,103 @@ class MCBench:
 
         return samples | infos
 
-
-# def get_filtration_ends(length, n):
-#     return jnp.stack(tree_map(lambda x: jnp.take(x, -1), jnp.array_split(jnp.arange(length), n)))
-        
-# from jax.lax import dynamic_slice, fori_loop
-    # filt_fn = lambda end: metric_fn(dynamic_slice(values, ([0]*values.ndim), (len(values), end, *values.shape[2:])), *args)
-    # def body_fn(i, out):
-    #     out = out.at[i].set(filt_fn(i))
-    #     return out
-    # return fori_loop(0, n, body_fn, out)
-    # return vmap(filt_fn)(filt_ends)
-
-
-
     @staticmethod
-    def _plot_metric_traj(x, y, labels, ylabel=None, cmap='tab10'):
-        cmap = plt.get_cmap(cmap)
-        colors = [cmap(i) for i in range(y.shape[-1])]
-        plt.gca().set_prop_cycle(color=colors)
+    def _plot_metric_traj(x, y, label, ylabel=None, c=None, ls=None):
+        c = np.atleast_1d(c)
+        ls = np.atleast_1d(ls)
+        label = np.atleast_1d(label)
 
-        x = [] if x is None else [x]
-        plt.semilogy(*x, y, label=np.squeeze(labels))
-
-        if plt.rcParams['text.usetex']:
-            plt.xlabel("$N_{\\textrm{eval}}$")
+        if x is None:
+            xlabel = ""
+            x = []
         else:
-            plt.xlabel("$N_{\\text{eval}}$")
-        plt.ylabel(ylabel)
+            xlabel = "$N_{\\textrm{eval}}$"
+            x = [x]
+        if not plt.rcParams['text.usetex']:
+            xlabel = xlabel.replace('textrm', 'text')
+            if ylabel is not None:
+                ylabel = ylabel.replace('textrm', 'text')
+
+        for yi, lbi, ci, lsi in zip(y.T, cycle(label), cycle(c), cycle(ls)):
+            plt.semilogy(*x, yi, label=lbi, c=ci, ls=lsi)
+        plt.xlabel(xlabel), plt.ylabel(ylabel)
 
 
-    def plot_metric_traj(self, traj, ylabel=None, cmap='tab10'):
-        n_evals = traj.copy().pop('n_evals', None)
-        labels = self.label_chains(traj, axis=1)
-        traj = self.recombine_latent(traj, rest=False)
-        labels = self.recombine_latent(labels, rest=False)
+    # def plot_metric_traj(self, traj, ylabel=None, c=None, ls=None):
+    #     n_evals = traj.copy().pop('n_evals', None)
+    #     labels = self.label_chains(traj, axis=1)
+    #     traj = self.recombine_latent(traj, rest=False)
+    #     labels = self.recombine_latent(labels, rest=False)
         
-        n_plot = len(traj)
-        for i_k, k in enumerate(traj):
-            plt.subplot(1, n_plot, i_k+1)
-            plt.title(k)
-            # labs = ['$'+lab+'$' for lab in np.atleast_1d(labels[k])]
-            self._plot_metric_traj(n_evals, traj[k], labels[k], ylabel, cmap)
-            plt.legend()
+    #     n_plot = len(traj)
+    #     for i_k, k in enumerate(traj):
+    #         plt.subplot(1, n_plot, i_k+1)
+    #         plt.title(k)
+    #         self._plot_metric_traj(n_evals, traj[k], labels[k], ylabel, c, ls)
+    #         plt.legend()
     
-    def plot_metric_combtraj(self, traj, ylabel=None, cmap='tab10'):
+    # def plot_metric_traj_comb(self, traj, ylabel=None, c=None, ls=None):
+    #     traj = traj.copy()
+    #     n_evals = traj.pop('n_evals', None)
+    #     values = jnp.array(list(traj.values())).T
+    #     labels = np.array(list(traj.keys()))
+
+    #     self._plot_metric_traj(n_evals, values, labels, ylabel, c, ls)
+    #     plt.legend()
+
+
+    def plot_metric_traj(self, traj, ylabel=None, c=None, ls=None, comb=True):
         traj = traj.copy()
         n_evals = traj.pop('n_evals', None)
-        values = jnp.array(list(traj.values())).T
-        labels = np.array(list(traj.keys()))
+    
+        if comb:
+            values = jnp.array(list(traj.values())).T
+            labels = np.array(list(traj.keys()))
 
-        self._plot_metric_traj(n_evals, values, labels, ylabel, cmap)
-        plt.legend()
+            self._plot_metric_traj(n_evals, values, labels, ylabel, c, ls)
+            plt.legend()
+        else:
+            labels = self.label_chains(traj, axis=1)
+            traj = self.recombine_latent(traj, rest=False)
+            labels = self.recombine_latent(labels, rest=False)
+            
+            n_plot = len(traj)
+            for i_k, k in enumerate(traj):
+                plt.subplot(1, n_plot, i_k+1)
+                plt.title(k)
+                self._plot_metric_traj(n_evals, traj[k], labels[k], ylabel, c, ls)
+                plt.legend()
 
 
+    def plot_ess(self, samples, n=1, comb=True, cmap='tab10'):
+        # cmap = plt.get_cmap(cmap)
+        # colors = [cmap(i) for i in range(y.shape[-1])]
+        # plt.gca().set_prop_cycle(color=colors)
+
+        if comb:
+            # if not (hasattr(self, "ess_comb_n") and n==self.ess_comb_n):
+                # self.ess_comb = self.metric_traj(multi_ess, self.recombine_latent(samples), n=n)
+                # self.ess_comb_n = n
+            # traj = self.ess_comb
+            traj = self.metric_traj(multi_ess, self.recombine_latent(samples), n=n)
+            plot_fn = self.plot_metric_traj_comb
+        else:
+            # if not (hasattr(self, "ess") and n==self.ess_n):
+            #     self.ess = self.metric_traj(partial(multi_ess, axis=()), samples, n=n)
+            #     self.ess_n = n
+            # traj = self.ess
+            traj = self.metric_traj(partial(multi_ess, axis=()), samples, n=n)
+            plot_fn = self.plot_metric_traj
+
+        traj_temp = traj.copy()
+        n_evals = traj_temp.pop('n_evals', None)
+        # traj = tree_map(lambda x: jnp.moveaxis(n_evals/jnp.moveaxis(x, 0, -1), -1, 0), traj)
+        traj.update(tree_map(lambda x: x, traj_temp))
+
+        ylabel = "$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$"
+        plot_fn(traj, ylabel=ylabel)
+
+    
 
 
 
