@@ -6,15 +6,16 @@ from typing import Iterable, Callable
 
 import numpy as np
 import matplotlib.pyplot as plt
-import jax.numpy as jnp
-import jax.random as jr
-from jax import jit, vmap, grad
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from matplotlib.colors import to_rgba_array
+from jax import numpy as jnp, random as jr, jit, vmap, grad
 from jax.tree_util import tree_map
 
 from numpyro.infer import MCMC
 from numpyro.diagnostics import print_summary
 from getdist import MCSamples
-from getdist.gaussian_mixtures import GaussianND
+# from getdist.gaussian_mixtures import GaussianND
 
 from montecosmo.utils import pickle_dump, pickle_load
 from montecosmo.models import get_param_fn, get_pk_fn
@@ -83,7 +84,6 @@ def load_runs(load_path:str|Iterable[str], start_run:int|Iterable[int], end_run:
     if isinstance(load_path, str):
         return samples[0]
     else:
-    # if paths is load_path:
         return samples 
     
 
@@ -210,9 +210,9 @@ def label_latent(name, prior_config, **config):
     else:
         return prior_config[name][0]
     
-def _metric_traj(metric_fn, n, values, *args):
+def fn_traj(fn, n, values, *args, axis=0):
     filt_ends = jnp.round(jnp.arange(1,n+1)/n*values.shape[1]).astype(int)
-    filt_fn = lambda end: metric_fn(values[:,:end], *args)
+    filt_fn = lambda end: fn(jnp.moveaxis(jnp.moveaxis(values, axis, 0)[:end], 0, axis), *args)
     metrics = []
     for end in filt_ends:
         metrics.append(filt_fn(end))
@@ -350,12 +350,12 @@ class MCBench:
         """
         Construct getdist MCSamples from samples. 
         """
-        samples = np.atleast_1d(samples)
+        samps = np.atleast_1d(samples)
         label = np.atleast_1d(label)
-        assert len(samples)==len(label), "lists must have the same lengths."
+        assert len(samps)==len(label), "lists must have the same lengths."
         gdsamples = []
 
-        for samp, lab in zip(samples, label):
+        for samp, lab in zip(samps, label):
             latent, = self.separate_latent(samp, rest=False)
             labels = self.label_chains(latent, dollars=False)
             gdsamples.append(self._get_gdsamples(latent, labels, lab, verbose))
@@ -371,10 +371,10 @@ class MCBench:
     def _plot_chains(values, fiduc, labels, cmap='tab10'):
         values = jnp.concatenate(values, axis=0) # concatenate all chains
         # In case values, fiduc, and labels have not been flattened already
-        max_lines = 10
-        values = values.reshape(len(values), -1)[:,:max_lines]
-        fiduc = fiduc.reshape(-1)[:max_lines]
-        labels = labels.reshape(-1)[:max_lines]
+        # max_lines = 10
+        # values = values.reshape(len(values), -1)[:,:max_lines]
+        # fiduc = fiduc.reshape(-1)[:max_lines]
+        # labels = labels.reshape(-1)[:max_lines]
 
         cmap = plt.get_cmap(cmap)
         colors = [cmap(i) for i in range(values.shape[-1])]
@@ -461,18 +461,17 @@ class MCBench:
 
 
 
-
-    def metric_traj(self, metric_fn, samples, true=None, n=1):
+    @staticmethod
+    def _metric_traj(metric_fn, samples, true=None, n=1):
         samples = samples.copy()
-        # Handle infos
         infos = {}
         for k in ['n_evals']:
             info = samples.pop(k, None)
             if info is not None:
-                traj_fn = partial(_metric_traj, lambda x:x.sum(), n)
+                traj_fn = partial(fn_traj, lambda x:x.sum(), n, axis=1)
                 infos[k] = traj_fn(info) # sum n_evals
 
-        traj_fn = partial(_metric_traj, metric_fn, n)
+        traj_fn = partial(fn_traj, metric_fn, n, axis=1)
         if true is None:
             samples = tree_map(traj_fn, samples)
         else:
@@ -480,9 +479,25 @@ class MCBench:
 
         return samples | infos
 
+    def metric_traj(self, metric_fn, samples, true=None, n=1, comb=True, transform_fn=lambda x:x):
+        samps = np.atleast_1d(samples)
+        trajs = []
+        for samp in samps:
+            if comb:
+                traj = self._metric_traj(metric_fn, self.recombine_latent(samp), true=true, n=n)
+            else:
+                traj = self._metric_traj(partial(metric_fn, axis=()), samp, true=true, n=n)
+            trajs.append(transform_fn(traj))
+        
+        if isinstance(samples, dict):
+            return trajs[0]
+        else:
+            return trajs 
+        
+
     @staticmethod
-    def _plot_metric_traj(x, y, label, ylabel=None, c=None, ls=None):
-        c = np.atleast_1d(c)
+    def _plot_traj(x, y, label, ylabel=None, c=None, ls=None):
+        c = [None] if c is None else to_rgba_array(c)
         ls = np.atleast_1d(ls)
         label = np.atleast_1d(label)
 
@@ -498,34 +513,13 @@ class MCBench:
                 ylabel = ylabel.replace('textrm', 'text')
 
         for yi, lbi, ci, lsi in zip(y.T, cycle(label), cycle(c), cycle(ls)):
-            plt.semilogy(*x, yi, label=lbi, c=ci, ls=lsi)
+            if isinstance(lsi, set):
+                lsi = lsi.copy().pop()
+            plt.semilogy(*x, yi, label=lbi, c=ci, linestyle=lsi)
         plt.xlabel(xlabel), plt.ylabel(ylabel)
 
 
-    # def plot_metric_traj(self, traj, ylabel=None, c=None, ls=None):
-    #     n_evals = traj.copy().pop('n_evals', None)
-    #     labels = self.label_chains(traj, axis=1)
-    #     traj = self.recombine_latent(traj, rest=False)
-    #     labels = self.recombine_latent(labels, rest=False)
-        
-    #     n_plot = len(traj)
-    #     for i_k, k in enumerate(traj):
-    #         plt.subplot(1, n_plot, i_k+1)
-    #         plt.title(k)
-    #         self._plot_metric_traj(n_evals, traj[k], labels[k], ylabel, c, ls)
-    #         plt.legend()
-    
-    # def plot_metric_traj_comb(self, traj, ylabel=None, c=None, ls=None):
-    #     traj = traj.copy()
-    #     n_evals = traj.pop('n_evals', None)
-    #     values = jnp.array(list(traj.values())).T
-    #     labels = np.array(list(traj.keys()))
-
-    #     self._plot_metric_traj(n_evals, values, labels, ylabel, c, ls)
-    #     plt.legend()
-
-
-    def plot_metric_traj(self, traj, ylabel=None, c=None, ls=None, comb=True):
+    def plot_traj(self, traj, comb=True, ylabel=None, c=None, ls=None):
         traj = traj.copy()
         n_evals = traj.pop('n_evals', None)
     
@@ -533,7 +527,7 @@ class MCBench:
             values = jnp.array(list(traj.values())).T
             labels = np.array(list(traj.keys()))
 
-            self._plot_metric_traj(n_evals, values, labels, ylabel, c, ls)
+            self._plot_traj(n_evals, values, labels, ylabel, c, ls)
             plt.legend()
         else:
             labels = self.label_chains(traj, axis=1)
@@ -544,38 +538,90 @@ class MCBench:
             for i_k, k in enumerate(traj):
                 plt.subplot(1, n_plot, i_k+1)
                 plt.title(k)
-                self._plot_metric_traj(n_evals, traj[k], labels[k], ylabel, c, ls)
+                self._plot_traj(n_evals, traj[k], labels[k], ylabel, c, ls)
                 plt.legend()
 
 
-    def plot_ess(self, samples, n=1, comb=True, cmap='tab10'):
-        # cmap = plt.get_cmap(cmap)
-        # colors = [cmap(i) for i in range(y.shape[-1])]
-        # plt.gca().set_prop_cycle(color=colors)
+    
 
-        if comb:
-            # if not (hasattr(self, "ess_comb_n") and n==self.ess_comb_n):
-                # self.ess_comb = self.metric_traj(multi_ess, self.recombine_latent(samples), n=n)
-                # self.ess_comb_n = n
-            # traj = self.ess_comb
-            traj = self.metric_traj(multi_ess, self.recombine_latent(samples), n=n)
-            plot_fn = self.plot_metric_traj_comb
-        else:
-            # if not (hasattr(self, "ess") and n==self.ess_n):
-            #     self.ess = self.metric_traj(partial(multi_ess, axis=()), samples, n=n)
-            #     self.ess_n = n
-            # traj = self.ess
-            traj = self.metric_traj(partial(multi_ess, axis=()), samples, n=n)
-            plot_fn = self.plot_metric_traj
 
-        traj_temp = traj.copy()
-        n_evals = traj_temp.pop('n_evals', None)
-        # traj = tree_map(lambda x: jnp.moveaxis(n_evals/jnp.moveaxis(x, 0, -1), -1, 0), traj)
-        traj.update(tree_map(lambda x: x, traj_temp))
 
-        ylabel = "$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$"
-        plot_fn(traj, ylabel=ylabel)
+    def plot_metric_traj(self, metric:str, samples:dict|Iterable[dict], label:str|Iterable[str]=None, 
+                         true=None, n=1, comb=True, cmap='tab10'):
+        samps = np.atleast_1d(samples)
+        label = np.atleast_1d(label)
+        assert len(samps)==len(label), "lists must have the same lengths."
+        cmap = plt.get_cmap(cmap)
+        c = [cmap(i) for i in range(len(samps))]
+        ls = ['-', ':', '--', '-.', {(0, (1, 10))}]
 
+        if metric == 'ess':
+            ylabel = "$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$"
+            metric_fn = multi_ess
+            transform_fn = transform_ess
+        
+        trajs = self.metric_traj(metric_fn, samps, true=true, n=n, 
+                                 comb=comb, transform_fn=transform_fn)
+
+        for traj, ci in zip(trajs, c):
+            self.plot_traj(traj, comb=comb, ylabel=ylabel, c=ci, ls=ls)
+
+        handles = []
+        names = trajs[0].copy()
+        names.pop('n_evals', None)
+        for ci, lab in zip(c, label):
+            handles.append(Patch(color=ci, label=lab))
+        for name, lsi in zip(names, cycle(ls)):
+            if isinstance(lsi, set):
+                lsi = lsi.copy().pop()
+            handles.append(Line2D([], [], color='grey', linestyle=lsi, label=name))
+        plt.legend(handles=handles)
+
+
+
+
+    def plot_metric_last(self, metric:str, samples:dict|Iterable[dict], label:str|Iterable[str]=None, 
+                         true=None, comb=True, cmap='tab10'):
+        samps = np.atleast_1d(samples)
+        label = np.atleast_1d(label)
+        assert len(samps)==len(label), "lists must have the same lengths."
+        cmap = plt.get_cmap(cmap)
+        c = [cmap(i) for i in range(len(samps))]
+        markers = ['o','s','D']
+        ms = 12
+
+        if metric == 'ess':
+            ylabel = "$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$"
+            metric_fn = multi_ess
+            transform_fn = transform_ess
+        
+        n = 1
+        trajs = self.metric_traj(metric_fn, samps, true=true, n=n, 
+                                 comb=comb, transform_fn=transform_fn)
+
+        for traj, ci in zip(trajs, c):
+            traj = traj.copy()
+            n_evals = traj.pop('n_evals', None)
+            x = list(traj.keys())
+            y = list(tree_map(lambda x:x[-1], traj).values())
+            plt.semilogy(x, y, c=ci, ls='', marker=markers[0], markersize=ms)
+
+            ylabel = np.atleast_1d(ylabel)
+            handles = []
+            for ci, lab in zip(c, label):
+                handles.append(Patch(color=ci, label=lab))
+            for name, mi in zip(ylabel, cycle(markers)):
+                if not plt.rcParams['text.usetex']:
+                    name = name.replace('textrm', 'text')
+                handles.append(Line2D([], [], color='grey', ls='', marker=mi, markersize=ms, label=name))
+            plt.legend(handles=handles, frameon=True)
+
+
+def transform_ess(traj):
+    traj_temp = traj.copy()
+    n_evals = traj_temp.pop('n_evals', None)
+    traj_temp = tree_map(lambda x: jnp.moveaxis(n_evals/jnp.moveaxis(x, 0, -1), -1, 0), traj_temp)
+    return traj | traj_temp
     
 
 

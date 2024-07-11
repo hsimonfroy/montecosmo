@@ -26,7 +26,7 @@ default_config={
             # LSS formation
             'a_lpt':0.5, 
             'a_obs':0.5,
-            'lpt_order':2,
+            'lpt_order':1,
             # Galaxies
             'galaxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Debugging
@@ -42,7 +42,9 @@ default_config={
                             'init_mesh':['{\\delta}_L', None, None]},
             'fourier':False,                    
             # Likelihood config
-            'lik_config':{'obs_std':1.},
+            'lik_config':{'obs_std':1.,
+                          'obs':'mesh', # 'mesh', 'pk', 'bk' # TODO
+                          },
             }
 
 bench_config = {
@@ -92,27 +94,29 @@ def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, 
     # # Scale mesh by galaxy density
     # gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) 
     sigma2 = lik_config['obs_std']**2+noise**2
+    obs_name = lik_config['obs']
 
-    # # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
-    # multipoles = jnp.array([0,2,4])
-    # sli_multip = slice(1,1+jnp.shape(multipoles)[0])
-    # loc_pk, Nk = get_pk_fn(mesh_size, box_size, multipoles=multipoles, Nk=True)(loc_mesh)
-    # sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
+    if obs_name == 'mesh':
+        # Normal noise
+        sigma2 /= (galaxy_density * (box_size / mesh_size).prod())
+        obs_mesh = sample('obs', dist.Normal(loc_mesh, jnp.sqrt(sigma2)))
+        # Poisson noise
+        # eps_var = 0.1 # add epsilon variance to prevent zero variance
+        # obs_mesh = sample('obs_mesh', dist.Poisson(loc_mesh + eps_var)) 
+        # obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, (loc_mesh  + eps_var)**.5)) # Normal approx
+        return obs_mesh
     
-    # debug.print("ho")
-    # loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean power spectrum
-    # obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], jnp.sqrt(sigma2))))
-    # obs_pk = deterministic('obs_pk', obs_pk)
-    # return obs_pk
-
-    # Normal noise
-    sigma2 /= (galaxy_density * (box_size / mesh_size).prod())
-    obs_mesh = sample('obs', dist.Normal(loc_mesh, jnp.sqrt(sigma2)))
-    # Poisson noise
-    # eps_var = 0.1 # add epsilon variance to prevent zero variance
-    # obs_mesh = sample('obs_mesh', dist.Poisson(loc_mesh + eps_var)) 
-    # obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, (loc_mesh  + eps_var)**.5)) # Normal approx
-    return obs_mesh
+    elif obs_name == 'pk':
+        # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
+        multipoles = jnp.array([0,2,4])
+        sli_multip = slice(1,1+jnp.shape(multipoles)[0])
+        loc_pk, Nk = get_pk_fn(mesh_size, box_size, multipoles=multipoles, kcount=True)(loc_mesh)
+        sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
+        
+        loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean power spectrum
+        obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], jnp.sqrt(sigma2))))
+        obs_pk = deterministic('obs_pk', obs_pk)
+        return obs_pk
 
 
 

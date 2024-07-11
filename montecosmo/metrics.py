@@ -40,7 +40,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
     # Initialize values related to powerspectra (wavenumber bins and edges)
     los = los / jnp.linalg.norm(los)
     multipoles = jnp.atleast_1d(multipoles)
-    mesh_size, box_size = jnp.array(mesh_size), jnp.array(box_size)
+    mesh_size, box_size = np.array(mesh_size), np.array(box_size)
     dig, ksum, W, kedges, mumesh = _initialize_pk(mesh_size, box_size, kmin, dk, los)
 
     # Square modulus of FFT
@@ -52,7 +52,7 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.
         real_weights = W * field2_k * (2*ell+1) * legendre(ell, mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
     # Normalization for powerspectra
-    P = (Psum / ksum).at[:,1:-1].get() * jnp.prod(box_size)
+    P = (Psum / ksum).at[:,1:-1].get() * box_size.prod()
     norm = jnp.prod(mesh_size.astype(jnp.float32))**2
 
     # Find central values of each bin
