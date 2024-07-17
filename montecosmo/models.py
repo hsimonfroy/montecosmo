@@ -44,6 +44,7 @@ default_config={
             # Likelihood config
             'lik_config':{'obs_std':1.,
                           'obs':'mesh', # 'mesh', 'pk', 'bk' # TODO
+                          'multipoles':[0,2,4], # when 'obs'=='pk'
                           },
             }
 
@@ -91,10 +92,9 @@ def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, 
     Return an observed mesh sampled from a location mesh with observational variance.
     """
     # TODO: prior on obs_std?
-    # # Scale mesh by galaxy density
-    # gxy_mesh = biased_mesh * (galaxy_density * box_size.prod() / mesh_size.prod()) 
     sigma2 = lik_config['obs_std']**2+noise**2
     obs_name = lik_config['obs']
+    mesh_size, box_size = np.array(mesh_size), np.array(box_size)
 
     if obs_name == 'mesh':
         # Normal noise
@@ -325,7 +325,7 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=jnp.array([0.,0.,1.]), multipoles=0, kcount=False, **config):
+def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=np.array([0.,0.,1.]), multipoles=0, kcount=False, **config):
     """
     Return power spectrum function for given config.
     """

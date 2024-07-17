@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-# from scipy.special import legendre
+from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size
@@ -12,52 +12,51 @@ from numpyro.diagnostics import effective_sample_size, gelman_rubin
 ##################
 def _initialize_pk(mesh_size, box_size, kmin, dk, los):
 
-    W = jnp.ones(mesh_size)
+    W = np.ones(mesh_size)
     # W[...] = 2.0
     # W[..., 0] = 1.0
     # W[..., -1] = 1.0 # NOTE: weights only needed when rfftn instead of fftn.
 
     kmax = np.pi * np.min(mesh_size) / np.max(box_size) + dk / 2
-    kedges = jnp.arange(kmin, kmax, dk)
+    kedges = np.arange(kmin, kmax, dk)
 
-    kshapes = np.eye(len(mesh_size), dtype=jnp.int32) * -2 + 1
-    kvec = [(2 * jnp.pi * m / l) * jnp.fft.fftfreq(m).reshape(kshape)
+    kshapes = np.eye(len(mesh_size), dtype=np.int32) * -2 + 1
+    kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
             for m, l, kshape in zip(mesh_size, box_size, kshapes)]
     kmesh = sum(ki**2 for ki in kvec)**0.5
 
-    dig = jnp.digitize(kmesh.reshape(-1), kedges)
-    ksum = jnp.bincount(dig, weights=W.reshape(-1), length=len(kedges)+1)
+    dig = np.digitize(kmesh.reshape(-1), kedges)
+    ksum = np.bincount(dig, weights=W.reshape(-1), minlength=len(kedges)+1)
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
-    kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 
-    mumesh = mumesh / kmesh_nozeros 
-    mumesh = jnp.where(kmesh==0, 0, mumesh)
+    kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
+    mumesh = mumesh / kmesh_nozeros
+    mumesh = np.where(kmesh==0, 0, mumesh)
     
-    return dig, ksum, W, kedges, mumesh
+    return dig, ksum, kedges, mumesh, W
 
 
-def power_spectrum(field, kmin, dk, mesh_size, box_size, los=jnp.array([0.,0.,1.]), multipoles=0, kcount=False):
+def power_spectrum(field, kmin, dk, mesh_size, box_size, los=np.array([0.,0.,1.]), multipoles=0, kcount=False):
     # Initialize values related to powerspectra (wavenumber bins and edges)
-    los = los / jnp.linalg.norm(los)
-    multipoles = jnp.atleast_1d(multipoles)
+    los = np.array(los) / np.linalg.norm(los)
+    multipoles = np.atleast_1d(multipoles)
     mesh_size, box_size = np.array(mesh_size), np.array(box_size)
     dig, ksum, W, kedges, mumesh = _initialize_pk(mesh_size, box_size, kmin, dk, los)
 
     # Square modulus of FFT
-    field_k = jnp.fft.fftn(field)
+    field_k = jnp.fft.fftn(field, norm='ortho')
     field2_k = jnp.real(field_k * jnp.conj(field_k)) # TODO: cross pk
 
     Psum = jnp.empty((len(multipoles), *ksum.shape))
     for i_ell, ell in enumerate(multipoles):
-        real_weights = W * field2_k * (2*ell+1) * legendre(ell, mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
+        real_weights = W * field2_k * (2*ell+1) * legendre(ell)(mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
-    # Normalization for powerspectra
-    P = (Psum / ksum).at[:,1:-1].get() * box_size.prod()
-    norm = jnp.prod(mesh_size.astype(jnp.float32))**2
+    # Normalization and convertion from cell units to (Mpc/h)^3
+    P = (Psum / ksum)[:,1:-1] * (box_size / mesh_size).prod()
 
     # Find central values of each bin
     kbins = kedges[:-1] + (kedges[1:] - kedges[:-1]) / 2
-    pk = jnp.concatenate([kbins[None], P / norm])
+    pk = jnp.concatenate([kbins[None], P])
     if kcount:
         return pk, ksum[1:-1]
     else:
@@ -86,21 +85,21 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
     return jnp.concatenate([k[None], pk])
 
 
-def legendre(ell, x):
-    """
-    Return Legendre polynomial of given order.
+# def legendre(ell, x):
+#     """
+#     Return Legendre polynomial of given order.
 
-    Reference
-    ---------
-    https://en.wikipedia.org/wiki/Legendre_polynomials
-    """
-    P0 = lambda x: jnp.ones_like(x)
-    P2 = lambda x: 1 / 2 * (3 * x**2 - 1)
-    P4 = lambda x: 1 / 8 * (35 * x**4 - 30 * x**2 + 3)
-    def error(x):
-        return jnp.full_like(x, jnp.nan)
-    # for vmaping on condition, see https://github.com/google/jax/issues/8409
-    return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
+#     Reference
+#     ---------
+#     https://en.wikipedia.org/wiki/Legendre_polynomials
+#     """
+#     P0 = lambda x: jnp.ones_like(x)
+#     P2 = lambda x: 1 / 2 * (3 * x**2 - 1)
+#     P4 = lambda x: 1 / 8 * (35 * x**4 - 30 * x**2 + 3)
+#     def error(x):
+#         return jnp.full_like(x, jnp.nan)
+#     # for vmaping on condition, see https://github.com/google/jax/issues/8409
+#     return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
 
 
 

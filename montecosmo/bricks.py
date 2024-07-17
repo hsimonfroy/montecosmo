@@ -41,7 +41,7 @@ def get_cosmo(prior_config,
 
         value = params_[input_name]
         if name == 'Omega_m':
-            value = trunc_push(value, loc, scale, 0.05, 1) # 0.05 > Omega_b
+            value = trunc_push(value, loc, scale, 0.05, 1) # Omega_m > 0.05 > Omega_b
         elif name == 'sigma8':
             value = trunc_push(value, loc, scale, 0)
         else:
