@@ -10,38 +10,32 @@ from numpyro.diagnostics import effective_sample_size, gelman_rubin
 ##################
 # Power spectrum #
 ##################
-def _initialize_pk(mesh_size, box_size, kmin, dk, los):
-
-    W = np.ones(mesh_size)
-    # W[...] = 2.0
-    # W[..., 0] = 1.0
-    # W[..., -1] = 1.0 # NOTE: weights only needed when rfftn instead of fftn.
-
-    kmax = np.pi * np.min(mesh_size) / np.max(box_size) + dk / 2
+def _initialize_pk(mesh_shape, box_shape, kmin, dk, los):
+    kmax = np.pi * np.min(mesh_shape) / np.max(box_shape) + dk / 2
     kedges = np.arange(kmin, kmax, dk)
 
-    kshapes = np.eye(len(mesh_size), dtype=np.int32) * -2 + 1
+    kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
     kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
-            for m, l, kshape in zip(mesh_size, box_size, kshapes)]
+            for m, l, kshape in zip(mesh_shape, box_shape, kshapes)]
     kmesh = sum(ki**2 for ki in kvec)**0.5
 
     dig = np.digitize(kmesh.reshape(-1), kedges)
-    ksum = np.bincount(dig, weights=W.reshape(-1), minlength=len(kedges)+1)
+    ksum = np.bincount(dig, minlength=len(kedges)+1)
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
     kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
     mumesh = mumesh / kmesh_nozeros
     mumesh = np.where(kmesh==0, 0, mumesh)
     
-    return dig, ksum, kedges, mumesh, W
+    return dig, ksum, kedges, mumesh
 
 
-def power_spectrum(field, kmin, dk, mesh_size, box_size, los=np.array([0.,0.,1.]), multipoles=0, kcount=False):
+def power_spectrum(field, kmin, dk, mesh_shape, box_shape, los=np.array([0.,0.,1.]), multipoles=0, kcount=False):
     # Initialize values related to powerspectra (wavenumber bins and edges)
     los = np.array(los) / np.linalg.norm(los)
     multipoles = np.atleast_1d(multipoles)
-    mesh_size, box_size = np.array(mesh_size), np.array(box_size)
-    dig, ksum, W, kedges, mumesh = _initialize_pk(mesh_size, box_size, kmin, dk, los)
+    mesh_shape, box_shape = np.array(mesh_shape), np.array(box_shape)
+    dig, ksum, kedges, mumesh = _initialize_pk(mesh_shape, box_shape, kmin, dk, los)
 
     # Square modulus of FFT
     field_k = jnp.fft.fftn(field, norm='ortho')
@@ -49,10 +43,10 @@ def power_spectrum(field, kmin, dk, mesh_size, box_size, los=np.array([0.,0.,1.]
 
     Psum = jnp.empty((len(multipoles), *ksum.shape))
     for i_ell, ell in enumerate(multipoles):
-        real_weights = W * field2_k * (2*ell+1) * legendre(ell)(mumesh) # XXX: not implemented by jax.scipy.special.lpmm yet 
+        real_weights = field2_k * (2*ell+1) * legendre(ell)(mumesh)
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
     # Normalization and convertion from cell units to (Mpc/h)^3
-    P = (Psum / ksum)[:,1:-1] * (box_size / mesh_size).prod()
+    P = (Psum / ksum)[:,1:-1] * (box_shape / mesh_shape).prod()
 
     # Find central values of each bin
     kbins = kedges[:-1] + (kedges[1:] - kedges[:-1]) / 2
@@ -107,26 +101,55 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
 ###################
 # Density regions #
 ###################
-def qbi(x, proba=.95, axis=0, side='bi'):
+def qbi(x, proba=.95, axis=0, side='med'):
     """
-    Compute the Quantile Based Interval (QBI), 
-    i.e. the interval of proba `proba` from quantile q1 to quantile q2, where:
+    Compute the Quantile-Based Interval (QBI),
+    i.e. the interval of proba `proba` which is
 
-    q1, q2 = (1-proba)/2, (1+proba)/2, for 'side==bi' bilateral QBI (alias Equal-Tailed Interval)
-
-    q1, q2 = 0, proba, for 'side==low' low lateral QBI
-
-    q1, q2 = 1-proba, 1, for 'side==high' high lateral QBI
+    * the lowest interval if `side=='low'` 
+    * the median interval (alias equal-tail interval) if `side=='med'`
+    * the highest interval if `side=='high'` 
     """
-    if side == 'bi':
-        p_low, p_high = (1-proba)/2, (1+proba)/2
     if side == 'low':
-        p_low, p_high = 0, proba
-    if side == 'high':
-        p_low, p_high = 1-proba, 1
+        p_low = 0
+    elif side == 'med':
+        p_low = (1-proba)/2
+    elif side == 'high':
+        p_low = 1-proba
+
+    p_high = p_low + proba
     q_low = jnp.quantile(x, p_low, axis=axis)
     q_high = jnp.quantile(x, p_high, axis=axis)
     return jnp.stack([q_low, q_high], axis=axis)
+
+
+def qbr(x, proba=.95, side='med'):
+    """
+    Compute the Quantile-Based Region (QBR), 
+    i.e. the spherical region of proba `proba`, where its center on dimension `i` is
+
+    * the lowest value if `side[i]=='low'` 
+    * the median value if `side[i]=='med'`
+    * the highest value if `side[i]=='high'`
+
+    Return both the region center and radius.
+    
+    `x` is assumed to be of shape (n_samples, n_dim), and `side` is broadcasted to shape (n_dim,).
+    """    
+    side = np.broadcast_to(side, x.shape[1])
+    center = jnp.empty(x.shape[1])
+    for i, s in enumerate(side):
+        if s == 'low':
+            p_center = 0.
+        elif s == 'med':
+            p_center = 1/2
+        elif s == 'high':
+            p_center = 1.
+        center = center.at[i].set(jnp.quantile(x[:,i], p_center, axis=0))
+
+    dists = ((x - center)**2).sum(axis=1)**.5
+    radius = jnp.quantile(dists, proba, axis=0)
+    return center, radius
     
 
 def hdi(x, proba=.95, axis=0):
@@ -138,7 +161,7 @@ def hdi(x, proba=.95, axis=0):
     x_sort = jnp.sort(x, axis=0)
     n = x.shape[0]
     # Round for better estimation at low number of sample, and handle also the case proba close to 1.
-    i_length = min(int(jnp.round(proba * n)), n-1)
+    i_length = min(int(jnp.rint(proba * n)), n-1)
 
     intervals_low = x_sort[: (n - i_length)] # no need to consider all low bounds
     intervals_high = x_sort[i_length:]  # no need to consider all high bounds
@@ -148,6 +171,20 @@ def hdi(x, proba=.95, axis=0):
     hdi_low = jnp.take_along_axis(x_sort, i_low[None], 0)[0]
     hdi_high = jnp.take_along_axis(x_sort, i_high[None], 0)[0]
     return jnp.stack([hdi_low, hdi_high], axis=axis)
+
+
+def hdr(x, proba=.95):
+    """
+    Compute the Highest Density Region (HDR),
+    i.e. the smallest region of proba `proba`.
+
+    Return both a KDE mesh of the samples density, 
+    and the density level corresponding to `proba`.
+    """
+    pass # TODO, and vectorize over proba
+
+
+
 
 
 

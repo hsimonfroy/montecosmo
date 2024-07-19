@@ -157,7 +157,7 @@ def thin(dic, thinning=1, moments=None, axis=0):
     dic = tree_map(lambda x: jnp.atleast_1d(x), dic)
     out = tree_map(lambda x:
                       jnp.stack(tree_map(aggr_fn, 
-                            jnp.array_split(x, max(jnp.round(x.shape[axis]/thinning), 1), axis%x.ndim)), 
+                            jnp.array_split(x, max(jnp.rint(x.shape[axis]/thinning), 1), axis%x.ndim)), 
                         axis%x.ndim), dic)
     return out
 
@@ -211,7 +211,7 @@ def label_latent(name, prior_config, **config):
         return prior_config[name][0]
     
 def fn_traj(fn, n, values, *args, axis=0):
-    filt_ends = jnp.round(jnp.arange(1,n+1)/n*values.shape[1]).astype(int)
+    filt_ends = jnp.rint(jnp.arange(1,n+1)/n*values.shape[1]).astype(int)
     filt_fn = lambda end: fn(jnp.moveaxis(jnp.moveaxis(values, axis, 0)[:end], 0, axis), *args)
     metrics = []
     for end in filt_ends:

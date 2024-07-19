@@ -21,8 +21,8 @@ from jaxpm.painting import cic_paint
 
 default_config={
             # Mesh and box parameters
-            'mesh_size':64 * np.array([1 ,1 ,1 ]), # int
-            'box_size':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+            'mesh_shape':64 * np.array([1 ,1 ,1 ]), # int
+            'box_shape':640 * np.array([1.,1.,1.]), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # LSS formation
             'a_lpt':0.5, 
             'a_obs':0.5,
@@ -64,7 +64,7 @@ bench_config = {
 
 
 
-def prior_model(mesh_size, prior_config, **config):
+def prior_model(mesh_shape, prior_config, **config):
     """
     A prior for cosmological model. 
 
@@ -76,7 +76,7 @@ def prior_model(mesh_size, prior_config, **config):
         name_ = name+'_'
         if name == 'init_mesh':
             # Sample standardized initial conditions
-            params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_size), jnp.ones(mesh_size)))
+            params_[name_] = sample(name_, dist.Normal(jnp.zeros(mesh_shape), jnp.ones(mesh_shape)))
         else:
             # Sample standardized cosmology and biases
             params_[name_] = sample(name_, dist.Normal(0, 1))
@@ -85,7 +85,7 @@ def prior_model(mesh_size, prior_config, **config):
 
 
 
-def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, noise=0., **config):
+def likelihood_model(loc_mesh, mesh_shape, box_shape, galaxy_density, lik_config, noise=0., **config):
     """
     A likelihood for cosmological model.
 
@@ -94,11 +94,11 @@ def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, 
     # TODO: prior on obs_std?
     sigma2 = lik_config['obs_std']**2+noise**2
     obs_name = lik_config['obs']
-    mesh_size, box_size = np.array(mesh_size), np.array(box_size)
+    mesh_shape, box_shape = np.array(mesh_shape), np.array(box_shape)
 
     if obs_name == 'mesh':
         # Normal noise
-        sigma2 /= (galaxy_density * (box_size / mesh_size).prod())
+        sigma2 /= (galaxy_density * (box_shape / mesh_shape).prod())
         obs_mesh = sample('obs', dist.Normal(loc_mesh, jnp.sqrt(sigma2)))
         # Poisson noise
         # eps_var = 0.1 # add epsilon variance to prevent zero variance
@@ -110,7 +110,7 @@ def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, 
         # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
         multipoles = jnp.array([0,2,4])
         sli_multip = slice(1,1+jnp.shape(multipoles)[0])
-        loc_pk, Nk = get_pk_fn(mesh_size, box_size, multipoles=multipoles, kcount=True)(loc_mesh)
+        loc_pk, Nk = get_pk_fn(mesh_shape, box_shape, multipoles=multipoles, kcount=True)(loc_mesh)
         sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
         
         loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean power spectrum
@@ -121,8 +121,8 @@ def likelihood_model(loc_mesh, mesh_size, box_size, galaxy_density, lik_config, 
 
 
 def pmrsd_fn(latent_params, 
-                mesh_size,                 
-                box_size,
+                mesh_shape,                 
+                box_shape,
                 a_lpt,
                 a_obs,
                 lpt_order, 
@@ -134,14 +134,14 @@ def pmrsd_fn(latent_params,
     # Get cosmology, initial mesh, and biases from latent params
     cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
     cosmology = get_cosmology(**cosmo)
-    init_mesh = get_init_mesh(cosmology, mesh_size, box_size, fourier, trace_reparam, **latent_params)
+    init_mesh = get_init_mesh(cosmology, mesh_shape, box_shape, fourier, trace_reparam, **latent_params)
     biases = get_biases(prior_config, trace_reparam, **latent_params)
 
     # Create regular grid of particles
-    x_part = jnp.indices(mesh_size).reshape(3,-1).T
+    x_part = jnp.indices(mesh_shape).reshape(3,-1).T
 
     # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-    lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_size, **biases, **init_mesh)
+    lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_shape, **biases, **init_mesh)
 
     # LPT displacement at a_lpt
     # debug.print("{i}", i=lpt_order)
@@ -159,7 +159,7 @@ def pmrsd_fn(latent_params,
         particles = deterministic('pm_part', particles[None])[0]
 
     if a_lpt < a_obs:
-        particles = nbody(cosmology, mesh_size, particles, a_lpt, a_obs, trace_meshes)
+        particles = nbody(cosmology, mesh_shape, particles, a_lpt, a_obs, trace_meshes)
 
         if trace_meshes >= 2:
             particles = deterministic('pm_part', particles)
@@ -167,7 +167,7 @@ def pmrsd_fn(latent_params,
         particles = particles[-1]
     
     # # Uncomment only to trace bias mesh without rsd
-    # biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[0], lbe_weights)
+    # biased_mesh = cic_paint(jnp.zeros(mesh_shape), particles[0], lbe_weights)
     # if trace_meshes: 
     #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
@@ -179,7 +179,7 @@ def pmrsd_fn(latent_params,
         particles = deterministic('rsd_part', particles)
     
     # CIC paint weighted by Lagrangian bias expansion weights
-    biased_mesh = cic_paint(jnp.zeros(mesh_size), particles[0], lbe_weights)
+    biased_mesh = cic_paint(jnp.zeros(mesh_shape), particles[0], lbe_weights)
 
     # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
     # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
@@ -192,8 +192,8 @@ def pmrsd_fn(latent_params,
 
 
 
-def pmrsd_model(mesh_size,
-                box_size,
+def pmrsd_model(mesh_shape,
+                box_shape,
                 a_lpt,
                 a_obs, 
                 lpt_order,
@@ -210,11 +210,11 @@ def pmrsd_model(mesh_size,
 
     Parameters
     ----------
-    mesh_size : array_like of int
-        Size of the mesh.
+    mesh_shape : array_like of int
+        Shape of the mesh.
 
-    box_size : array_like
-        Size of the box in Mpc/h. Typically aim for cell lengths between 1 and 10 Mpc/h.
+    box_shape : array_like
+        Shape of the box in Mpc/h. Typically aim for cell lengths between 1 and 10 Mpc/h.
 
     a_lpt : float
         Scale factor to which compute Lagrangian Perturbation Theory (LPT) displacement.
@@ -244,12 +244,12 @@ def pmrsd_model(mesh_size,
         Noise level.
     """
     # Sample from prior
-    latent_params = prior_model(mesh_size, prior_config)
+    latent_params = prior_model(mesh_shape, prior_config)
 
     # Compute deterministic model function
     biased_mesh = pmrsd_fn(latent_params,
-                            mesh_size,
-                            box_size,
+                            mesh_shape,
+                            box_shape,
                             a_lpt,
                             a_obs,
                             lpt_order, 
@@ -260,8 +260,8 @@ def pmrsd_model(mesh_size,
 
     # Sample from likelihood
     obs_mesh = likelihood_model(biased_mesh,
-                                mesh_size,
-                                box_size,
+                                mesh_shape,
+                                box_shape,
                                 galaxy_density, # in galaxy / (Mpc/h)^3
                                 lik_config, 
                                 noise,) 
@@ -325,7 +325,7 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=np.array([0.,0.,1.]), multipoles=0, kcount=False, **config):
+def get_pk_fn(mesh_shape, box_shape, kmin=0.001, dk=0.01, los=np.array([0.,0.,1.]), multipoles=0, kcount=False, **config):
     """
     Return power spectrum function for given config.
     """
@@ -333,11 +333,11 @@ def get_pk_fn(mesh_size, box_size, kmin=0.001, dk=0.01, los=np.array([0.,0.,1.])
         """
         Return mesh power spectrum.
         """
-        return power_spectrum(mesh, kmin, dk, mesh_size, box_size, los, multipoles, kcount)
+        return power_spectrum(mesh, kmin, dk, mesh_shape, box_shape, los, multipoles, kcount)
     return pk_fn
 
 
-def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
+def get_param_fn(mesh_shape, box_shape, prior_config, fourier=False,
                  trace_reparam=False, scaling=1., **config):
     """
     Return a partial replay model function for given config.
@@ -360,7 +360,7 @@ def get_param_fn(mesh_size, box_size, prior_config, fourier=False,
                 else:
                     cosmology = get_cosmology(**params_)
 
-                init_mesh = get_init_mesh(cosmology, mesh_size, box_size, fourier, 
+                init_mesh = get_init_mesh(cosmology, mesh_shape, box_shape, fourier, 
                                           trace_reparam, inverse, scaling, **params_)
             else: init_mesh = {}
         else: cosmo, init_mesh = {}, {}
@@ -387,18 +387,18 @@ def print_config(model:partial|dict):
         config = model.keywords
     print(f"# CONFIG\n{config}\n")
 
-    cell_size = list( config['box_size'] / config['mesh_size'] )
+    cell_shape = list( config['box_shape'] / config['mesh_shape'] )
     print("# INFOS")
-    print(f"cell_size:        {cell_size} Mpc/h")
+    print(f"cell_shape:        {cell_shape} Mpc/h")
 
-    delta_k = 2*jnp.pi * jnp.max(1 / config['box_size']) 
-    k_nyquist = 2*jnp.pi * jnp.min(config['mesh_size'] / config['box_size']) / 2
+    delta_k = 2*jnp.pi * jnp.max(1 / config['box_shape']) 
+    k_nyquist = 2*jnp.pi * jnp.min(config['mesh_shape'] / config['box_shape']) / 2
     # (2*pi factor because of Fourier transform definition)
     print(f"delta_k:          {delta_k:.5f} h/Mpc")
     print(f"k_nyquist:        {k_nyquist:.5f} h/Mpc")
 
-    mean_gxy_density = config['galaxy_density'] * (config['box_size'] / config['mesh_size']).prod()
-    # NOTE: careful about mesh_size int overflow, perform float cast before
+    mean_gxy_density = config['galaxy_density'] * (config['box_shape'] / config['mesh_shape']).prod()
+    # NOTE: careful about mesh_shape int overflow, perform float cast before
     print(f"mean_gxy_density: {mean_gxy_density:.3f} gxy/cell\n")
 
 

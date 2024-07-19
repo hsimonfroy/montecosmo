@@ -69,16 +69,16 @@ def get_cosmology(**cosmo) -> Cosmology:
                     sigma8 = cosmo['sigma8'])
 
 
-def get_init_mesh(cosmo:Cosmology, mesh_size, box_size, fourier=False,
+def get_init_mesh(cosmo:Cosmology, mesh_shape, box_size, fourier=False,
                   trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
     """
     Return initial conditions at a=1 from latent params.
     """
     # Compute initial power spectrum
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
-    kvec = fftk(mesh_size)
-    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_size, box_size))**0.5
-    pk_mesh = pk_fn(k_box) * (mesh_size / box_size).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+    kvec = fftk(mesh_shape)
+    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_size))**0.5
+    pk_mesh = pk_fn(k_box) * (mesh_shape / box_size).prod() # NOTE: convert from (Mpc/h)^3 to cell units
     pk_mesh *= scaling**2
 
 
@@ -142,16 +142,15 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
         w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
     """    
     # Get init_mesh at observation scale factor
-    a = jnp.atleast_1d(a)
-    init_mesh = init_mesh * growth_factor(cosmo, a)
+    init_mesh = init_mesh * growth_factor(cosmo, jnp.atleast_1d(a))
 
     # Smooth field to mitigate negative weights
-    mesh_size = init_mesh.shape
+    mesh_shape = init_mesh.shape
     delta_k = jnp.fft.rfftn(init_mesh)
-    kvec = fftk(mesh_size)
+    kvec = fftk(mesh_shape)
     kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_size, box_size)) # - laplace kernel in h/Mpc physical units
-    # k_nyquist = jnp.pi * jnp.min(mesh_size / box_size)
+                 for ki, m, l in zip(kvec, mesh_shape, box_size)) # minus laplace kernel in h/Mpc physical units
+    # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_size)
     # delta_k = delta_k * jnp.exp( - kk_box / k_nyquist**2)
     # init_mesh = jnp.fft.irfftn(delta_k)
 
@@ -199,8 +198,8 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     return pk_fn
 
 
-def nbody(cosmo:Cosmology, mesh_size, particles, a_lpt, a_obs, trace_meshes):
-    terms = ODETerm(get_ode_fn(cosmo, mesh_size))
+def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, trace_meshes):
+    terms = ODETerm(get_ode_fn(cosmo, mesh_shape))
     solver = Dopri5()
     # controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0.4, icoeff=1, dcoeff=0)
     controller = PIDController(rtol=1e-2, atol=1e-2, pcoeff=0.4, icoeff=1, dcoeff=0)
@@ -247,14 +246,14 @@ Planck18 = partial(Cosmology,
     wa=0.0,)
 
 
-def get_ode_fn(cosmo:Cosmology, mesh_size):
+def get_ode_fn(cosmo:Cosmology, mesh_shape):
 
     def nbody_ode(a, state, args):
         """
         state is a phase space state array [*position, *velocities]
         """
         pos, vel = state
-        forces = pm_forces(pos, mesh_size=mesh_size) * 1.5 * cosmo.Omega_m
+        forces = pm_forces(pos, mesh_shape) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -273,15 +272,19 @@ def invlaplace_kernel(kvec):
     return - jnp.where(kk==0, 0, 1 / kk_nozeros)
 
 
-def pm_forces(positions, mesh_size, delta_k=None, r_split=0):
+def pm_forces(positions, mesh_shape, delta=None, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
-    if delta_k is None:
-        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_size), positions))
+    if delta is None:
+        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
+    elif jnp.isrealobj(delta):
+        delta_k = jnp.fft.rfftn(delta)
+    else:
+        delta_k = delta
 
     # Computes gravitational potential
-    kvec = fftk(mesh_size)
+    kvec = fftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
     # Computes gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
@@ -295,18 +298,18 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
     a = jnp.atleast_1d(a)
     E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
     delta_k = jnp.fft.rfftn(init_mesh)
-    mesh_size = init_mesh.shape
+    mesh_shape = init_mesh.shape
 
     # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
     # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f?
     # Correct cic_read, cic_paint docstring 
-    init_force = pm_forces(positions, mesh_size, delta_k=delta_k)
+    init_force = pm_forces(positions, mesh_shape, delta=delta_k)
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
-        kvec = fftk(mesh_size)
+        kvec = fftk(mesh_shape)
         pot_k = delta_k * invlaplace_kernel(kvec)
 
         delta2 = 0
@@ -328,7 +331,7 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
                 delta2 -= jnp.fft.irfftn(nabla_i_nabla_j * pot_k)**2
 
         
-        init_force2 = pm_forces(positions, mesh_size, delta_k=jnp.fft.rfftn(delta2))
+        init_force2 = pm_forces(positions, mesh_shape, delta=jnp.fft.rfftn(delta2))
         dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
         f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
@@ -358,11 +361,11 @@ def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):
     return dx_rsd
 
 
-def kaiser_weights(cosmo:Cosmology, a, mesh_size, los):
+def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
 
-    kvec = fftk(mesh_size)
+    kvec = fftk(mesh_shape)
     kmesh = sum(kk**2 for kk in kvec)**0.5
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))

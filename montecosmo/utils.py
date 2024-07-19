@@ -234,20 +234,20 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
 
 
 
-def id_cgh(mesh_size, part="real"):
+def id_cgh(mesh_shape, part="real"):
     """
-    Return indices and weights to permute a real Gaussian tensor of size ``mesh_size`` (3D)
+    Return indices and weights to permute a real Gaussian tensor of shape ``mesh_shape`` (3D)
     into a complex Gaussian Hermitian tensor. 
     Handle the Hermitian symmetry, specificaly at border faces, edges, and vertices.
     """
-    mesh_size = np.array(mesh_size)
-    sx, sy, sz = mesh_size
+    mesh_shape = np.array(mesh_shape)
+    sx, sy, sz = mesh_shape
     # assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
-    hx, hy, hz = mesh_size//2
-    kmesh_size = (sx, sy, hz+1)
-    weights = np.ones(kmesh_size) * (mesh_size.prod() / 2)**.5
-    id = np.zeros((3,*kmesh_size), dtype=int)
-    xyz = np.indices(mesh_size)
+    hx, hy, hz = mesh_shape//2
+    kmesh_shape = (sx, sy, hz+1)
+    weights = np.ones(kmesh_shape) * (mesh_shape.prod() / 2)**.5
+    id = np.zeros((3,*kmesh_shape), dtype=int)
+    xyz = np.indices(mesh_shape)
 
     if part == "imag":
         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
@@ -284,9 +284,9 @@ def rg2cgh(mesh):
     Permute a real Gaussian tensor (3D) into a complex Gaussian Hermitian tensor.
     The output would therefore be distributed as the real Fourier transform of a Gaussian tensor.
     """
-    mesh_size = mesh.shape
-    id_real, w_real = id_cgh(mesh_size, part="real")
-    id_imag, w_imag = id_cgh(mesh_size, part="imag")
+    mesh_shape = mesh.shape
+    id_real, w_real = id_cgh(mesh_shape, part="real")
+    id_imag, w_imag = id_cgh(mesh_shape, part="imag")
     return mesh[*id_real] * w_real + 1j * mesh[*id_imag] * w_imag
 
 
@@ -295,12 +295,12 @@ def cgh2rg(kmesh):
     """
     Permute a complex Gaussian Hermitian tensor into a real Gaussian tensor (3D).
     """
-    kmesh_size = kmesh.shape
-    mesh_size = *kmesh_size[:2], 2*(kmesh_size[2]-1)
-    id_real, w_real = id_cgh(mesh_size, part="real")
-    id_imag, w_imag = id_cgh(mesh_size, part="imag")
+    kmesh_shape = kmesh.shape
+    mesh_shape = *kmesh_shape[:2], 2*(kmesh_shape[2]-1)
+    id_real, w_real = id_cgh(mesh_shape, part="real")
+    id_imag, w_imag = id_cgh(mesh_shape, part="imag")
     
-    mesh = jnp.zeros(mesh_size)
+    mesh = jnp.zeros(mesh_shape)
     mesh = mesh.at[*id_imag].set(kmesh.imag / w_imag)
     mesh = mesh.at[*id_real].set(kmesh.real / w_real)
     return mesh
