@@ -105,22 +105,23 @@ def likelihood_model(loc_mesh, mesh_shape, box_shape, galaxy_density, lik_config
         # obs_mesh = sample('obs_mesh', dist.Poisson(loc_mesh + eps_var)) 
         # obs_mesh = sample('obs_mesh', dist.Normal(loc_mesh, (loc_mesh  + eps_var)**.5)) # Normal approx
         return obs_mesh
-    
+
     elif obs_name == 'pk':
         # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
-        multipoles = jnp.array([0,2,4])
-        sli_multip = slice(1,1+jnp.shape(multipoles)[0])
+        multipoles = np.atleast_1d(lik_config['multipoles'])
+        sli_multip = slice(1,1+len(multipoles))
         loc_pk, Nk = get_pk_fn(mesh_shape, box_shape, multipoles=multipoles, kcount=True)(loc_mesh)
-        sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
-        
-        loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean power spectrum
-        obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], jnp.sqrt(sigma2))))
+        # sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
+        sigma2 *= 2*(2*multipoles[:,None]+1) * (1 / galaxy_density**2 + 2*loc_pk[1]/galaxy_density) / Nk
+
+        loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean monopole
+        obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], sigma2**.5)))
         obs_pk = deterministic('obs_pk', obs_pk)
         return obs_pk
 
 
 
-def pmrsd_fn(latent_params, 
+def pmrsd_fn(params_, 
                 mesh_shape,                 
                 box_shape,
                 a_lpt,
@@ -131,11 +132,11 @@ def pmrsd_fn(latent_params,
                 prior_config,
                 fourier,):
     
-    # Get cosmology, initial mesh, and biases from latent params
-    cosmo = get_cosmo(prior_config, trace_reparam, **latent_params)
+    # Get cosmology, initial mesh, and biases from standardized latent params
+    cosmo = get_cosmo(prior_config, trace_reparam, **params_)
     cosmology = get_cosmology(**cosmo)
-    init_mesh = get_init_mesh(cosmology, mesh_shape, box_shape, fourier, trace_reparam, **latent_params)
-    biases = get_biases(prior_config, trace_reparam, **latent_params)
+    init_mesh = get_init_mesh(cosmology, mesh_shape, box_shape, fourier, trace_reparam, **params_)
+    biases = get_biases(prior_config, trace_reparam, **params_)
 
     # Create regular grid of particles
     x_part = jnp.indices(mesh_shape).reshape(3,-1).T
@@ -244,10 +245,10 @@ def pmrsd_model(mesh_shape,
         Noise level.
     """
     # Sample from prior
-    latent_params = prior_model(mesh_shape, prior_config)
+    params_ = prior_model(mesh_shape, prior_config)
 
     # Compute deterministic model function
-    biased_mesh = pmrsd_fn(latent_params,
+    biased_mesh = pmrsd_fn(params_,
                             mesh_shape,
                             box_shape,
                             a_lpt,
@@ -389,17 +390,17 @@ def print_config(model:partial|dict):
 
     cell_shape = list( config['box_shape'] / config['mesh_shape'] )
     print("# INFOS")
-    print(f"cell_shape:        {cell_shape} Mpc/h")
+    print(f"cell_shape:     {cell_shape} Mpc/h")
 
-    delta_k = 2*jnp.pi * jnp.max(1 / config['box_shape']) 
+    dk = 2*jnp.pi * jnp.max(1 / config['box_shape']) 
     k_nyquist = 2*jnp.pi * jnp.min(config['mesh_shape'] / config['box_shape']) / 2
     # (2*pi factor because of Fourier transform definition)
-    print(f"delta_k:          {delta_k:.5f} h/Mpc")
-    print(f"k_nyquist:        {k_nyquist:.5f} h/Mpc")
+    print(f"dk:             {dk:.5f} h/Mpc")
+    print(f"k_nyquist:      {k_nyquist:.5f} h/Mpc")
 
-    mean_gxy_density = config['galaxy_density'] * (config['box_shape'] / config['mesh_shape']).prod()
+    mean_gxy_count = config['galaxy_density'] * (config['box_shape'] / config['mesh_shape']).prod()
     # NOTE: careful about mesh_shape int overflow, perform float cast before
-    print(f"mean_gxy_density: {mean_gxy_density:.3f} gxy/cell\n")
+    print(f"mean_gxy_count: {mean_gxy_count:.3f} gxy/cell\n")
 
 
 def get_prior_loc(model:partial|dict):

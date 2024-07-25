@@ -4,10 +4,10 @@
 # # Model Explicit Likelihood Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[48]:
+# In[1]:
 
 
-import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.50' # NOTE: jax preallocates GPU (default 75%)
+import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,439 +21,91 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-get_ipython().run_line_magic('matplotlib', 'inline')
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
 
-import mlflow
-mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
-mlflow.set_experiment("ELI")
-from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
+# import mlflow
+# mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
+# mlflow.set_experiment("ELI")
+from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch
+from montecosmo.mcbench import sample_and_save
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[50]:
+# In[2]:
 
 
-get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/model_ELI.ipynb')
 
 
-# ## Inference
-
-# ### Import
+# ## Import
 
 # In[3]:
 
 
 from montecosmo.models import pmrsd_model, prior_model, get_logp_fn, get_score_fn, get_simulator, get_pk_fn, get_param_fn
-from montecosmo.models import print_config, get_prior_mean, default_config as config
+from montecosmo.models import print_config, get_prior_loc, default_config as config
 
 # Build and render model
-# config.update(a_lpt=0.5, mesh_size=8*np.ones(3, dtype=int))
-# config.update(a_lpt=0.5, mesh_size=64*np.ones(3, dtype=int), fourier=True)
-# config.update(a_lpt=0.1, mesh_size=64*np.ones(3, dtype=int), fourier=False)
+# config.update(a_lpt=0.5, mesh_shape=64*np.ones(3, dtype=int), box_size=256*np.ones(3))
+config.update(a_lpt=0.1, mesh_shape=64*np.ones(3, dtype=int), fourier=True)
+config['lik_config'].update(obs='pk')
+# config.update(a_lpt=0.5, mesh_shape=64*np.ones(3, dtype=int), fourier=False)
 model = partial(pmrsd_model, **config)
 print_config(model)
+expe_prefix = "fourier_pm_plk_"
 
-# # Get fiducial parameters
-# param_fn = get_param_fn(**config)
-# fiduc_model = condition(partial(model, trace_reparam=True), param_fn(inverse=True, **get_prior_mean(model)))
-# fiduc_params = get_simulator(fiduc_model)(rng_seed=0)
+# Get fiducial parameters
+param_fn = get_param_fn(**config)
+fiduc_model = condition(partial(model, trace_reparam=True), param_fn(inverse=True, **get_prior_loc(model)))
+fiduc_trace = get_simulator(fiduc_model)(rng_seed=0)
+fiduc_lat = param_fn(**fiduc_trace)
+fiduc_lat_ = param_fn(inverse=True, **fiduc_lat)
 
-# # # Chain init
-# @jit
-# @vmap
-# def sample_init_chains(rng_key, scale_std):
-#     params_ = seed(prior_model, rng_key)(**config)
-#     init_params = get_param_fn(scale_std=scale_std, **config)(**params_)
-#     return get_param_fn(**config)(inverse=True, **init_params)
+# Chain init
+@jit
+@vmap
+def sample_init_chains(rng_key, scale_std):
+    params_ = seed(prior_model, rng_key)(**config)
+    params = get_param_fn(scale_std=scale_std, **config)(**params_)
+    return get_param_fn(**config)(inverse=True, **params)
 
-# init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array([0]+6*[1/10]))
-# init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), 
-#                         get_param_fn(**config)(inverse=True, **fiduc_params), init_params_)
-# pickle_dump(fiduc_params, save_dir+"fiduc_params_fourier.p")
-# pickle_dump(init_params_, save_dir+"init_params_fourier_.p")
+# init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array(7*[1/10]))
+# init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), fiduc_params_, init_params_)
+init_params_ = tree_map(lambda x: jnp.tile(x, (10,*len(jnp.shape(x))*[1])), fiduc_lat_)
+pickle_dump(fiduc_trace, save_dir + expe_prefix + "fiduc_trace.p")
+pickle_dump(init_params_, save_dir + expe_prefix + "init_params_.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params.p")
-init_params_ = pickle_load(save_dir+"init_params_.p")
-# fiduc_params = pickle_load(save_dir+"fiduc_params_pm.p")
-# init_params_ = pickle_load(save_dir+"init_params_pm_.p")
-# fiduc_params = pickle_load(save_dir+"fiduc_params_fourier.p")
-# init_params_ = pickle_load(save_dir+"init_params_fourier_.p")
+# fiduc_params = pickle_load(save_dir + expe_prefix + "fiduc_params.p")
+# init_params_ = pickle_load(save_dir + expe_prefix + "init_params_.p")
 
 # Condition model on observables
-obs_names = ['obs_mesh']
-# obs_names = ['obs_mesh','Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_']
-obs_params = {name: fiduc_params[name] for name in obs_names}
+obs_names = ['obs']
+# obs_names = ['obs','b1_','b2_','bs2_','bn2_']
+# obs_names = ['obs','Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_']
+obs_params = {name: fiduc_trace[name] for name in obs_names}
 obs_model = condition(model, obs_params)
 logp_fn = get_logp_fn(obs_model)
-param_fn = get_param_fn(**config)
-# print(fiduc_params, init_params_)
 
 
 # In[4]:
 
 
-print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
-
-
-# In[5]:
-
-
-print(fiduc_params.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['init_mesh_'][:,0,0,0])
-
-
-# ### Run
-
-# In[41]:
-
-
-init_params_one_ = tree_map(lambda x: x[2], init_params_)
-# init_params_one_ = tree_map(lambda x: x[2], {'init_mesh_':init_params_['init_mesh_']})
-print("logp: ",logp_fn(init_params_one_))
-
-
-# ### MCLMC
-
-# In[53]:
-
-
-import blackjax
-
-def MCLMC_run(key, init_state, logdensity, n_samples, transform):
-    init_key, tune_key, run_key = jr.split(key, 3)
-
-    # # create an initial state for the sampler
-    # initial_state = blackjax.mcmc.mclmc.init(
-    #     position=init_state, logdensity_fn=logdensity, rng_key=init_key
-    # )
-
-    # # build the kernel
-    # kernel = blackjax.mcmc.mclmc.build_kernel(
-    #     logdensity_fn=logdensity,
-    #     integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-    # )
-
-    #####
-    # # find values for L and step_size
-    # tunning = blackjax.adaptation.mclmc_adaptation.mclmc_find_L_and_step_size(
-    #     mclmc_kernel=kernel,
-    #     num_steps=n_samples,
-    #     state=initial_state,
-    #     rng_key=tune_key,
-    #     num_effective_samples=1024,
-    # )
-    # state_after_tuning, mclmc_sampler_params = tunning
-    # L = mclmc_sampler_params.L
-    # step_size = mclmc_sampler_params.step_size
-    # initial_state = state_after_tuning
-    #####
-
-    L = 50
-    step_size = 2
-    initial_state = init_state
-    # tunning = (initial_state, {'L':L, 'step_size':step_size})
-
-
-    # use the quick wrapper to build a new kernel with the tuned parameters
-    sampling_alg = blackjax.mclmc(
-        logdensity,
-        L=L,
-        step_size=step_size,
-    )
-
-    # run the sampler
-    last_state, samples, infos = blackjax.util.run_inference_algorithm(
-        rng_key = run_key,
-        initial_state_or_position = initial_state,
-        inference_algorithm = sampling_alg,
-        num_steps = n_samples,
-        transform = transform,
-        progress_bar = True,
-    )
-
-    return last_state, samples, infos
-
-def get_MCLMC_run(logdensity, n_samples, transform):
-    return partial(MCLMC_run, 
-                   logdensity = logdensity,
-                   n_samples = n_samples,
-                   transform = transform,)
-
-
-# In[54]:
-
-
-logdensity = logp_fn
-# n_samples, n_runs, n_chains = 3, 1, 8
-n_samples, n_runs, n_chains = 256, 4, 4
-save_path = save_dir + f"MCLMC_ns{n_samples:d}_x_nc{n_chains}_test1"
-
-run_fn = get_MCLMC_run(logdensity, n_samples, transform=lambda x: x.position)
-key = jr.key(42)
-# last_state = init_params_
-last_state = tree_map(lambda x: x[:n_chains], init_params_)
-
-for i_run in range(1, n_runs+1):
-    print(f"run {i_run}/{n_runs}")
-    key, run_key = jr.split(key, 2)
-    last_state, samples, infos = vmap(run_fn)(jr.split(run_key, n_chains), last_state)
-    pickle_dump(samples, save_path+f"_{i_run}.p")
-    pickle_dump(last_state, save_path+f"_laststate.p")
-
-
-# ### HMCGibbs
-
-# In[5]:
-
-
-# from jax.flatten_util import ravel_pytree
-# def mult_tree(params, factor):
-#     flat, deravel = ravel_pytree(params)
-#     return deravel(flat * factor)
-
-# last_state = pickle_load(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
-# print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
-# invmm = list(last_state.adapt_state.inverse_mass_matrix.values())[0][0]
-# logdensity = lambda x : logp_fn(mult_tree(x, invmm**.5))
-# init_pos = mult_tree(init_params_one_, invmm**(-.5))
-
-
-# In[43]:
-
-
-import blackjax
-import blackjax.progress_bar
-
-def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init, parameters):
-    """
-    General MWG kernel.
-
-    Updates each component of ``state`` conditioned on all the others using a component-specific MCMC algorithm
-
-    Parameters
-    ----------
-    rng_key
-        The PRNG key.
-    state
-        Dictionary where each item is the state of an MCMC algorithm, i.e., an object of type ``AlgorithmState``.
-    logdensity_fn
-        The log-density function on all components, where the arguments are the keys of ``state``.
-    step_fn
-        Dictionary with the same keys as ``state``,
-        each element of which is an MCMC stepping functions on the corresponding component.
-    init
-        Dictionary with the same keys as ``state``,
-        each elemtn of chi is an MCMC initializer corresponding to the stepping functions in `step_fn`.
-    parameters
-        Dictionary with the same keys as ``state``, each of which is a dictionary of parameters to
-        the MCMC algorithm for the corresponding component.
-
-    Returns
-    -------
-    Dictionary containing the updated ``state``.
-    """
-    rng_keys = jr.split(rng_key, num=len(state))
-    rng_keys = dict(zip(state.keys(), rng_keys))
-
-    # avoid modifying argument state as JAX functions should be pure
-    state = state.copy()
-    infos = {}
-    infos['num_steps'] = 0
-
-    for k in state.keys():
-        # logdensity of component k conditioned on all other components in state
-        def logdensity_k(value):
-            union = {}
-            for _k in state.keys():
-                union |= state[_k].position
-            union |= value # update component k
-            return logdensity_fn(union) # **kwargs
-
-        # give state[k] the right log_density
-        state[k] = init[k](
-            position=state[k].position,
-            logdensity_fn=logdensity_k
-        )
-
-        # update state[k]
-        state[k], info = step_fn[k](
-            rng_key=rng_keys[k],
-            state=state[k],
-            logdensity_fn=logdensity_k,
-            **parameters[k]
-        )
-
-        # register only relevant infos
-        num_steps = info.num_integration_steps
-        infos['infos_'+k] = {"acceptance_rate": info.acceptance_rate, 
-                    "num_integration_steps": num_steps}
-        infos['num_steps'] += num_steps
-        
-    return state, infos
-
-def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init, parameters, n_samples):
-    
-    @blackjax.progress_bar.progress_bar_scan(n_samples)
-    def one_step(state, xs):
-        _, rng_key = xs
-        state, infos = mwg_kernel_general(
-            rng_key=rng_key,
-            state=state,
-            logdensity_fn=logdensity_fn,
-            step_fn=step_fn,
-            init=init,
-            parameters=parameters
-        )
-        # positions = {k: state[k].position for k in state.keys()}
-        union = {}
-        for _k in state.keys():
-            union |= state[_k].position
-        # union = mult_tree(union, invmm**.5)
-        return state, (union, infos)
-
-    keys = jr.split(rng_key, n_samples)
-    xs = (jnp.arange(n_samples), keys)
-    last_state, (positions, infos) = lax.scan(one_step, initial_state, xs) # scan compile
-
-    return last_state, positions, infos
-
-
-
-
-def HMCGibbs_init(logdensity, kernel="hmc"):
-
-    if kernel == "hmc":
-        mwg_init_x = blackjax.hmc.init
-        mwg_init_y = blackjax.hmc.init
-        mwg_step_fn_x = blackjax.hmc.build_kernel()
-        mwg_step_fn_y = blackjax.hmc.build_kernel()  # default integrator, etc.
-        parameters = {
-            "mesh_": {
-                "inverse_mass_matrix": jnp.ones(64**3),
-                "num_integration_steps": 256,
-                "step_size": 3*1e-3
-            },
-            "rest_": {
-                "inverse_mass_matrix": jnp.ones(6),
-                "num_integration_steps": 64,
-                "step_size": 3*1e-3
-            }
-        }
-    elif kernel == "nuts":
-        mwg_init_x = blackjax.nuts.init
-        mwg_init_y = blackjax.nuts.init
-        mwg_step_fn_x = blackjax.nuts.build_kernel()
-        mwg_step_fn_y = blackjax.nuts.build_kernel()  # default integrator, etc.
-        parameters = {
-            "mesh_": {
-                "inverse_mass_matrix": jnp.ones(64**3),
-                "step_size": 3*1e-3
-            },
-            "rest_": {
-                "inverse_mass_matrix": jnp.ones(6),
-                "step_size": 3*1e-3
-            }
-        }
-
-    step_fn = {
-        "mesh_": mwg_step_fn_x,
-        "rest_": mwg_step_fn_y
-    }
-
-    init_fn={
-        "mesh_": mwg_init_x,
-        "rest_": mwg_init_y
-    }
-
-
-    def init_state_fn(init_pos):
-        return get_init_state(init_pos, logdensity, init_fn)
-
-
-    return step_fn, init_fn, parameters, init_state_fn
-
-
-def get_init_state(init_pos, logdensity, init_fn):
-    init_pos_block1 = {name:init_pos[name] for name in ['init_mesh_']}
-    init_pos_block2 = {name:init_pos[name] for name in ['Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_']}
-    init_state = {
-        "mesh_": init_fn['mesh_'](
-            position = init_pos_block1,
-            logdensity_fn = lambda x: logdensity(x |init_pos_block2)
-        ),
-        "rest_": init_fn['rest_'](
-            position = init_pos_block2,
-            logdensity_fn = lambda y: logdensity(y | init_pos_block1)
-        )
-    }
-    return init_state
-
-
-def HMCGibbs_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples):
-
-    last_state, samples, infos = sampling_loop_general(
-    rng_key = rng_key,
-    initial_state = init_state,
-    logdensity_fn = logdensity,
-    step_fn = step_fn,
-    init = init_fn,
-    parameters = parameters,
-    n_samples = n_samples,)
-    return last_state, samples, infos
-
-
-def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples):
-    return partial(HMCGibbs_run, 
-                   logdensity=logdensity, 
-                   step_fn=step_fn, 
-                   init_fn=init_fn, 
-                   parameters=parameters, 
-                   n_samples=n_samples,)
-
-
-# warmup = blackjax.window_adaptation(blackjax.hmc, logp_fn, num_integration_steps=10)
-# rng_key, warmup_key, sample_key = jr.split(jr.key(0), 3)
-# (state, parameters), infos = warmup.run(warmup_key, init_params_one_, num_steps=10)
-
-
-# In[44]:
-
-
-logdensity = logp_fn
-n_samples, n_runs, n_chains = 3, 1, 8
-save_path = save_dir + f"HMCGibbs_ns{n_samples:d}_x_nc{n_chains}"
-
-step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
-run_fn = get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)
-key = jr.key(42)
-last_state = vmap(init_state_fn)(init_params_)
-
-for i_run in range(1, n_runs+1):
-    print(f"run {i_run}/{n_runs}")
-    key, run_key = jr.split(key, 2)
-    last_state, samples, infos = vmap(run_fn)(jr.split(run_key, n_chains), last_state)
-    pickle_dump(samples | infos, save_path+f"_{i_run}.p")
-    pickle_dump(last_state, save_path+f"_laststate.p")
-
+print(fiduc_trace.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['b1_'], '\n', init_params_['init_mesh_'][:,0,0,0])
 
 # ### NUTS, HMC
 
-# In[108]:
+# In[6]:
 
 
 # num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 20, 8
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
-num_samples, max_tree_depth, n_runs, num_chains = 64, 10, 5, 1
+n_samples, max_tree_depth, n_runs, n_chains = 64, 9, 10, 10
 
 # Variables to save
-extra_fields = ['num_steps'] # e.g. 'num_steps'
 # save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}_2"
 # save_path = save_dir + f"NUTS_ns{num_samples:d}_x_nc{num_chains}_pm"
-save_path = save_dir + f"HMCGibbs_ns{num_samples:d}_test"
-# save_path = save_dir + f"NUTS_ns{num_samples:d}_test_fourier"
+# save_path = save_dir + f"HMCGibbs_ns{num_samples:d}_test"
+save_path = save_dir + expe_prefix + f"NUTS_nc{n_chains:d}_x_ns{n_samples:d}"
 
 nuts_kernel = numpyro.infer.NUTS(
     model=obs_model,
@@ -479,12 +131,12 @@ def gibbs_fn(rng_key, gibbs_sites, hmc_sites):
     pass
 hmcgibbs_kernel = numpyro.infer.HMCGibbs(hmc_kernel, 
                                          gibbs_fn=gibbs_fn, 
-                                         mgibbs_sites=['Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_'])
+                                         gibbs_sites=['Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_'])
 
 # # Propose MALA step size based on [Chen+2019](http://arxiv.org/abs/1801.02309)
 # L_smoothness, m_strong_convex = 1, 1 # log density regularity properties
 # condition_number = L_smoothness / m_strong_convex
-# print(f"MALA step size proposal={1 / (L_smoothness * (config['mesh_size'].prod() * condition_number)**0.5):e}")
+# print(f"MALA step size proposal={1 / (L_smoothness * (config['mesh_shape'].prod() * condition_number)**0.5):e}")
 
 # from numpyro.contrib.tfp.mcmc import MetropolisAdjustedLangevinAlgorithm as MALA
 # mala_kernel = MALA(model=obs_model,
@@ -494,66 +146,136 @@ hmcgibbs_kernel = numpyro.infer.HMCGibbs(hmc_kernel,
 mcmc = numpyro.infer.MCMC(
     sampler=nuts_kernel,
     # num_warmup=0,
-    num_warmup=num_samples,
-    num_samples=num_samples, # for each run
-    num_chains=num_chains,
+    num_warmup=n_samples,
+    num_samples=n_samples, # for each run
+    num_chains=n_chains,
     chain_method="vectorized",
     progress_bar=True,)
 
-last_state = pickle_load(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
-print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
-mcmc.post_warmup_state = last_state
-invmm = list(last_state.adapt_state.inverse_mass_matrix.values())[0][0]
-invmm.min(),invmm.max(),invmm.mean(),invmm.std()
+# last_state = pickle_load(save_dir+"NUTS_nc8_x_ns64_test2_laststate.p")
+# print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
+# mcmc.post_warmup_state = last_state
+# invmm = list(last_state.adapt_state.inverse_mass_matrix.values())[0][0]
+# invmm.min(),invmm.max(),invmm.mean(),invmm.std()
 
 
-# In[16]:
+# In[7]:
 
 
 # mlflow.end_run()
-# mlflow.start_run(run_name="HMC, ss=1e-3")
+# mlflow.start_run(run_name="NUTS "+expe_prefix)
 # mlflow.log_params(config)
-# mlflow.log_params({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
-print({'n_runs':n_runs, 'num_samples':num_samples, 'max_tree_depth':max_tree_depth, 'num_chains':num_chains})
+# mlflow.log_params({'n_runs':n_runs, 'n_samples':n_samples, 'max_tree_depth':max_tree_depth, 'n_chains':n_chains})
+print({'n_runs':n_runs, 'n_samples':n_samples, 'max_tree_depth':max_tree_depth, 'num_chains':n_chains})
 print(save_path)
+
+
+# In[8]:
+
+
+# init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
+# mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
+mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=['num_steps'], init_params=init_params_)
+# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=['num_steps'])
+# mlflow.log_metric('halt',1)
+
+raise ValueError("Stop here")
+# ## Analysis
+
+# In[ ]:
+
+
+def separate(samples, separ=['num_steps']):
+    samples = samples.copy()
+    samples2 = {name:samples.pop(name) for name in separ}
+    return samples, samples2
+
+def recombine(dic, block, block_name, rest=True, aggr_fn=jnp.stack):
+    combined = {}
+    if rest:
+        dic = dic.copy()
+        for b, bn in zip(block, block_name):
+            combined[bn] = aggr_fn(jnp.stack([dic.pop(k) for k in b]))
+        combined |= dic
+    else:
+        for b, bn in zip(block, block_name):
+            combined[bn] = aggr_fn(jnp.stack([dic[k] for k in b]))
+    return combined
+
+def combine(moments, axis=0):
+    moments, infos = separate(moments)
+    moments = tree_map(lambda x: x.mean(axis=axis), moments)
+    infos = tree_map(lambda x: x.sum(axis=axis), infos)
+    return moments | infos
+
+def get_moments(x_, axis=0):
+    x_, infos = separate(x_)
+    moments = tree_map(lambda x: jnp.stack([x, x**2], axis=2), vmap(vmap(param_fn))(**x_))
+    return combine(moments | infos, axis=axis)
+
+def choice_cells(x_, rng_key, n):
+    x_, infos = separate(x_)
+    x = vmap(vmap(param_fn))(**x_)
+    name = 'init_mesh'
+    init_mesh = x[name]
+    x[name] = jr.choice(rng_key, init_mesh.reshape((*init_mesh.shape[:2],-1)), 
+                         shape=(n,), replace=False, axis=2)
+    return x | infos
+
+## For Chains, ESS, GR
+conc_axis = [1] # axis: run x chain x sample 
+var_names = None
+# var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
+# transform = lambda x:x
+transform = lambda x: tree_map(lambda x_:x_[:,::16], x)
+load_chains_ = partial(load_runs, var_names=var_names, conc_axis=conc_axis, transform=transform, verbose=True)
+
+var_names = [name+'_' for name in config['prior_config']] + ['num_steps'] + ['init_mesh_']
+transform = jit(partial(choice_cells, rng_key=jr.key(1), n=50))
+load_chains = partial(load_runs, var_names=var_names, conc_axis=conc_axis, transform=transform, verbose=True)
+
+## For Errors
+conc_axis = []
+var_names = [name+'_' for name in config['prior_config']] + ['num_steps'] + ['init_mesh_']
+transform = jit(partial(get_moments, axis=(1)))
+load_moments = partial(load_runs, var_names=var_names, conc_axis=conc_axis, transform=transform, verbose=True)
 
 
 # In[ ]:
 
 
-# init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
-# mlflow.log_metric('halt',0) # 31.46s/it 4chains, 37.59s/it 8chains
-# mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_one_)
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=extra_fields, init_params=init_params_)
-# mlflow.log_metric('halt',1)
+# load_path = save_dir + f"MCLMC/MCLMC_ns8192_x_nc8"
+# load_path = save_dir + f"NUTSGibbs/HMCGibbs_ns256_x_nc8"
+load_path = save_dir + f"NUTSGibbs_ns256_x_nc8"
+# load_path = save_dir + f"NUTS/NUTS_ns256_x_nc8"
+# load_path = save_dir + f"HMC/HMC_ns256_x_nc8"
+start_run, end_run = 0,0
+
+samples_ = load_chains_(load_path, start_run, end_run)
+samples = load_chains(load_path, start_run, end_run)
+# samples = jit(vmap(param_fn))(**samples_) | separate(samples_)[1]
+moments = load_moments(load_path, start_run, end_run)
+# TODO: modify to not do for loop but instead tree_map and first dim is sampler dim
+# pickle_dump(combine(moments, axis=(0,1)), save_dir+"NUTS/NUTS_moments20.p")
+
+# n_comb = 4
+# for i in range(1,2):
+#     start_run, end_run = 1+(i-1)*n_comb,i*n_comb
+#     transform = lambda x: tree_map(lambda y : y[:,::n_comb], x)
+#     var_names = None
+#     samples_ = load_runs(load_path, start_run, end_run, var_names, conc_axis=[1], transform=transform, verbose=True)
+#     pickle_dump(samples_, save_dir + f"HMC/HMC_ns1024_x_nc8_{i}.p")
 
 
-# ## Analysis
-
-# In[23]:
+# In[ ]:
 
 
-start_run, end_run = 0,1
-var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
-# var_names = None
-
-post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
-# post_samples_ = load_runs(save_path, start_run, end_run, var_names, conc_axis=[1], verbose=True)
-# mlflow.log_params({'n_samples':n_samples, 'n_evals':n_evals})
-# post_samples = [param_vfn(**s) for s in post_samples_]
-post_samples = vmap(param_fn)(**post_samples_)
-
-
-# In[49]:
-
-
-post_samples_ = tree_map(lambda x: x[1], post_samples_)
-post_samples = tree_map(lambda x: x[1], post_samples)
+samples_.keys()
 
 
 # ### Chain
 
-# In[15]:
+# In[ ]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
@@ -561,7 +283,7 @@ def _plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
     labels = []
     for name in samples:
         if name.endswith('_'): # convention for a latent value 
-            lab = "\\overline"+prior_config[name[:-1]][0]
+            lab = "\\tilde"+prior_config[name[:-1]][0]
         else:
             lab = prior_config[name][0]
         labels.append('$'+lab+'$')
@@ -573,12 +295,20 @@ def _plot_chain(samples:dict, prior_config:dict, fiduc:dict, **config):
             xmin=0, xmax=len(samples_arr), 
             ls="--", alpha=0.75,
             color=[f"C{i}" for i in range(len(samples))],)
-# slice_toplot = np.concatenate([range(i,i+10) for i in [0,5*60-5, 6*60-5]])
 
-def plot_chain(samples_:dict, prior_config:dict, fiduc:dict, **config):
-    samples = get_param_fn(prior_config=prior_config, **config)(**samples_)
+def plot_chain(samples_:dict, prior_config:dict, fiduc:dict, verbose=True, **config):
+    # Print diagnostics
+    samples = jit(vmap(param_fn))(**samples_)
+    if verbose:
+        from numpyro.diagnostics import print_summary
+        print_summary(samples, group_by_chain=True) # NOTE: group_by_chain if several chains
+
+    # Concatenate and reparam chains
+    samples_ = tree_map(lambda x: jnp.concatenate(x, axis=0), samples_)
+    samples = tree_map(lambda x: jnp.concatenate(x, axis=0), samples)
+
+    # Plot chains
     plot_fn = partial(_plot_chain, prior_config=prior_config, fiduc=fiduc)
-
     plt.figure(figsize=(10,6))
     plt.subplot(221)
     plot_fn({name:samples_[name] for name in ['Omega_m_','sigma8_']})
@@ -593,98 +323,582 @@ def plot_chain(samples_:dict, prior_config:dict, fiduc:dict, **config):
     plot_fn({name:samples[name] for name in ['b1', 'b2','bs2','bn2']})
     plt.legend(), 
     plt.tight_layout()
-    # mlflow.log_figure(plt.gcf(), f"HMC_chain_L1o2_neval1102004.svg")
-    plt.show();
 
+sli_toplot = slice(0,300)
 # plot_chain(post_samples_[1], fiduc=fiduc_params, **config)
-plot_chain(post_samples_, fiduc=fiduc_params, **config)
+# plot_chain(samples_, fiduc=fiduc_params, **config)
+plot_chain(tree_map(lambda x:x[:,sli_toplot], samples_), fiduc=fiduc_params, **config)
+# mlflow.log_figure(plt.gcf(), f"MCLMC_chain_L25_ss2_invmm.svg")
+plt.show();
 
 
-# ### Contours
-
-# In[40]:
+# In[ ]:
 
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 
-def get_metric_traj(metric_fn, samples, num, num_steps=None):
-    def _get_metric_traj(samples):
+def get_metric_traj(metric_fn, samples, n, axis=0, true=None):
+    """
+    """ # TODO: make such that no need to pass true, maybe by partial metrif_fn?
+    samples, infos = separate(samples)
+    if true is not None:
+        true, true_infos = separate(true)
+
+    def get_fn_traj(fn, samples, *args):
         metrics = []
-        length = len(samples[0])
-        for i_filt in np.arange(length, 1, -length// num)[::-1]:
+        length = samples.shape[axis]
+        for i_filt in np.arange(length, 1, -length// n)[::-1]:
+            filt = jnp.arange(i_filt)
+            metrics.append(fn(samples.take(filt, axis=axis), *args))
+        return jnp.stack(metrics)
+    
+    get_infos_traj = partial(get_fn_traj, lambda x: x.sum())
+    infos_traj = tree_map(get_infos_traj, infos)
+    get_metric_traj = partial(get_fn_traj, metric_fn)
+    if true is not None:
+        metric_traj = tree_map(get_metric_traj, samples, true)
+    else:
+        metric_traj = tree_map(get_metric_traj, samples)
+    return metric_traj | infos_traj
 
-            if num_steps is not None:
-                metrics.append([num_steps[:,:i_filt].sum(), metric_fn(samples[:,:i_filt])])
-            else:
-                metrics.append(metric_fn(samples[:,:i_filt]))
-        return jnp.array(metrics).T
-    return tree_map(_get_metric_traj, samples)
 
-n_toplot = 300
-ESSs = get_metric_traj(effective_sample_size, post_samples, n_toplot, post_samples_['num_steps'])
-GRs = get_metric_traj(gelman_rubin, post_samples, n_toplot, post_samples_['num_steps'])
+def geomean(x, axis=None):
+    return jnp.exp( jnp.log(x).mean(axis=axis) )
+multi_ess_fn = lambda x: geomean(effective_sample_size(x))
+def grmean(x, axis=None):
+    """cf. https://arxiv.org/pdf/1812.09384"""
+    return (1 + geomean(x**2 - 1, axis=axis) )**.5
+multi_gr_fn = lambda x: grmean(gelman_rubin(x))
+def multi_gr_fn2(x):
+    n_chains = x.shape[0]
+    return geomean(gelman_rubin(x)**2 - 1) / n_chains # about 1/N_eff
+
+sqrerr_moments_fn = lambda m, m_true: (m.mean(axis=(0,1))-m_true)**2
+@jit
+def sqrerr_locscale_fn(moments, moments_true):
+    # Get mean and std from runs and chains
+    m1_hat, m2_hat = moments.mean(axis=(0,1))
+    m1, m2 = moments_true
+    std_hat, std = (m2_hat - m1_hat**2)**.5, (m2 - m1**2)**.5 # Huygens formula
+    # Compute normalized errors
+    err_loc, err_scale = (m1_hat - m1) / std, (std_hat - std) / (std / 2**.5) # asymptotically N(0, 1/n_eff)
+    mse_loc, mse_scale = (err_loc**2).mean(), (err_scale**2).mean() # asymptotically 1/n_eff * Chi^2(d)/d
+    return jnp.stack([mse_loc, mse_scale])
+
+@jit
+def sqrerr_locscale_fn2(moments, moments_true):
+    # Get mean and std from runs
+    n_chains = moments.shape[1]
+    m_hat = moments.mean(axis=(0))
+    m1_hat, m2_hat = m_hat[:,0], m_hat[:,1]
+    m1, m2 = moments_true
+    std_hat, std = (m2_hat - m1_hat**2)**.5, (m2 - m1**2)**.5 # Huygens formula
+    # Compute normalized errors
+    err_loc, err_scale = (m1_hat - m1) / std, (std_hat - std) / (std / 2**.5) # asymptotically N(0, n_chain/n_eff)
+    mse_loc, mse_scale = (err_loc**2).mean(), (err_scale**2).mean() # asymptotically n_chain/n_eff * Chi^2(d*n_chain)/(d*n_chain) 
+    return jnp.stack([mse_loc, mse_scale]) / n_chains # asymptotically 1/n_eff * Chi^2(d*n_chain)/(d*n_chain) 
 
 
-# In[46]:
+# In[ ]:
+
+
+n_toplot = 100
+# ESSs = get_metric_traj(effective_sample_size, samples, n_toplot, 1)
+# GRs = get_metric_traj(gelman_rubin, samples, n_toplot, 1)
+ESSs = get_metric_traj(multi_ess_fn, samples, n_toplot, 1)
+# GRs = get_metric_traj(multi_gr_fn, samples, n_toplot, 1)
+GRs = get_metric_traj(multi_gr_fn2, samples, n_toplot, 1)
+
+moments_true = pickle_load(save_dir+"NUTS/NUTS_moments20.p")
+# SEs = get_metric_traj(sqrerr_moments_fn, moments, n_toplot, 0, moments_true)
+# NMSEs = get_metric_traj(sqrerr_locscale_fn, moments, n_toplot, 0, moments_true)
+NMSEs = get_metric_traj(sqrerr_locscale_fn2, moments, n_toplot, 0, moments_true)
+
+
+# In[ ]:
 
 
 plt.figure(figsize=(12,4))
+sli_plot = slice(20,None)
+
 plt.subplot(121)
-i_tostart = 50
-plot_fn = lambda x, **kwargs: plt.plot(x[0], x[1]/x[0], **kwargs)
-for name, val in ESSs.items():
-    plot_fn(val[:,i_tostart:], label='$'+config['prior_config'][name][0]+'$')
-plt.xlabel("$n_{\\text{eval}}$"), plt.ylabel("$n_{\\text{ESS}}/n_{\\text{eval}}$")
+metric_traj, infos_traj = separate(ESSs)
+num_steps = infos_traj['num_steps']
+plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps / x.T).T[sli_plot], **kwargs)
+for name, val in metric_traj.items():
+    if name == 'init_mesh':
+        label = "$\\delta_L$"
+    else:
+        label = '$'+config['prior_config'][name][0]+'$'
+    plot_fn(val, label=label)
+plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$")
 plt.legend()
 
 plt.subplot(122)
-plot_fn = lambda x, **kwargs: plt.plot(*x, **kwargs)
-for name, val in GRs.items():
-    plot_fn(val[:,i_tostart:], label='$'+config['prior_config'][name][0]+'$')
-plt.xlabel("$n_{\\text{eval}}$"), plt.ylabel("$\\hat R$")
+metric_traj, infos_traj = separate(GRs)
+num_steps = infos_traj['num_steps']
+# plot_fn = lambda x, **kwargs: plt.plot(num_steps[sli_plot], x[sli_plot], **kwargs)
+plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps * x)[sli_plot], **kwargs)
+for name, val in metric_traj.items():
+    if name == 'init_mesh':
+        label = "$\\delta_L$"
+    else:
+        label = '$'+config['prior_config'][name][0]+'$'
+    plot_fn(val, label=label)
+# plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$\\hat R$")
+plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{chain}} \\times (\\hat R^2 - 1)$")
 plt.legend()
 plt.tight_layout()
 plt.show();
 
 
-# In[44]:
+# In[ ]:
 
 
-paths = ["NUTS_ns256_x_nc8","HMC_ns256_x_nc8"]
-mc_labels = ["NUTS","HMC"]
-start_run, end_run = [2,2], [20,20]
+plt.figure(figsize=(12,4))
+sli_plot = slice(20,None)
 
+plt.subplot(121)
+metric_traj, infos_traj = separate(ESSs)
+metric_traj = recombine(metric_traj, 
+                        [['Omega_m','sigma8'],['b1','b2','bs2','bn2'],['init_mesh']], 
+                        ['cosmo','biases','init'], 
+                        aggr_fn=partial(geomean, axis=0))
+num_steps = infos_traj['num_steps']
+plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps / x.T).T[sli_plot], **kwargs)
+for name, val in metric_traj.items():
+    plot_fn(val, label=name)
+plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$")
+plt.legend()
+
+plt.subplot(122)
+metric_traj, infos_traj = separate(GRs)
+metric_traj = recombine(metric_traj, 
+                        [['Omega_m','sigma8'],['b1','b2','bs2','bn2'],['init_mesh']], 
+                        ['cosmo','biases','init'], 
+                        # aggr_fn=partial(grmean, axis=0))
+                        aggr_fn=partial(geomean, axis=0))
+num_steps = infos_traj['num_steps']
+# plot_fn = lambda x, **kwargs: plt.plot(num_steps[sli_plot], x[sli_plot], **kwargs)
+plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps * x)[sli_plot], **kwargs)
+for name, val in metric_traj.items():
+    plot_fn(val, label=name)
+# plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$\\hat R$")
+plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{chain}} \\times (\\hat R^2 - 1)$")
+plt.legend()
+plt.tight_layout()
+plt.show();
+
+
+# In[ ]:
+
+
+plt.figure(figsize=(12,4))
+sli_plot = slice(0,-1)
+metric_traj, infos_traj = separate(NMSEs)
+num_steps = infos_traj['num_steps']
+
+for i_plot, name_stat in enumerate(['\\mu','\\sigma']) :
+    plt.subplot(1, 2, i_plot+1)
+    plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps * x.T[i_plot])[sli_plot], **kwargs)
+    for name, val in metric_traj.items():
+        if name == 'init_mesh':
+            label = "$\\delta_L$"
+        else:
+            label = '$'+config['prior_config'][name][0]+'$'
+        plot_fn(val, label=label)
+    plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}} \\times \\operatorname{NMSE}("+name_stat+")$")
+    plt.legend()
+plt.tight_layout()
+plt.show();
+
+
+# In[ ]:
+
+
+plt.figure(figsize=(12,4))
+sli_plot = slice(0,-1)
+metric_traj = recombine(metric_traj, 
+                        [['Omega_m','sigma8'],['b1','b2','bs2','bn2'],['init_mesh']], 
+                        ['cosmo','biases','init'], 
+                        aggr_fn=partial(jnp.mean, axis=0))
+metric_traj, infos_traj = separate(NMSEs)
+num_steps = infos_traj['num_steps']
+
+for i_plot, name_stat in enumerate(['\\mu','\\sigma']) :
+
+    plt.subplot(1, 2, i_plot+1)
+    plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps * x.T[i_plot])[sli_plot], **kwargs)
+    for name, val in metric_traj.items():
+        plot_fn(val, label=name)
+    plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}} \\times \\operatorname{NMSE}("+name_stat+")$")
+    plt.legend()
+plt.tight_layout()
+plt.show();
+
+
+# ## Multiple runs analysis
+
+# In[ ]:
+
+
+paths = ["HMC/HMC_ns256_x_nc8","NUTS/NUTS_ns256_x_nc8","NUTSGibbs/HMCGibbs_ns256_x_nc8"]
 load_paths = np.array([os.path.join(save_dir, path) for path in paths])
-var_names = [name+'_' for name in config['prior_config']] + ['num_steps']
+mc_labels = ["HMC","NUTS",'NUTSGibbs']
+start_run, end_run = [2,1,2], [64,20,32]
+# start_run, end_run = [1,1,1], [5,5,5]
 
-# post_samples_ = load_runs(load_paths, start_run, end_run, var_names, conc_axis=[1,0], verbose=True)
-post_samples_ = load_runs(load_paths, start_run, end_run, var_names, conc_axis=[1], verbose=True)
+moments = load_moments(load_paths, start_run, end_run)
 
-post_samples = [param_fn(**s) for s in post_samples_]
+# samples_ = load_chains_(load_paths, start_run, end_run)
+samples = load_chains(load_paths, start_run, end_run)
+# samples = [jit(vmap(param_fn))(**s_) | separate(s_)[1] for s_ in samples_]
 
 
-# In[45]:
+# In[ ]:
 
 
 from numpyro.diagnostics import print_summary
-for sample in post_samples:
-    print_summary(sample, group_by_chain=True) # NOTE: group_by_chain if several chains
+for lab, s in zip(mc_labels, samples):
+    print(f"# {lab}")
+    print_summary(separate(s)[0], group_by_chain=True) # NOTE: group_by_chain if several chains
 
 
-# In[42]:
+# In[ ]:
+
+
+n_toplot = 200
+ESSs = [get_metric_traj(multi_ess_fn, s, n_toplot, 1) for s in samples]
+GRs = [get_metric_traj(multi_gr_fn2, s, n_toplot, 1) for s in samples]
+moments_true = pickle_load(save_dir+"NUTS/NUTS_moments20.p")
+# NMSEs = [get_metric_traj(sqrerr_locscale_fn, m, n_toplot, 0, moments_true) for m in moments]
+NMSEs = [get_metric_traj(sqrerr_locscale_fn2, m, n_toplot, 0, moments_true) for m in moments]
+
+
+# In[ ]:
+
+
+# sli_plot = slice(10,None)
+# sli_plots = [slice(15,None), slice(10,68), slice(10,71)]
+sli_plots = [slice(2*15,None), slice(2*10,2*68), slice(2*8,2*53)]
+colors = [plt.get_cmap('Dark2')(i/7) for i in range(7)]
+# colors = ['C'+str(i) for i in range(7)]
+linestyles = ['-',':','--']
+recomb_cbi = partial(recombine, 
+					 block=[['Omega_m','sigma8'],['b1','b2','bs2','bn2'],['init_mesh']], 
+					 block_name=['cosmo','biases','init']) 
+
+plt.figure(figsize=(12,4))
+plt.subplot(121)
+trajs = []
+for m in ESSs: # TODO: modify to not do for loop but instead tree_map and first dim is sampler dim
+    traj = recomb_cbi(m, aggr_fn=partial(geomean, axis=0))
+    trajs.append(traj)
+
+theme_switch(usetex=True)
+# plt.subplot(1, 2, 1)
+for i_traj, traj in enumerate(trajs):
+    metrics, infos = separate(traj)
+    num_steps = infos['num_steps']
+    sli_plot = sli_plots[i_traj]
+
+    plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps / x.T).T[sli_plot], **kwargs)
+    for i_val, (name, val) in enumerate(metrics.items()):
+        plot_fn(val, label=name, color=colors[i_traj], linestyle=linestyles[i_val])
+
+# plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$")
+plt.xlabel("$N_{\\textrm{eval}}$"), plt.ylabel("$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$")
+from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+# handles, labels = plt.gca().get_legend_handles_labels()
+handles = []
+for i_traj in range(len(trajs)):
+    handles.append(Patch(color=colors[i_traj], label=mc_labels[i_traj]))
+for i_val, name in enumerate(metrics):
+    handles.append(Line2D([], [], color='grey', linestyle=linestyles[i_val], label=name))
+plt.legend(handles=handles, loc="lower left")
+
+
+
+
+# plt.subplot(1, 2, 2)
+# trajs = []
+# for m in GRs:
+#     traj = recomb_cbi(m, 
+#                     # aggr_fn=partial(grmean, axis=0))
+#                       aggr_fn=partial(geomean, axis=0))
+#     trajs.append(traj)
+
+# for i_traj, traj in enumerate(trajs):
+#     metrics, infos = separate(traj)
+#     num_steps = infos['num_steps']
+#     sli_plot = sli_plots[i_traj]
+
+#     # plot_fn = lambda x, **kwargs: plt.plot(num_steps[sli_plot], x[sli_plot], **kwargs)
+#     plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps * x)[sli_plot], **kwargs)
+#     for i_val, (name, val) in enumerate(metrics.items()):
+#         plot_fn(val, label=name, color=colors[i_traj], linestyle=linestyles[i_val])
+
+# # plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$\\hat R$")
+# plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{chain}} \\times (\\hat R^2 - 1)$")
+# from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+# # handles, labels = plt.gca().get_legend_handles_labels()
+# handles = []
+# for i_traj in range(len(trajs)):
+#     handles.append(Patch(color=colors[i_traj], label=mc_labels[i_traj]))
+# for i_val, name in enumerate(metrics):
+#     handles.append(Line2D([], [], color='grey', linestyle=linestyles[i_val], label=name))
+# plt.legend(handles=handles)
+# plt.tight_layout()
+# plt.savefig('ess_traj.svg', dpi=200, bbox_inches='tight', transparent=True)
+plt.show();
+
+
+# In[ ]:
+
+
+sli_plot = slice(0,None)
+colors = [plt.get_cmap('Dark2')(i/7) for i in range(7)]
+# colors = ['C'+str(i) for i in range(7)]
+linestyles = ['-',':','--']
+
+trajs = []
+for m in NMSEs:
+    traj = recomb_cbi(m, aggr_fn=partial(jnp.mean, axis=0))
+    trajs.append(traj)
+
+plt.figure(figsize=(12,4))
+for i_plot, name_stat in enumerate(['\\mu','\\sigma']) :
+
+    # markers = ['+','^']
+    plt.subplot(1, 2, i_plot+1)
+    markers = 2*[None]
+
+    for i_traj, traj in enumerate(trajs):
+        metrics, infos = separate(traj)
+        num_steps = infos['num_steps']
+        # if i_traj ==2: print(num_steps)
+
+        plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps * x.T[i_plot])[sli_plot], **kwargs)
+        for i_val, (name, val) in enumerate(metrics.items()):
+            plot_fn(val, label=name, color=colors[i_traj], linestyle=linestyles[i_val], marker=markers[i_plot])
+
+    plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}} \\times \\operatorname{NMSE}("+name_stat+")$")
+    from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+    # handles, labels = plt.gca().get_legend_handles_labels()
+    handles = []
+    for i_traj in range(len(trajs)):
+        handles.append(Patch(color=colors[i_traj], label=mc_labels[i_traj]))
+    for i_val, name in enumerate(metrics):
+        handles.append(Line2D([], [], color='grey', linestyle=linestyles[i_val], label=name))
+    plt.legend(handles=handles)
+plt.tight_layout()
+plt.show();
+
+
+# In[ ]:
+
+
+def get_first_after(dic, thres, verbose=False, mult=True):
+	metrics, infos = separate(dic)
+	num_steps = infos['num_steps']
+	i_thres = (num_steps > thres).argmax(axis=0)
+	ns = num_steps[i_thres]
+	if verbose:
+		print(f"relerr: {(ns - thres)/thres:.0e}")
+	if mult:
+		return tree_map(lambda x: ns * x[i_thres], metrics)
+	else:
+		return tree_map(lambda x: ns / x[i_thres], metrics)
+
+
+# thres = 2.8*1e7
+thres = 2.5*1e7
+ESS1 = [recomb_cbi(get_first_after(m, thres, True, False), aggr_fn=partial(geomean, axis=0)) for m in ESSs]
+NMSE1 = [recomb_cbi(get_first_after(m, thres, True), aggr_fn=partial(jnp.mean, axis=0)) for m in NMSEs]
+metric1 = [tree_map(lambda x,y: jnp.concatenate((x[None], y)), m1, m2) for m1, m2 in zip(ESS1, NMSE1)]
+
+
+# In[ ]:
+
+
+plt.figure(figsize=(5,4))
+colors = [plt.get_cmap('Dark2')(i/7) for i in range(len(mc_labels))]
+markers = ['o','s','D']
+ls = ""
+alpha = 1
+# ms = 10
+# mec = None
+ms = 12
+mec = 'w'
+from matplotlib.transforms import ScaledTranslation
+offset = lambda mm: ScaledTranslation(mm/25.4,0, plt.gcf().dpi_scale_trans)
+trans = plt.gca().transData
+
+
+
+usetex = True
+theme_switch(usetex=usetex)
+for i_mc, (label, mets) in enumerate(zip(mc_labels, metric1)):
+    for i_met in range(3):
+        # block_names = ['cosmo','biases','init']
+        block_names = ['biases','cosmo','init']
+        # block_names_lat = ["$\\textrm{biases}$",'$\\textrm{cosmo}$','$\\textrm{init}$']
+        met = [mets[k][i_met] for k in block_names]
+        if i_met == 0:
+            ls = ""
+        else:
+            ls = ""
+        xshifts = 5*np.array([-1,0,1])
+        # xshifts = *np.array([0,0,0])
+        plt.semilogy(block_names, met, color=colors[i_mc], marker=markers[i_met], 
+                     linestyle=ls, alpha=alpha, markersize=ms, markeredgecolor=mec, transform=trans+offset(xshifts[i_met]))
+
+plt.xlim(-.3,2.3), plt.ylim((917, 190842))
+from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+# # handles, labels = plt.gca().get_legend_handles_labels()
+handles = []
+for i_traj in range(len(mc_labels)):
+    # mc_labels_lat = ["$\\textrm{NUTS}$","$\\textrm{HMC}$","$\\textrm{HMCGibbs}$"]
+    handles.append(Patch(color=colors[i_traj], label=mc_labels[i_traj]))
+if not usetex:
+    metric_names = ["$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$",
+                    "$N_{\\text{eval}} \\times \\operatorname{NMSE}(\\mu)$",
+                    "$N_{\\text{eval}} \\times \\operatorname{NMSE}(\\sigma)$"]
+else:
+    metric_names = ["$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$",
+                    "$N_{\\textrm{eval}} \\times \\textrm{NMSE}(\\mu)$",
+                    "$N_{\\textrm{eval}} \\times \\textrm{NMSE}(\\sigma)$"]
+for i_met, name in enumerate(metric_names):
+    handles.append(Line2D([], [], color='grey', marker=markers[i_met], linestyle=ls, label=name, alpha=alpha, markersize=ms, markeredgecolor=mec))
+
+plt.legend(handles=handles, loc="upper right")
+plt.tight_layout()
+plt.savefig('benchmark.svg', dpi=200, bbox_inches='tight', transparent=True)
+plt.show();
+
+
+# In[ ]:
+
+
+# sli_plot = slice(10,None)
+# sli_plots = [slice(15,None), slice(10,68), slice(10,71)]
+sli_plots = [slice(15,None), slice(10,68), slice(8,53)]
+colors = [plt.get_cmap('Dark2')(i/7) for i in range(7)]
+# colors = ['C'+str(i) for i in range(7)]
+linestyles = ['-',':','--']
+recomb_cbi = partial(recombine, 
+					 block=[['Omega_m','sigma8'],['b1','b2','bs2','bn2'],['init_mesh']], 
+					 block_name=['cosmo','biases','init']) 
+
+plt.figure(figsize=(10,4))
+
+plt.subplot(121)
+
+
+
+trajs = []
+for m in ESSs: # TODO: modify to not do for loop but instead tree_map and first dim is sampler dim
+    traj = recomb_cbi(m, aggr_fn=partial(geomean, axis=0))
+    trajs.append(traj)
+
+
+# plt.subplot(1, 2, 1)
+for i_traj, traj in enumerate(trajs):
+    metrics, infos = separate(traj)
+    num_steps = infos['num_steps']
+    sli_plot = sli_plots[i_traj]
+
+    plot_fn = lambda x, **kwargs: plt.semilogy(num_steps[sli_plot], (num_steps / x.T).T[sli_plot], **kwargs)
+    for i_val, (name, val) in enumerate(metrics.items()):
+        plot_fn(val, label=name, color=colors[i_traj], linestyle=linestyles[i_val])
+
+# plt.xlabel("$N_{\\text{eval}}$"), plt.ylabel("$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$")
+plt.xlabel("$N_{\\textrm{eval}}$"), plt.ylabel("$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$")
+from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+# handles, labels = plt.gca().get_legend_handles_labels()
+handles = []
+for i_traj in range(len(trajs)):
+    handles.append(Patch(color=colors[i_traj], label=mc_labels[i_traj]))
+for i_val, name in enumerate(metrics):
+    handles.append(Line2D([], [], color='grey', linestyle=linestyles[i_val], label=name))
+plt.legend(handles=handles, loc="lower left")
+plt.ylim((917, 190842))
+
+
+
+plt.subplot(122)
+colors = [plt.get_cmap('Dark2')(i/7) for i in range(len(mc_labels))]
+markers = ['o','s','D']
+ls = ""
+alpha = 1
+# ms = 10
+# mec = None
+ms = 12
+mec = 'w'
+from matplotlib.transforms import ScaledTranslation
+offset = lambda mm: ScaledTranslation(mm/25.4,0, plt.gcf().dpi_scale_trans)
+trans = plt.gca().transData
+
+
+
+usetex = True
+theme_switch(usetex=usetex)
+for i_mc, (label, mets) in enumerate(zip(mc_labels, metric1)):
+    for i_met in range(3):
+        # block_names = ['cosmo','biases','init']
+        block_names = ['biases','cosmo','init']
+        # block_names_lat = ["$\\textrm{biases}$",'$\\textrm{cosmo}$','$\\textrm{init}$']
+        met = [mets[k][i_met] for k in block_names]
+        if i_met == 0:
+            ls = ""
+        else:
+            ls = ""
+        xshifts = 5*np.array([-1,0,1])
+        # xshifts = *np.array([0,0,0])
+        plt.semilogy(block_names, met, color=colors[i_mc], marker=markers[i_met], 
+                     linestyle=ls, alpha=alpha, markersize=ms, markeredgecolor=mec, transform=trans+offset(xshifts[i_met]))
+
+plt.xlim(-.3,2.3), plt.ylim((917, 190842))
+from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+# # handles, labels = plt.gca().get_legend_handles_labels()
+handles = []
+for i_traj in range(len(mc_labels)):
+    # mc_labels_lat = ["$\\textrm{NUTS}$","$\\textrm{HMC}$","$\\textrm{HMCGibbs}$"]
+    handles.append(Patch(color=colors[i_traj], label=mc_labels[i_traj]))
+if not usetex:
+    metric_names = ["$N_{\\text{eval}}\\;/\\;N_{\\text{eff}}$",
+                    "$N_{\\text{eval}} \\times \\operatorname{NMSE}(\\mu)$",
+                    "$N_{\\text{eval}} \\times \\operatorname{NMSE}(\\sigma)$"]
+else:
+    metric_names = ["$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$",
+                    "$N_{\\textrm{eval}} \\times \\textrm{NMSE}(\\mu)$",
+                    "$N_{\\textrm{eval}} \\times \\textrm{NMSE}(\\sigma)$"]
+for i_met, name in enumerate(metric_names):
+    handles.append(Line2D([], [], color='grey', marker=markers[i_met], linestyle=ls, label=name, alpha=alpha, markersize=ms, markeredgecolor=mec))
+
+plt.legend(handles=handles, loc="upper right")
+plt.tight_layout()
+plt.savefig('ess_bench.svg', dpi=200, bbox_inches='tight', transparent=True)
+plt.show();
+
+
+# ### Highest Density Regions
+
+# In[ ]:
 
 
 get_ipython().run_line_magic('matplotlib', 'inline')
 from montecosmo.utils import get_gdsamples, get_gdprior
 
-gdsamples = get_gdsamples(post_samples, label=mc_labels, verbose=True, **config)
-for i_gds, gds in enumerate(gdsamples):
-    gdsamples[i_gds] = gds.copy(label=mc_labels[i_gds]+", 1$\sigma$-smooth", settings={'smooth_scale_2D':1,'smooth_scale_1D':1,})
-
+conc_samples = [tree_map(lambda x: jnp.concatenate(x, axis=0), separate(s, ['num_steps','init_mesh'])[0]) for s in samples]
+gdsamples = get_gdsamples(conc_samples, label=mc_labels, verbose=True, **config)
+for i_gds, gds in enumerate(gdsamples): 
+    gdsamples[i_gds] = gds.copy(label=mc_labels[i_gds]+", 1$\\sigma$-smooth", settings={'smooth_scale_2D':1,'smooth_scale_1D':1,})
 # gdsamples.append(get_gdprior(post_samples, verbose=True, **config))
+
 g = plots.get_subplot_plotter(width_inch=9)
-# g.settings.solid_colors='tab10_r's
-g.triangle_plot(roots=gdsamples , 
+# g.settings.solid_colors='tab10_r'
+g.triangle_plot(roots=gdsamples, 
                 title_limit=1, 
                 filled=True, 
                 # param_limits={n:[m-2*s,m+2*s] for n,m,s in zip(names, mean, std)},
@@ -695,7 +909,7 @@ g.triangle_plot(roots=gdsamples ,
 plt.show();
 
 
-# In[8]:
+# In[ ]:
 
 
 from getdist import MCSamples
@@ -744,7 +958,7 @@ plt.show();
 
 # ### Spectrum distribution
 
-# In[9]:
+# In[ ]:
 
 
 from jaxpm.painting import cic_paint, cic_read, compensate_cic
@@ -754,7 +968,7 @@ qs = jnp.array([0.0015, 0.0250, 0.1600, 0.5, 0.840, 0.9750, 0.9985])
 pk_0015, pk_0250, pk_1600, pk_5000, pk_8400, pk_9750, pk_9985 = jnp.quantile(pk_post, q=qs, axis=0)
 
 
-# In[10]:
+# In[ ]:
 
 
 plot_fn = lambda pk, *args, **kwargs: plt.plot(pk[0], pk[0]*pk[1], *args, **kwargs)
@@ -774,7 +988,7 @@ plt.show()
 
 # ### Mass matrix
 
-# In[132]:
+# In[ ]:
 
 
 # Load mass matrix
@@ -787,7 +1001,7 @@ print(last_state.adapt_state.step_size, inverse_mass_matrix)
 # np.cov(np.array([post_samples[var_name] for var_name in ['Omega_c_base', 'sigma8_base']]))
 
 
-# In[143]:
+# In[ ]:
 
 
 # Plot inverse mass matrix vs. posterior sample variance
