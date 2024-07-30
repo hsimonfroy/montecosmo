@@ -30,7 +30,7 @@ def _initialize_pk(mesh_shape, box_shape, kmin, dk, los):
     return dig, ksum, kedges, mumesh
 
 
-def power_spectrum(field, kmin, dk, mesh_shape, box_shape, los=np.array([0.,0.,1.]), multipoles=0, kcount=False):
+def power_spectrum(field, kmin, dk, mesh_shape, box_shape, los=np.array([0.,0.,1.]), multipoles=0, kcount=False, galaxy_density=1):
     # Initialize values related to powerspectra (wavenumber bins and edges)
     los = np.array(los) / np.linalg.norm(los)
     multipoles = np.atleast_1d(multipoles)
@@ -41,18 +41,31 @@ def power_spectrum(field, kmin, dk, mesh_shape, box_shape, los=np.array([0.,0.,1
     field_k = jnp.fft.fftn(field, norm='ortho')
     field2_k = jnp.real(field_k * jnp.conj(field_k)) # TODO: cross pk
 
-    Psum = jnp.empty((len(multipoles), *ksum.shape))
+    L = len(multipoles)
+    Psum = jnp.empty((L, *ksum.shape))
     for i_ell, ell in enumerate(multipoles):
         real_weights = field2_k * (2*ell+1) * legendre(ell)(mumesh)
         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
     # Normalization and convertion from cell units to (Mpc/h)^3
     P = (Psum / ksum)[:,1:-1] * (box_shape / mesh_shape).prod()
+    
+    covs = ksum[1:-1]
+    if False:
+        leges = np.moveaxis([legendre(ell)(mumesh) for ell in [0,2,4,6,8]], 0, -1)
+        covs = jnp.empty((P.shape[1], L, L))
+        for i_ell, elli in enumerate(multipoles):
+            for j_ell, ellj in enumerate(multipoles):
+                    wig_ell, wig_coeff = wigner3j_square(elli, ellj, prefactor=False)
+                    leg_ij = np.sum(leges[wig_ell]*wig_coeff)
+                    real_weights = 2*(2*multipoles[:,None]+1) * (1 / galaxy_density**2 + 2*field2_k*leg_ij/galaxy_density) / ksum[1:-1]
+                    covs[i_ell, j_ell] = covs.at[i_ell, j_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
+
 
     # Find central values of each bin
     kbins = kedges[:-1] + (kedges[1:] - kedges[:-1]) / 2
     pk = jnp.concatenate([kbins[None], P])
     if kcount:
-        return pk, ksum[1:-1]
+        return pk, covs
     else:
         return pk
 
@@ -96,6 +109,80 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
 #     return jnp.piecewise(x, [ell==0, ell==2, ell==4], [P0,P2,P4,error])
 
 
+
+import math
+def wigner3j_square(ellout, ellin, prefactor=True):
+    r"""
+    Return the coefficients corresponding to the product of two Legendre polynomials, corresponding to :math:`C_{\ell \ell^{\prime} L}`
+    of e.g. eq. 2.2 of https://arxiv.org/pdf/2106.06324.pdf, with :math:`\ell` corresponding to ``ellout`` and :math:`\ell^{\prime}` to ``ellin``.
+
+    Parameters
+    ----------
+    ellout : int
+        Output order.
+
+    ellin : int
+        Input order.
+
+    prefactor : bool, default=True
+        Whether to include prefactor :math:`(2 \ell + 1)/(2 L + 1)` for window convolution.
+
+    Returns
+    -------
+    ells : list
+        List of mulipole orders :math:`L`.
+
+    coeffs : list
+        List of corresponding window coefficients.
+    """
+    qvals, coeffs = [], []
+
+    def G(p):
+        """
+        Return the function G(p), as defined in Wilson et al 2015.
+        See also: WA Al-Salam 1953
+        Taken from https://github.com/nickhand/pyRSD.
+
+        Parameters
+        ----------
+        p : int
+            Multipole order.
+
+        Returns
+        -------
+        numer, denom: int
+            The numerator and denominator.
+        """
+        toret = 1
+        for p in range(1, p + 1): toret *= (2 * p - 1)
+        return toret, math.factorial(p)
+
+    for p in range(min(ellin, ellout) + 1):
+
+        numer, denom = [], []
+
+        # numerator of product of G(x)
+        for r in [G(ellout - p), G(p), G(ellin - p)]:
+            numer.append(r[0])
+            denom.append(r[1])
+
+        # divide by this
+        a, b = G(ellin + ellout - p)
+        numer.append(b)
+        denom.append(a)
+
+        numer.append(2 * (ellin + ellout) - 4 * p + 1)
+        denom.append(2 * (ellin + ellout) - 2 * p + 1)
+
+        q = ellin + ellout - 2 * p
+        if prefactor:
+            numer.append(2 * ellout + 1)
+            denom.append(2 * q + 1)
+
+        coeffs.append(np.prod(numer, dtype='f8') * 1. / np.prod(denom, dtype='f8'))
+        qvals.append(q)
+
+    return qvals[::-1], coeffs[::-1]
 
 
 ###################

@@ -110,14 +110,17 @@ def likelihood_model(loc_mesh, mesh_shape, box_shape, galaxy_density, lik_config
         # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
         multipoles = np.atleast_1d(lik_config['multipoles'])
         sli_multip = slice(1,1+len(multipoles))
-        loc_pk, Nk = get_pk_fn(mesh_shape, box_shape, multipoles=multipoles, kcount=True)(loc_mesh)
+        loc_pk, Nk = get_pk_fn(mesh_shape, box_shape, multipoles=multipoles, kcount=True, galaxy_density=galaxy_density)(loc_mesh)
         # sigma2 *= ((2*multipoles[:,None]+1)/galaxy_density)**2 / Nk
         sigma2 *= 2*(2*multipoles[:,None]+1) * (1 / galaxy_density**2 + 2*loc_pk[1]/galaxy_density) / Nk
 
         loc_pk = loc_pk.at[1].add(1/galaxy_density) # add shot noise to the mean monopole
+        # obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.MultivariateNormal(loc_pk[sli_multip], Nk)))
         obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], sigma2**.5)))
         obs_pk = deterministic('obs_pk', obs_pk)
         return obs_pk
+
+
 
 
 
