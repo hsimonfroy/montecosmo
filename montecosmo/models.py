@@ -148,7 +148,6 @@ def pmrsd_fn(params_,
     lbe_weights = lagrangian_weights(cosmology, a_obs, x_part, box_shape, **biases, **init_mesh)
 
     # LPT displacement at a_lpt
-    # debug.print("{i}", i=lpt_order)
     cosmology._workspace = {}  # HACK: temporary fix
     dx, p_part, f = lpt(cosmology, init_mesh['init_mesh'], x_part, a=a_lpt, order=lpt_order)
     # NOTE: lpt supposes given mesh follows linear pk at a=1, 
@@ -156,9 +155,10 @@ def pmrsd_fn(params_,
     particles = jnp.stack([x_part + dx, p_part])
 
     # PM displacement from a_lpt to a_obs
-    # assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
-    # assert(a_lpt < a_obs or 0 <= trace_meshes <= 1), \
-    #     "required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {a_lpt:.2f}"
+    assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
+    assert(a_lpt < a_obs or 0 <= trace_meshes <= 1), \
+        "required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {a_lpt:.2f}"
+    
     if trace_meshes == 1:
         particles = deterministic('pm_part', particles[None])[0]
 
