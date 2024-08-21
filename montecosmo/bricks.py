@@ -69,7 +69,7 @@ def get_cosmology(**cosmo) -> Cosmology:
                     sigma8 = cosmo['sigma8'])
 
 
-def get_init_mesh(cosmo:Cosmology, mesh_shape, box_size, fourier=False,
+def get_init_mesh(cosmo:Cosmology, mesh_shape, box_shape, fourier=False,
                   trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
     """
     Return initial conditions at a=1 from latent params.
@@ -77,8 +77,8 @@ def get_init_mesh(cosmo:Cosmology, mesh_shape, box_size, fourier=False,
     # Compute initial power spectrum
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
     kvec = fftk(mesh_shape)
-    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_size))**0.5
-    pk_mesh = pk_fn(k_box) * (mesh_shape / box_size).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+    pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
     pk_mesh *= scaling**2
 
 
@@ -133,7 +133,7 @@ def get_biases(prior_config,
     return biases
 
 
-def lagrangian_weights(cosmo:Cosmology, a, pos, box_size, 
+def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
                        b1, b2, bs2, bn2, init_mesh, **params):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -143,25 +143,30 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_size,
     """    
     # Get init_mesh at observation scale factor
     init_mesh = init_mesh * growth_factor(cosmo, jnp.atleast_1d(a))
+    if jnp.isrealobj(init_mesh):
+        delta = init_mesh
+        delta_k = jnp.fft.rfftn(delta)
+    else:
+        delta_k = init_mesh
+        delta = jnp.fft.irfftn(delta_k)
+    # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases
+    # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
+    # delta_k = delta_k * jnp.exp( - kk_box / k_nyquist**2)
+    # delta = jnp.fft.irfftn(delta_k)
 
-    # Smooth field to mitigate negative weights
-    mesh_shape = init_mesh.shape
-    delta_k = jnp.fft.rfftn(init_mesh)
+    mesh_shape = delta.shape
     kvec = fftk(mesh_shape)
     kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_shape, box_size)) # minus laplace kernel in h/Mpc physical units
-    # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_size)
-    # delta_k = delta_k * jnp.exp( - kk_box / k_nyquist**2)
-    # init_mesh = jnp.fft.irfftn(delta_k)
+                 for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
 
     # Init weights
     weights = 1
     
-    # Apply b1
-    delta_part = cic_read(init_mesh, pos)
+    # Apply b1, punctual term
+    delta_part = cic_read(delta, pos)
     weights = weights + b1 * delta_part
 
-    # Apply b2
+    # Apply b2, punctual term
     delta2_part = delta_part**2
     weights = weights + b2 * (delta2_part - delta2_part.mean())
 
@@ -272,25 +277,23 @@ def invlaplace_kernel(kvec):
     return - jnp.where(kk==0, 0, 1 / kk_nozeros)
 
 
-def pm_forces(positions, mesh_shape, delta=None, r_split=0):
+def pm_forces(positions, mesh_shape, mesh=None, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
-    if delta is None:
+    if mesh is None:
         delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), positions))
-    elif jnp.isrealobj(delta):
-        delta_k = jnp.fft.rfftn(delta)
+    elif jnp.isrealobj(mesh):
+        delta_k = jnp.fft.rfftn(mesh)
     else:
-        delta_k = delta
+        delta_k = mesh
 
     # Computes gravitational potential
     kvec = fftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
     # Computes gravitational forces
-    # return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
-    #                   for i in range(3)], axis=-1)
-    return jnp.stack([cic_read(jnp.fft.irfftn(- ki * 1j * pot_k), positions) 
-                      for ki in kvec], axis=-1)
+    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
+                      for i in range(3)], axis=-1)
 
 
 def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
@@ -305,7 +308,7 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
     # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
     # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f?
     # Correct cic_read, cic_paint docstring 
-    init_force = pm_forces(positions, mesh_shape, delta=delta_k)
+    init_force = pm_forces(positions, mesh_shape, mesh=delta_k)
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
@@ -316,24 +319,24 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
 
         delta2 = 0
         shear_acc = 0
-        for i, ki in enumerate(kvec):
-        # for i in range(3):
+        # for i, ki in enumerate(kvec):
+        for i in range(3):
             # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
-            # nabla_i_nabla_i = gradient_kernel(kvec, i)**2
-            # shear_ii = jnp.fft.irfftn(nabla_i_nabla_i * pot_k)
+            # shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
+            nabla_i_nabla_i = gradient_kernel(kvec, i)**2
+            shear_ii = jnp.fft.irfftn(nabla_i_nabla_i * pot_k)
             delta2 += shear_ii * shear_acc 
             shear_acc += shear_ii
 
-            for kj in kvec[i+1:]:
-            # for j in range(i+1, 3):
+            # for kj in kvec[i+1:]:
+            for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
-                delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
-                # nabla_i_nabla_j = gradient_kernel(kvec, i) * gradient_kernel(kvec, j)
-                # delta2 -= jnp.fft.irfftn(nabla_i_nabla_j * pot_k)**2
+                # delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
+                nabla_i_nabla_j = gradient_kernel(kvec, i) * gradient_kernel(kvec, j)
+                delta2 -= jnp.fft.irfftn(nabla_i_nabla_j * pot_k)**2
 
         
-        init_force2 = pm_forces(positions, mesh_shape, delta=jnp.fft.rfftn(delta2))
+        init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2))
         dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
         f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
