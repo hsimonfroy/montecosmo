@@ -94,7 +94,7 @@ def likelihood_model(loc_mesh, mesh_shape, box_shape, galaxy_density, lik_config
     # TODO: prior on obs_std?
     sigma2 = lik_config['obs_std']**2+noise**2
     obs_name = lik_config['obs']
-    mesh_shape, box_shape = np.array(mesh_shape), np.array(box_shape)
+    mesh_shape, box_shape = np.asarray(mesh_shape), np.asarray(box_shape)
 
     if obs_name == 'mesh':
         # Normal noise
@@ -329,15 +329,23 @@ def get_score_fn(model):
     return score_fn
 
 
-def get_pk_fn(mesh_shape, box_shape, kmin=0.001, dk=0.01, los=np.array([0.,0.,1.]), multipoles=0, kcount=False, **config):
+def get_pk_fn(mesh_shape, box_shape, kmin:float|None=None, dk:float|None=None, 
+              los=[0.,0.,1.], multipoles=0, kcount=False, **config):
     """
     Return power spectrum function for given config.
     """
+    if kmin is None:
+        kmin = 2*jnp.pi * np.max(1 / box_shape)
+    if dk is None:
+        kmax = 2*np.pi * np.min(mesh_shape / box_shape) / 2
+        dk = kmax / 50 # about 50 wavenumber bins
+        # dk = 2*np.pi * np.min(1 / box_shape) / 2 * 4
+
     def pk_fn(mesh):
         """
         Return mesh power spectrum.
         """
-        return power_spectrum(mesh, kmin, dk, mesh_shape, box_shape, los, multipoles, kcount)
+        return power_spectrum(mesh, mesh_shape, box_shape, kmin, dk, los, multipoles, kcount)
     return pk_fn
 
 
@@ -395,8 +403,8 @@ def print_config(model:partial|dict):
     print("# INFOS")
     print(f"cell_shape:     {cell_shape} Mpc/h")
 
-    dk = 2*jnp.pi * jnp.max(1 / config['box_shape']) 
-    k_nyquist = 2*jnp.pi * jnp.min(config['mesh_shape'] / config['box_shape']) / 2
+    dk = 2*np.pi * np.max(1 / config['box_shape']) 
+    k_nyquist = 2*np.pi * np.min(config['mesh_shape'] / config['box_shape']) / 2
     # (2*pi factor because of Fourier transform definition)
     print(f"dk:             {dk:.5f} h/Mpc")
     print(f"k_nyquist:      {k_nyquist:.5f} h/Mpc")

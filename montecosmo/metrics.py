@@ -11,7 +11,7 @@ from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # Power spectrum #
 ##################
 def _initialize_pk(mesh_shape, box_shape, kmin, dk, los):
-    kmax = np.pi * np.min(mesh_shape) / np.max(box_shape) + dk / 2
+    kmax = np.pi * np.min(mesh_shape / box_shape) + dk / 2
     kedges = np.arange(kmin, kmax, dk)
 
     kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
@@ -30,11 +30,11 @@ def _initialize_pk(mesh_shape, box_shape, kmin, dk, los):
     return dig, ksum, kedges, mumesh
 
 
-def power_spectrum(field, kmin, dk, mesh_shape, box_shape, los=np.array([0.,0.,1.]), multipoles=0, kcount=False, galaxy_density=1):
+def power_spectrum(field, mesh_shape, box_shape, kmin, dk, los=[0.,0.,1.], multipoles=0, kcount=False, galaxy_density=1):
     # Initialize values related to powerspectra (wavenumber bins and edges)
-    los = np.array(los) / np.linalg.norm(los)
+    mesh_shape, box_shape, los = np.asarray(mesh_shape), np.asarray(box_shape), np.asarray(los)
+    los /= np.linalg.norm(los)
     multipoles = np.atleast_1d(multipoles)
-    mesh_shape, box_shape = np.array(mesh_shape), np.array(box_shape)
     dig, ksum, kedges, mumesh = _initialize_pk(mesh_shape, box_shape, kmin, dk, los)
 
     # Square modulus of FFT

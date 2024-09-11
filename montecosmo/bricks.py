@@ -1,4 +1,5 @@
 from functools import partial
+import numpy as np
 
 import numpyro
 import numpyro.distributions as dist
@@ -224,7 +225,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, trace_meshes):
 # from jaxpm.pm import pm_forces
 import jax_cosmo as jc
 from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
-from jaxpm.kernels import fftk, gradient_kernel, longrange_kernel
+from jaxpm.kernels import fftk, longrange_kernel
 from jaxpm.painting import cic_paint, cic_read
 
 # Planck 2015 paper XIII Table 4 final column (best fit)
@@ -251,14 +252,14 @@ Planck18 = partial(Cosmology,
     wa=0.0,)
 
 
-def get_ode_fn(cosmo:Cosmology, mesh_shape):
+def get_ode_fn(cosmo:Cosmology, mesh_shape, grad_order=1):
 
     def nbody_ode(a, state, args):
         """
         state is a phase space state array [*position, *velocities]
         """
         pos, vel = state
-        forces = pm_forces(pos, mesh_shape) * 1.5 * cosmo.Omega_m
+        forces = pm_forces(pos, mesh_shape, grad_order=grad_order) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -271,13 +272,79 @@ def get_ode_fn(cosmo:Cosmology, mesh_shape):
     return nbody_ode
 
 
-def invlaplace_kernel(kvec):
-    kk = sum(ki**2 for ki in kvec)
-    kk_nozeros = jnp.where(kk==0, 1, kk) 
-    return - jnp.where(kk==0, 0, 1 / kk_nozeros)
+def make_ode_fn(mesh_shape, grad_order=1, lap_order=1):
+    
+    def nbody_ode(state, a, cosmo):
+        """
+        state is a tuple (position, velocities)
+        """
+        pos, vel = state
+
+        forces = pm_forces(pos, mesh_shape, grad_order=grad_order, lap_order=lap_order) * 1.5 * cosmo.Omega_m
+
+        # Computes the update of position (drift)
+        dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
+        
+        # Computes the update of velocity (kick)
+        dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
+        
+        return dpos, dvel
+
+    return nbody_ode
 
 
-def pm_forces(positions, mesh_shape, mesh=None, r_split=0):
+
+def invlaplace_kernel(kvec, order=1):
+    """
+    Compute the inverse Laplace kernel.
+
+    cf. [Feng+2016](https://arxiv.org/pdf/1603.00476)
+
+    Parameters
+    -----------
+    kvec: list
+        List of wave-vectors
+
+    Returns
+    --------
+    wts: array
+        Complex kernel values
+    """
+    if order == 0:
+        kk = sum(ki**2 for ki in kvec)
+    elif order == 1:
+        kk = sum((ki * np.sinc(ki / (2 * np.pi)))**2 for ki in kvec)
+    kk_nozeros = np.where(kk==0, 1, kk) 
+    return - np.where(kk==0, 0, 1 / kk_nozeros)
+
+
+def gradient_kernel(kvec, direction, order=1):
+    """
+    Computes the gradient kernel in the requested direction
+    
+    Parameters
+    -----------
+    kvec: list
+        List of wave-vectors in Fourier space
+    direction: int
+        Index of the direction in which to take the gradient
+
+    Returns
+    --------
+    wts: array
+        Complex kernel values
+    """
+    ki = kvec[direction]
+    if order == 0:
+        pass
+    elif order ==1:
+        ki = (8. * np.sin(ki) - np.sin(2 * ki)) / 6.
+    return 1j * ki
+
+
+
+
+def pm_forces(positions, mesh_shape, mesh=None, grad_order=1, lap_order=1, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
@@ -290,13 +357,13 @@ def pm_forces(positions, mesh_shape, mesh=None, r_split=0):
 
     # Computes gravitational potential
     kvec = fftk(mesh_shape)
-    pot_k = delta_k * invlaplace_kernel(kvec) * longrange_kernel(kvec, r_split=r_split)
+    pot_k = delta_k * invlaplace_kernel(kvec, lap_order) * longrange_kernel(kvec, r_split=r_split)
     # Computes gravitational forces
-    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i) * pot_k), positions) 
+    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_order) * pot_k), positions) 
                       for i in range(3)], axis=-1)
 
 
-def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
+def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_order=1):
     """
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
@@ -305,17 +372,15 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
     delta_k = jnp.fft.rfftn(init_mesh)
     mesh_shape = init_mesh.shape
 
-    # TODO: correct sign in pm_forces, invlaplace = -1/k**2, force = -invlaplace pot. 3/7 factor if D2 renormalized? minus sign?
-    # pm_forces may input delta_k to not have to compute rfftn, what is the use of force f?
-    # Correct cic_read, cic_paint docstring 
-    init_force = pm_forces(positions, mesh_shape, mesh=delta_k)
+    init_force = pm_forces(positions, mesh_shape, mesh=delta_k, grad_order=grad_order, lap_order=lap_order)
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
+    debug.print("grad_order: {grad_order}, {lap}", grad_order=grad_order, lap=grad_order)
 
     if order == 2:
         kvec = fftk(mesh_shape)
-        pot_k = delta_k * invlaplace_kernel(kvec)
+        pot_k = delta_k * invlaplace_kernel(kvec, lap_order)
 
         delta2 = 0
         shear_acc = 0
@@ -323,7 +388,7 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
         for i in range(3):
             # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
             # shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
-            nabla_i_nabla_i = gradient_kernel(kvec, i)**2
+            nabla_i_nabla_i = gradient_kernel(kvec, i, grad_order)**2
             shear_ii = jnp.fft.irfftn(nabla_i_nabla_i * pot_k)
             delta2 += shear_ii * shear_acc 
             shear_acc += shear_ii
@@ -332,11 +397,11 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1):
             for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
                 # delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
-                nabla_i_nabla_j = gradient_kernel(kvec, i) * gradient_kernel(kvec, j)
+                nabla_i_nabla_j = gradient_kernel(kvec, i, grad_order) * gradient_kernel(kvec, j, grad_order)
                 delta2 -= jnp.fft.irfftn(nabla_i_nabla_j * pot_k)**2
 
         
-        init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2))
+        init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_order=grad_order)
         dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
         f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
