@@ -376,7 +376,7 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
-    debug.print("grad_order: {grad_order}, {lap}", grad_order=grad_order, lap=grad_order)
+    debug.print("grad_order: {grad_order}, lap_order: {lap}", grad_order=grad_order, lap=lap_order)
 
     if order == 2:
         kvec = fftk(mesh_shape)
