@@ -42,7 +42,7 @@ def get_cosmo(prior_config,
 
         value = params_[input_name]
         if name == 'Omega_m':
-            value = trunc_push(value, loc, scale, 0.05, 1) # Omega_m > 0.05 > Omega_b
+            value = trunc_push(value, loc, scale, Planck18.keywords['Omega_b'], 1) # Omega_m > 0.05 > Omega_b
         elif name == 'sigma8':
             value = trunc_push(value, loc, scale, 0)
         else:
@@ -417,15 +417,16 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
 
 
 
-def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):
+def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
     """
     a = jnp.atleast_1d(a)
-    los = los / jnp.linalg.norm(los)
+    los = jnp.asarray(los)
+    los = los / np.linalg.norm(los)
     # Divide PM momentum by `a` once to retrieve velocity, and once again for comobile velocity  
-    dx_rsd = p / (jnp.sqrt(jc.background.Esqr(cosmo, a)) * a**2)
+    dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
     # Project velocity on line-of-sight
     dx_rsd = dx_rsd * los
     return dx_rsd
@@ -434,6 +435,8 @@ def rsd(cosmo:Cosmology, a, p, los=jnp.array([0,0,1])):
 def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
+    los = jnp.asarray(los)
+    los = los / np.linalg.norm(los)
 
     kvec = fftk(mesh_shape)
     kmesh = sum(kk**2 for kk in kvec)**0.5
@@ -446,7 +449,7 @@ def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     return b + growth_rate(cosmo, a) * mumesh**2
 
 
-def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=jnp.array([0,0,1])):
+def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=[0,0,1]):
     # Get init_mesh at observation scale factor
     a = jnp.atleast_1d(a)
     init_mesh = init_mesh * growth_factor(cosmo, a)
