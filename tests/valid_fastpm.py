@@ -38,7 +38,7 @@ Planck18 = partial(Cosmology,
     wa=0.0,)
 
 a_obs = 1.0
-mesh_shape = np.array([1, 1 ,1]) * 256
+mesh_shape = np.array([1, 1 ,1]) * 64
 box_shape = np.array([1., 1. ,1.]) * 640
 
 
@@ -133,7 +133,7 @@ def test_nbody(a_lpt, a_obs, lpt_order):
 
 
 for lpt_order in [2]:
-    for pm in [1]:
+    for pm in [0]:
         if pm==0:
             a_lpt = a_obs
         else:
@@ -141,7 +141,7 @@ for lpt_order in [2]:
         print(f"CONFIG {lpt_order=}, {pm=}, {a_lpt=}, {a_obs=}")
 
         meshes = test_nbody(a_lpt, a_obs, lpt_order)
-        jnp.save(f"meshes_lpt{lpt_order}_pm{pm}_{mesh_shape[0]}.npy", meshes)
+        jnp.save(f"meshes_lpt{lpt_order}_pm{pm}_{mesh_shape[0]}_test.npy", meshes)
 
 
 

@@ -157,8 +157,13 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int | float | list=N
     # Sum powers
     pk = jnp.empty((len(poles), len(kedges)+1))
     for i_ell, ell in enumerate(poles):
-        weights = mmk * (2*ell+1) * legendre(ell)(mumesh)
-        psum = jnp.abs(jnp.bincount(dig, weights=weights.reshape(-1), length=len(kedges)+1))
+        weights = (mmk * (2*ell+1) * legendre(ell)(mumesh)).reshape(-1)
+        if mesh2 is None:
+            psum = jnp.bincount(dig, weights=weights, length=len(kedges)+1)
+        else: # bincount is really slow with complex numbers
+            psum_real = jnp.bincount(dig, weights=weights.real, length=len(kedges)+1)
+            psum_imag = jnp.bincount(dig, weights=weights.imag, length=len(kedges)+1)
+            psum = (psum_real**2 + psum_imag**2)**.5
         pk = pk.at[i_ell].set(psum)
 
     # Normalization and conversion from cell units to [Mpc/h]^3

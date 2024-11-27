@@ -337,8 +337,8 @@ def gradient_kernel(kvec, direction, order=1):
     ki = kvec[direction]
     if order == 0:
         pass
-    elif order ==1:
-        ki = (8. * np.sin(ki) - np.sin(2 * ki)) / 6.
+    elif order == 1:
+        ki = (8. * np.sin(ki) - np.sin(2. * ki)) / 6.
     return 1j * ki
 
 
@@ -383,27 +383,23 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
 
         delta2 = 0
         shear_acc = 0
-        # for i, ki in enumerate(kvec):
         for i in range(3):
             # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            # shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
             shear_ii = gradient_kernel(kvec, i, grad_order)**2
             shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
             delta2 += shear_ii * shear_acc 
             shear_acc += shear_ii
 
-            # for kj in kvec[i+1:]:
             for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
-                # delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
                 hess_ij = gradient_kernel(kvec, i, grad_order) * gradient_kernel(kvec, j, grad_order)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
 
         
         init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_order=grad_order)
-        dx2 = 3/7 * growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        dx2 = growth_factor_second(cosmo, a) * 3/7 * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
-        f2 = a**2 * E * dGf2a(cosmo, a) * init_force2
+        f2 = a**2 * E * dGf2a(cosmo, a) * 3/7 * init_force2
 
         dx += dx2
         p  += p2
