@@ -14,30 +14,33 @@ dependencies:
   - ffmpeg
   - scikit-image
   - pip: 
-    # pip install -U "jax[cuda12_pip]" --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-    # Or use "jax[cuda11_pip]==0.4.25" and nvidia-cudnn-cu11==8.9.4.25 # Feynman
-    # - "jax[cuda12_pip]" # NERSC
-    # - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
     - numpyro[cuda] 
     - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     - graphviz # with pip, not the same in conda-forges
     - jax-cosmo
     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
-    - diffrax
+    - diffrax==0.5.0
     - flax
     - optax
-    - jax_resnet
+    - jax-resnet
     - tensorflow-probability
     # - tensorflow-datasets
     # Editable package
     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
+    # JAX
+    # pip install -U "jax[cuda12_pip]" --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    # or
+    # pip install -U "jax[cuda11_pip]==0.4.25" --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    # and nvidia-cudnn-cu11==8.9.4.25 # Feynman
+    # - "jax[cuda12_pip]" # NERSC
+    # - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 # Optionally:
-  # - bccp::nbodykit # only for python<3.9
+  # - bccp::nbodykit # only for python<3.8
   # - pip:
   #   - tensorflow[and-cuda]
   #   - dm-haiku  
+  #   - pmwd  
   #   - git+https://github.com/DifferentiableUniverseInitiative/sbi_lens.git
   #   - git+https://github.com/sfschen/ZeNBu
 # DESI packages
@@ -48,3 +51,27 @@ dependencies:
 # mamba install -c nvidia cuda-nvcc
 # If struggling with cuda versions:
 # pip install tensorflow[and-cuda] 
+
+
+# name: montenv
+# channels:
+#   - conda-forge
+# dependencies:
+#   - python # tests on >=3.11.6,<=3.12.2
+#   - pip
+#   - jupyterlab
+#   - matplotlib
+#   - ipympl
+#   - numpy
+#   - getdist
+#   - mlflow
+#   - ffmpeg
+#   - pip: 
+#     - numpyro
+#     - jax-cosmo
+#     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
+#     - diffrax==0.5.0
+#     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
+#     - -U "jax[cuda11_pip]==0.4.25" 
+#     - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+#     - nvidia-cudnn-cu11==8.9.4.25 # to correct jax install

@@ -433,7 +433,7 @@ class MCBench:
                 plotfill_fn(interv_pk[i_p,0], interv_pk[i_p,1], i_ell, 
                     label=lab, alpha=float(1-p)**(1/2), color=color)
 
-            plt.xlabel("$k$ [h/Mpc]"), plt.ylabel(f"$k P_{ell}$ [Mpc/h]$^2$")
+            plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel(f"$k P_{ell}$ [Mpc/$h$]$^2$")
             plt.legend()
 
     def plot_fiduc_pk(self, label=None, color=None):
@@ -442,7 +442,7 @@ class MCBench:
         for i_ell, ell in enumerate(self.multipoles):
             plt.subplot(1, n_plot, i_ell+1)
             plot_fn(self.fiduc_pk, i_ell, color=color, label=label)
-            plt.xlabel("$k$ [h/Mpc]"), plt.ylabel(f"$k P_{ell}$ [Mpc/h]$^2$")
+            plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel(f"$k P_{ell}$ [Mpc/$h$]$^2$")
             plt.legend()
 
     def plot_pk(self, samples, proba=.95, label=None, cmap='tab10'):

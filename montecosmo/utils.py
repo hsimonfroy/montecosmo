@@ -77,7 +77,8 @@ def set_plotting_options(usetex=False, font_size=10):
             #   'ps.useafm': True,
             #   'pdf.use14corefonts': True,
               'font.family': 'roman' if usetex else 'sans-serif',
-              'font.size':font_size,} # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
+              'font.size':font_size,} 
+            # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
     plt.rcParams.update(params)
     # import matplotlib as mpl
     # mpl.rcParams.update(mpl.rcParamsDefault)
@@ -149,7 +150,26 @@ def get_jit(*args, **kwargs):
 #     return gdsamples
 
 
-    
+def circ_conv(a, b, axis=-1):
+    """
+    Circular convolution of two arrays along a given axis.
+    Returned array has the maximum length of the two arrays along axis.
+    """
+    a, b = np.moveaxis(a, axis, -1), np.moveaxis(b, axis, -1)
+    n = max(a.shape[-1], b.shape[-1])
+    ab = np.fft.rfft(a, n) * np.fft.rfft(b, n)
+    ab = np.fft.irfft(ab, n)
+    return np.moveaxis(ab, -1, axis)
+
+def circ_mean(a, n=1, axis=-1):
+    """
+    Circular mean of array along a given axis.
+    """
+    a = np.moveaxis(a, axis, -1)
+    res = circ_conv(a, np.ones(n)/n, axis=-1)
+    return np.moveaxis(res, -1, axis)
+
+
 
 
 

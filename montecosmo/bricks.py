@@ -368,15 +368,14 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
     a = jnp.atleast_1d(a)
-    E = jnp.sqrt(jc.background.Esqr(cosmo, a)) 
-    delta_k = jnp.fft.rfftn(init_mesh)
+    E = jc.background.Esqr(cosmo, a)**.5
     mesh_shape = init_mesh.shape
+    delta_k = jnp.fft.rfftn(init_mesh)
 
     init_force = pm_forces(positions, mesh_shape, mesh=delta_k, grad_order=grad_order, lap_order=lap_order)
     dx = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dx
     f = a**2 * E * dGfa(cosmo, a) * init_force
-    debug.print("grad_order: {grad_order}, lap_order: {lap}", grad_order=grad_order, lap=lap_order)
 
     if order == 2:
         kvec = fftk(mesh_shape)
@@ -388,8 +387,8 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
         for i in range(3):
             # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
             # shear_ii = jnp.fft.irfftn(- ki**2 * pot_k)
-            nabla_i_nabla_i = gradient_kernel(kvec, i, grad_order)**2
-            shear_ii = jnp.fft.irfftn(nabla_i_nabla_i * pot_k)
+            shear_ii = gradient_kernel(kvec, i, grad_order)**2
+            shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
             delta2 += shear_ii * shear_acc 
             shear_acc += shear_ii
 
@@ -397,8 +396,8 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
             for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
                 # delta2 -= jnp.fft.irfftn(- ki * kj * pot_k)**2
-                nabla_i_nabla_j = gradient_kernel(kvec, i, grad_order) * gradient_kernel(kvec, j, grad_order)
-                delta2 -= jnp.fft.irfftn(nabla_i_nabla_j * pot_k)**2
+                hess_ij = gradient_kernel(kvec, i, grad_order) * gradient_kernel(kvec, j, grad_order)
+                delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
 
         
         init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_order=grad_order)

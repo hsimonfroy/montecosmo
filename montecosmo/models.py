@@ -157,7 +157,7 @@ def pmrsd_fn(params_,
     # PM displacement from a_lpt to a_obs
     assert(a_lpt <= a_obs), "a_lpt must be less (<=) than a_obs"
     assert(a_lpt < a_obs or 0 <= trace_meshes <= 1), \
-        "required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {a_lpt:.2f}"
+        f"required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {a_lpt:.2f}"
     
     if trace_meshes == 1:
         particles = deterministic('pm_part', particles[None])[0]
@@ -330,7 +330,7 @@ def get_score_fn(model):
 
 
 def get_pk_fn(mesh_shape, box_shape, kmin:float|None=None, dk:float|None=None, 
-              los=[0.,0.,1.], multipoles=0, kcount=False, **config):
+              los=[0,0,1], multipoles=0, kcount=False, **config):
     """
     Return power spectrum function for given config.
     """
@@ -345,7 +345,7 @@ def get_pk_fn(mesh_shape, box_shape, kmin:float|None=None, dk:float|None=None,
         """
         Return mesh power spectrum.
         """
-        return power_spectrum(mesh, mesh_shape, box_shape, kmin, dk, los, multipoles, kcount)
+        return power_spectrum(mesh, box_shape, kmin, dk, los, multipoles, kcount)
     return pk_fn
 
 
@@ -403,11 +403,11 @@ def print_config(model:partial|dict):
     print("# INFOS")
     print(f"cell_shape:     {cell_shape} Mpc/h")
 
-    dk = 2*np.pi * np.max(1 / config['box_shape']) 
-    k_nyquist = 2*np.pi * np.min(config['mesh_shape'] / config['box_shape']) / 2
+    dk = 2*np.pi / np.min(config['box_shape']) 
+    kmax = 2*np.pi * np.min(config['mesh_shape'] / config['box_shape']) / 2 # =knyquist/2
     # (2*pi factor because of Fourier transform definition)
     print(f"dk:             {dk:.5f} h/Mpc")
-    print(f"k_nyquist:      {k_nyquist:.5f} h/Mpc")
+    print(f"kmax:           {kmax:.5f} h/Mpc")
 
     mean_gxy_count = config['galaxy_density'] * (config['box_shape'] / config['mesh_shape']).prod()
     # NOTE: careful about mesh_shape int overflow, perform float cast before
