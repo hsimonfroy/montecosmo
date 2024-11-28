@@ -1,23 +1,33 @@
 import numpy as np
+from functools import partial
+
 import matplotlib.pyplot as plt
+from IPython.display import display
+from matplotlib import animation, rc
+from matplotlib.colors import to_rgba_array
+from matplotlib.colors import ListedColormap
 
 
+###########
+# General #
+###########
 # TODO: needs to return surf/p3d to add colorbar?
 # TODO: create another function to plot 3d scatter
-def plot_bivar_func(fn, n_discr=10, box=[[-1,1],[-1,1]], surface=False, cmap='viridis'):
+def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, surf=False, **kwargs):
     """
     Plot bivariate function fn, that should be vectorized first.
     e.g.:
         plt.subplot(121, projection="3d")
-        plot_bivar_func(my_pdf, 100, surface=True)
+        plot_bivar(my_pdf, surf=True)
     """
-    xxyy = np.mgrid[[slice(box_ax[0],box_ax[1],n_discr*1j) for box_ax in box]]
-    xy = xxyy.transpose(1,2,0)
-    zz = fn(xy.reshape(-1,2)).reshape(n_discr,n_discr)
-    if surface:
-        plt.gca().plot_surface(xxyy[0], xxyy[1], zz, cmap=cmap)
+    xs, ys = np.linspace(*box[0], n), np.linspace(*box[1], n)
+    xx, yy = np.meshgrid(xs, ys)
+    zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
+
+    if surf:
+        plt.gca().plot_surface(xx, yy, zz, **kwargs)
     else:
-        plt.pcolormesh(xxyy[0], xxyy[1], zz, cmap=cmap)
+        plt.pcolormesh(xx, yy, zz, **kwargs)
 
 
 #############
@@ -85,9 +95,6 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
     return quad
 
 
-from matplotlib import animation, rc
-from IPython.display import display
-
 def anim_meshes(meshes, box_shape=None, vlim:float | tuple[float,float]=1e-4, 
                 cmap='viridis', pause=10):
     """
@@ -115,7 +122,30 @@ def anim_meshes(meshes, box_shape=None, vlim:float | tuple[float,float]=1e-4,
     display(anim)
 
 
-from montecosmo.utils import circ_mean
+
+
+def circ_conv(a, b, axis=-1):
+    """
+    Circular convolution of two arrays along a given axis.
+    Returned array has the maximum length of the two arrays along axis.
+    """
+    a, b = np.moveaxis(a, axis, -1), np.moveaxis(b, axis, -1)
+    n = max(a.shape[-1], b.shape[-1])
+    ab = np.fft.rfft(a, n) * np.fft.rfft(b, n)
+    ab = np.fft.irfft(ab, n)
+    return np.moveaxis(ab, -1, axis)
+
+
+def circ_mean(a, n=1, axis=-1):
+    """
+    Circular mean of array along a given axis.
+    """
+    a = np.moveaxis(a, axis, -1)
+    out = circ_conv(a, np.ones(n)/n, axis=-1)
+    return np.moveaxis(out, -1, axis)
+
+
+
 
 def scan_mesh3d(mesh, sli:int | float=1/16):
     """
@@ -181,3 +211,96 @@ def plot_pktranscoh(ks, pk1, trans, coh, log=False, **kwargs):
 
     plt.subplot(133)
     plot_coh(ks, coh, log=log, **kwargs)
+
+
+
+##########
+# Colors #
+##########
+def alternate(a, b, axis=0):
+    a, b = np.moveaxis(a, axis, 0), np.moveaxis(b, axis, 0)
+    assert a.shape == b.shape
+    mid = a.shape[0]
+    out = np.zeros((2*mid, *a.shape[1:]))
+    out[:mid:2] = a[::2]
+    out[mid::2] = b[::2]
+    out[1:mid:2] = b[1::2]
+    out[mid+1::2] = a[1::2]
+    return np.moveaxis(out, 0, axis)
+
+def interlace(a, b, axis=0):
+    a, b = np.moveaxis(a, axis, 0), np.moveaxis(b, axis, 0)
+    assert a.shape == b.shape
+    out = np.empty((a.shape[0] + b.shape[0], *a.shape[1:]))
+    out[0::2] = a
+    out[1::2] = b
+    return np.moveaxis(out, 0, axis)
+
+c1 = plt.get_cmap('Dark2').colors
+c2 = plt.get_cmap('Set2').colors
+
+SetDark2 = ListedColormap(alternate(c2, c1))
+
+
+
+def color_switch(color, reverse=False):
+    """
+    Select between color an its negative, or colormap and its reversed.
+    Typically used to switch between light theme and dark theme. 
+
+    `color` must be Matpotlib color, or array of colors, or colormap.
+
+    No need to switch the default color cycle `f'C{i}'`, Matplotlib handles it already.
+    """
+    try:
+        color = to_rgba_array(color)
+    except:
+        if isinstance(color, str): # handle cmap
+            if reverse:
+                if color.endswith('_r'): # in case provided cmap is alreday reversed
+                    return color[:-2]
+                else:
+                    return color+'_r'# reverse cmap
+            else:
+                return color
+        else:
+            raise TypeError("`color` must be Matpotlib color, or array of colors, or colormap.")
+
+    if reverse:
+        color[...,:-1] = 1-color[...,:-1] # take color negative, does not affect alpha
+    return color
+
+
+def set_plotting_options(usetex=False, font_size=10):
+    params = {'text.usetex': usetex,
+            #   'ps.useafm': True,
+            #   'pdf.use14corefonts': True,
+              'font.family': 'roman' if usetex else 'sans-serif',
+              'font.size':font_size,} 
+            # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
+    plt.rcParams.update(params)
+    # import matplotlib as mpl
+    # mpl.rcParams.update(mpl.rcParamsDefault)
+
+
+def theme_switch(dark=False, usetex=False, font_size=10, cmap='SetDark2'):
+    """
+    Set Matplotlib theme and return an adequate color switching function.
+    """
+    if dark: 
+        plt.style.use('dark_background')
+    else: 
+        plt.style.use('default')
+
+    if cmap is None:
+        cmap = plt.get_cmap('tab10') # default cmap
+    elif cmap == 'SetDark2':
+        cmap = SetDark2
+    else:
+        cmap = plt.get_cmap(cmap)
+    plt.rcParams['axes.prop_cycle'] = plt.cycler(color=cmap.colors)
+
+    rc('animation', html='html5') # handle Matplotlib animations
+    set_plotting_options(usetex, font_size)
+    theme = partial(color_switch, reverse=dark)
+    return theme

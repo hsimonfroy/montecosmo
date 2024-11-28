@@ -1,17 +1,13 @@
 from __future__ import annotations # for Union typing | in python<3.10
 
 from pickle import dump, load, HIGHEST_PROTOCOL
-from functools import wraps, partial
+from functools import wraps
 
 import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
 from jax import jit, vmap, grad
 from jax.tree_util import tree_map
-
-import matplotlib.pyplot as plt
-from matplotlib import rc
-from matplotlib.colors import to_rgba_array
 
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
@@ -42,60 +38,6 @@ def get_vlim(level=1., scale=1., axis=0):
         vmean, vdiff = (vmax+vmin)/2, scale*(vmax-vmin)/2
         return jnp.stack((vmean-vdiff, vmean+vdiff), axis=-1)
     return vlim
-
-
-def color_switch(color, reverse=False):
-    """
-    Select between color an its negative, or colormap and its reversed.
-    Typically used to switch between light theme and dark theme. 
-
-    `color` must be Matpotlib color, or array of colors, or colormap.
-
-    No need to switch the default color cycle `f'C{i}'`, Matplotlib handles it already.
-    """
-    try:
-        color = to_rgba_array(color)
-    except:
-        if isinstance(color, str): # handle cmap
-            if reverse:
-                if color.endswith('_r'): # in case provided cmap is alreday reversed
-                    return color[:-2]
-                else:
-                    return color+'_r'# reverse cmap
-            else:
-                return color
-        else:
-            raise TypeError("`color` must be Matpotlib color, or array of colors, or colormap.")
-
-    if reverse:
-        color[...,:-1] = 1-color[...,:-1] # take color negative, does not affect alpha
-    return color
-
-
-def set_plotting_options(usetex=False, font_size=10):
-    params = {'text.usetex': usetex,
-            #   'ps.useafm': True,
-            #   'pdf.use14corefonts': True,
-              'font.family': 'roman' if usetex else 'sans-serif',
-              'font.size':font_size,} 
-            # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
-    plt.rcParams.update(params)
-    # import matplotlib as mpl
-    # mpl.rcParams.update(mpl.rcParamsDefault)
-
-
-def theme_switch(dark_theme=False, usetex=False, font_size=10):
-    """
-    Set Matplotlib theme and return an adequate color switching function.
-    """
-    if dark_theme: 
-        plt.style.use('dark_background')
-    else: 
-        plt.style.use('default')
-    rc('animation', html='html5') # handle Matplotlib animations
-    set_plotting_options(usetex, font_size)
-    theme = partial(color_switch, reverse=dark_theme)
-    return theme
 
 
 def get_jit(*args, **kwargs):
@@ -148,27 +90,6 @@ def get_jit(*args, **kwargs):
 #             print("# <unspecified label>")
 #         print("GaussianND object has no samples.\n")
 #     return gdsamples
-
-
-def circ_conv(a, b, axis=-1):
-    """
-    Circular convolution of two arrays along a given axis.
-    Returned array has the maximum length of the two arrays along axis.
-    """
-    a, b = np.moveaxis(a, axis, -1), np.moveaxis(b, axis, -1)
-    n = max(a.shape[-1], b.shape[-1])
-    ab = np.fft.rfft(a, n) * np.fft.rfft(b, n)
-    ab = np.fft.irfft(ab, n)
-    return np.moveaxis(ab, -1, axis)
-
-def circ_mean(a, n=1, axis=-1):
-    """
-    Circular mean of array along a given axis.
-    """
-    a = np.moveaxis(a, axis, -1)
-    res = circ_conv(a, np.ones(n)/n, axis=-1)
-    return np.moveaxis(res, -1, axis)
-
 
 
 
