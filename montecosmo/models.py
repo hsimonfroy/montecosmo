@@ -435,25 +435,3 @@ def get_prior_loc(model:partial|dict):
             loc_dic |= {name: mean}
     return loc_dic
 
-
-def get_noise_fn(t0, t1, noises, steps=False):
-    """
-    Given a noises list, starting and ending times, 
-    return a function that interpolate these noises between these times,
-    by steps or linearly.
-    """
-    n_noises = len(noises)-1
-    if steps:
-        def noise_fn(t):
-            i_t = n_noises*(t-t0)/(t1-t0)
-            i_t1 = jnp.floor(i_t).astype(int)
-            return noises[i_t1]
-    else:
-        def noise_fn(t):
-            i_t = n_noises*(t-t0)/(t1-t0)
-            i_t1 = jnp.floor(i_t).astype(int)
-            s1 = noises[i_t1]
-            s2 = noises[i_t1+1]
-            return (s2 - s1)*(i_t - i_t1) + s1
-    return noise_fn
-

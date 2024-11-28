@@ -19,10 +19,10 @@ def pickle_dump(obj, path):
     with open(path, 'wb') as file:
         dump(obj, file, protocol=HIGHEST_PROTOCOL)
 
-
 def pickle_load(path):
     with open(path, 'rb') as file:
         return load(file)    
+
 
 
 def get_vlim(level=1., scale=1., axis=0):
@@ -55,41 +55,6 @@ def get_jit(*args, **kwargs):
     return custom_jit
 
 
-
-
-
-
-
-# def get_gdprior(samples:dict, prior_config:dict, label:str="Prior",
-#                    verbose:bool=False, **config):
-#     """
-#     Construct getdist MCSamples from prior config.
-
-#     Only uses keys from samples.
-#     """
-#     names = list(samples.keys())
-#     labels = []
-#     means, stds = [], []
-#     for name in samples:
-#         if name.endswith('_'): # convention for a latent param 
-#             lab = "\\overline"+prior_config[name[:-1]][0]
-#             mean, std = 0, 1
-#         else:
-#             lab, mean, std = prior_config[name]
-#         labels.append(lab)
-#         means.append(mean)
-#         stds.append(std)
-
-#     means, stds = np.array(means), np.array(stds)
-#     gdsamples = GaussianND(means, np.diag(stds**2), names=names, labels=labels, label=label)
-
-#     if verbose:
-#         if label is not None:
-#             print('# '+label)
-#         else:
-#             print("# <unspecified label>")
-#         print("GaussianND object has no samples.\n")
-#     return gdsamples
 
 
 
@@ -183,7 +148,8 @@ def id_cgh(mesh_shape, part="real"):
     """
     mesh_shape = np.array(mesh_shape)
     sx, sy, sz = mesh_shape
-    # assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
+    assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
+    
     hx, hy, hz = mesh_shape//2
     kmesh_shape = (sx, sy, hz+1)
     weights = np.ones(kmesh_shape) * (mesh_shape.prod() / 2)**.5
@@ -245,3 +211,40 @@ def cgh2rg(kmesh):
     mesh = mesh.at[*id_imag].set(kmesh.imag / w_imag)
     mesh = mesh.at[*id_real].set(kmesh.real / w_real)
     return mesh
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def get_noise_fn(t0, t1, noises, steps=False):
+    """
+    Given a noises list, starting and ending times, 
+    return a function that interpolate these noises between these times,
+    by steps or linearly.
+    """
+    n_noises = len(noises)-1
+    if steps:
+        def noise_fn(t):
+            i_t = n_noises*(t-t0)/(t1-t0)
+            i_t1 = jnp.floor(i_t).astype(int)
+            return noises[i_t1]
+    else:
+        def noise_fn(t):
+            i_t = n_noises*(t-t0)/(t1-t0)
+            i_t1 = jnp.floor(i_t).astype(int)
+            s1 = noises[i_t1]
+            s2 = noises[i_t1+1]
+            return (s2 - s1)*(i_t - i_t1) + s1
+    return noise_fn
+

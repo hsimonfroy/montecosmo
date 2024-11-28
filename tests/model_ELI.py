@@ -21,18 +21,15 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("ELI")
-from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch
+from montecosmo.utils import pickle_dump, pickle_load
 from montecosmo.mcbench import sample_and_save
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
-# In[2]:
-
-
+# In[ ]:
 
 
 # ## Import
@@ -46,11 +43,10 @@ from montecosmo.models import print_config, get_prior_loc, default_config as con
 # Build and render model
 # config.update(a_lpt=0.5, mesh_shape=64*np.ones(3, dtype=int), box_size=256*np.ones(3))
 config.update(a_lpt=0.1, mesh_shape=64*np.ones(3, dtype=int), fourier=True)
-config['lik_config'].update(obs='pk')
 # config.update(a_lpt=0.5, mesh_shape=64*np.ones(3, dtype=int), fourier=False)
 model = partial(pmrsd_model, **config)
 print_config(model)
-expe_prefix = "fourier_pm_plk_"
+expe_prefix = "fourier_pm_pk_"
 
 # Get fiducial parameters
 param_fn = get_param_fn(**config)
@@ -69,7 +65,7 @@ def sample_init_chains(rng_key, scale_std):
 
 # init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array(7*[1/10]))
 # init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), fiduc_params_, init_params_)
-init_params_ = tree_map(lambda x: jnp.tile(x, (10,*len(jnp.shape(x))*[1])), fiduc_lat_)
+init_params_ = tree_map(lambda x: jnp.tile(x, (8,*len(jnp.shape(x))*[1])), fiduc_lat_)
 pickle_dump(fiduc_trace, save_dir + expe_prefix + "fiduc_trace.p")
 pickle_dump(init_params_, save_dir + expe_prefix + "init_params_.p")
 
@@ -91,6 +87,20 @@ logp_fn = get_logp_fn(obs_model)
 
 print(fiduc_trace.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['b1_'], '\n', init_params_['init_mesh_'][:,0,0,0])
 
+
+# In[5]:
+
+
+# ## Run
+
+# In[5]:
+
+
+init_params_one_ = tree_map(lambda x: x[2], init_params_)
+# init_params_one_ = tree_map(lambda x: x[2], {'init_mesh_':init_params_['init_mesh_']})
+print("logp: ",logp_fn(init_params_one_))
+
+
 # ### NUTS, HMC
 
 # In[6]:
@@ -99,7 +109,7 @@ print(fiduc_trace.keys(), '\n', init_params_['Omega_m_'], '\n', init_params_['b1
 # num_samples, max_tree_depth, n_runs, num_chains = 256, 10, 20, 8
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 10, 4
 # num_samples, max_tree_depth, n_runs, num_chains = 128, 10, 5, 4
-n_samples, max_tree_depth, n_runs, n_chains = 64, 9, 10, 10
+n_samples, max_tree_depth, n_runs, n_chains = 64, 10, 10, 8
 
 # Variables to save
 # save_path = save_dir + f"HMC_ns{num_samples:d}_x_nc{num_chains}_2"
@@ -159,18 +169,18 @@ mcmc = numpyro.infer.MCMC(
 # invmm.min(),invmm.max(),invmm.mean(),invmm.std()
 
 
-# In[7]:
+# In[ ]:
 
 
 # mlflow.end_run()
 # mlflow.start_run(run_name="NUTS "+expe_prefix)
 # mlflow.log_params(config)
 # mlflow.log_params({'n_runs':n_runs, 'n_samples':n_samples, 'max_tree_depth':max_tree_depth, 'n_chains':n_chains})
-print({'n_runs':n_runs, 'n_samples':n_samples, 'max_tree_depth':max_tree_depth, 'num_chains':n_chains})
-print(save_path)
+# print({'n_runs':n_runs, 'n_samples':n_samples, 'max_tree_depth':max_tree_depth, 'num_chains':n_chains})
+# print(save_path)
 
 
-# In[8]:
+# In[ ]:
 
 
 # init_params_one_ = tree_map(lambda x: x[:num_chains], init_params_)
