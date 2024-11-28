@@ -61,18 +61,18 @@ class Cosmo():
         return np.zeros_like(z)
     
 
-def run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order=1, grad_order=1, lap_order=0):
+def run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order=1, tol=1e-5):
     # Initial displacement
     particles = jnp.indices(mesh_shape).reshape(3,-1).T
     cosmo._workspace = {}  # FIX ME: this a temporary fix
-    dx, p, f = mylpt(cosmo, init_mesh, particles, a_lpt, lpt_order, grad_order, lap_order)
+    dx, p, f = mylpt(cosmo, init_mesh, particles, a_lpt, lpt_order, grad_order=1, lap_order=0)
 
     if a_obs == a_lpt:
         pos = particles + dx
     else:
         # Evolve the simulation forward
         snapshots = jnp.linspace(a_lpt, a_obs, 2)
-        res = odeint(make_ode_fn(mesh_shape, grad_order, lap_order), jnp.stack([particles+dx, p]), snapshots, cosmo, rtol=1e-5, atol=1e-5)
+        res = odeint(make_ode_fn(mesh_shape), jnp.stack([particles+dx, p]), snapshots, cosmo, rtol=1e-5, atol=1e-5)
         pos, p = res[-1]
 
     return cic_paint(jnp.zeros(mesh_shape), pos)
@@ -118,12 +118,12 @@ def test_nbody(a_lpt, a_obs, lpt_order):
     meshes.append(fpm_mesh)
 
     # Run JaxPM
-    # go, lo = 1, 0
-    for go in [0,1]:
-        for lo in [0,1]:
-            print(f"Running JaxPM with grad_order={go}, lap_order={lo}")
-            jpm_mesh = run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order, go, lo)
-            meshes.append(jpm_mesh)
+    go, lo = 1, 0
+    # for go in [0,1]:
+    #     for lo in [0,1]:
+    print(f"Running JaxPM with grad_order={go}, lap_order={lo}")
+    jpm_mesh = run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order, go, lo)
+    meshes.append(jpm_mesh)
 
     # assert_allclose(final_cube, tfread[0], atol=1.2)
 

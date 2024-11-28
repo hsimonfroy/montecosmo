@@ -272,7 +272,7 @@ def get_ode_fn(cosmo:Cosmology, mesh_shape, grad_order=1):
     return nbody_ode
 
 
-def make_ode_fn(mesh_shape, grad_order=1, lap_order=1):
+def make_ode_fn(mesh_shape, grad_order=1, lap_order=0):
     
     def nbody_ode(state, a, cosmo):
         """
@@ -344,7 +344,7 @@ def gradient_kernel(kvec, direction, order=1):
 
 
 
-def pm_forces(positions, mesh_shape, mesh=None, grad_order=1, lap_order=1, r_split=0):
+def pm_forces(positions, mesh_shape, mesh=None, grad_order=1, lap_order=0, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
@@ -397,9 +397,9 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_ord
 
         
         init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_order=grad_order)
-        dx2 = growth_factor_second(cosmo, a) * 3/7 * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
-        p2 = a**2 * growth_rate_second(cosmo, a) * E * dx2
-        f2 = a**2 * E * dGf2a(cosmo, a) * 3/7 * init_force2
+        dx2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dx2
+        f2 = (a**2 * E * dGf2a(cosmo, a) * 3/7) * init_force2
 
         dx += dx2
         p  += p2
