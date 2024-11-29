@@ -8,7 +8,9 @@
 # from nbodykit.cosmology import EHPower
 # from nbodykit.cosmology import Cosmology
 # from nbodykit.lab import FFTPower, FieldMesh
-#
+
+from numpy.testing import assert_allclose
+
 from jax import numpy as jnp
 import numpy as np
 from pmesh.pm import ParticleMesh
@@ -18,11 +20,15 @@ import jax_cosmo as jc
 from fastpm.core import Solver as Solver
 from fastpm.core import leapfrog
 
-from jax import random as jr
+from jax import random as jr, debug
 from jax.experimental.ode import odeint
 from jaxpm.painting import cic_paint
 from jaxpm.pm import linear_field
-from montecosmo.bricks import lpt as mylpt, make_ode_fn
+from montecosmo.bricks import lpt as mylpt, get_ode_fn, make_ode_fn
+
+from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
+
+
 
 
 # Planck 2018 paper VI Table 2 final column (best fit)
@@ -61,18 +67,41 @@ class Cosmo():
         return np.zeros_like(z)
     
 
-def run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order=1, tol=1e-5):
+
+
+def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, 
+          grad_fd, lap_fd, trace_meshes=2, tol=1e-5):
+    terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
+    solver = Dopri5()
+    controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
+    if trace_meshes < 2: 
+        saveat = SaveAt(t1=True)
+    else: 
+        saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
+    sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
+                            stepsize_controller=controller, max_steps=8, saveat=saveat)
+    particles = sol.ys
+    debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+    return particles
+
+
+def run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order=1, grad_fd=True, lap_fd=False, tol=1e-5):
     # Initial displacement
-    particles = jnp.indices(mesh_shape).reshape(3,-1).T
+    x_part = jnp.indices(mesh_shape).reshape(3,-1).T
     cosmo._workspace = {}  # FIX ME: this a temporary fix
-    dx, p, f = mylpt(cosmo, init_mesh, particles, a_lpt, lpt_order, grad_order=1, lap_order=0)
+    dx, p_part, f = mylpt(cosmo, init_mesh, x_part, a_lpt, lpt_order, grad_fd, lap_fd)
 
     if a_obs == a_lpt:
-        pos = particles + dx
+        pos = x_part + dx
     else:
-        # Evolve the simulation forward
-        snapshots = jnp.linspace(a_lpt, a_obs, 2)
-        res = odeint(make_ode_fn(mesh_shape), jnp.stack([particles+dx, p]), snapshots, cosmo, rtol=1e-5, atol=1e-5)
+        # With odeint
+        # res = odeint(make_ode_fn(mesh_shape, grad_fd, lap_fd), jnp.stack([x_part+dx, p_part]), 
+        #              jnp.linspace(a_lpt, a_obs, 2), cosmo, rtol=tol, atol=tol)
+        
+        # With diffrax
+        res = nbody(cosmo, mesh_shape, jnp.stack([x_part + dx, p_part]), a_lpt, a_obs, 
+                    grad_fd, lap_fd, trace_meshes=2, tol=tol)
+        
         pos, p = res[-1]
 
     return cic_paint(jnp.zeros(mesh_shape), pos)
@@ -81,7 +110,7 @@ def run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order=1, tol=1e-5):
 
 
 
-def test_nbody(a_lpt, a_obs, lpt_order):
+def test_nbody(a_lpt, a_obs, lpt_order, tol=1e-5):
     """
     Run end to end nbodies
     """
@@ -118,22 +147,18 @@ def test_nbody(a_lpt, a_obs, lpt_order):
     meshes.append(fpm_mesh)
 
     # Run JaxPM
-    go, lo = 1, 0
-    # for go in [0,1]:
-    #     for lo in [0,1]:
-    print(f"Running JaxPM with grad_order={go}, lap_order={lo}")
-    jpm_mesh = run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order, go, lo)
+    jpm_mesh = run_jpm(cosmo, init_mesh, a_lpt, a_obs, lpt_order, tol=tol)
     meshes.append(jpm_mesh)
 
-    # assert_allclose(final_cube, tfread[0], atol=1.2)
+    # assert_allclose(meshes[0], meshes[1], atol=1.2)
 
     return meshes
 
 
 
 
-for lpt_order in [2]:
-    for pm in [0]:
+for lpt_order in [1,2]:
+    for pm in [0,1]:
         if pm==0:
             a_lpt = a_obs
         else:
@@ -141,7 +166,7 @@ for lpt_order in [2]:
         print(f"CONFIG {lpt_order=}, {pm=}, {a_lpt=}, {a_obs=}")
 
         meshes = test_nbody(a_lpt, a_obs, lpt_order)
-        jnp.save(f"meshes_lpt{lpt_order}_pm{pm}_{mesh_shape[0]}_test.npy", meshes)
+        jnp.save(f"meshes_lpt{lpt_order}_pm{pm}_{mesh_shape[0]}.npy", meshes)
 
 
 
