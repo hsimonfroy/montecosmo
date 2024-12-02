@@ -404,10 +404,10 @@ def print_config(model:partial|dict):
     print(f"cell_shape:     {cell_shape} Mpc/h")
 
     dk = 2*np.pi / np.min(config['box_shape']) 
-    kmax = 2*np.pi * np.min(config['mesh_shape'] / config['box_shape']) / 2 # =knyquist/2
+    knyquist = 2*np.pi * np.min(config['mesh_shape'] / config['box_shape']) / 2
     # (2*pi factor because of Fourier transform definition)
     print(f"dk:             {dk:.5f} h/Mpc")
-    print(f"kmax:           {kmax:.5f} h/Mpc")
+    print(f"knyquist:       {knyquist:.5f} h/Mpc")
 
     mean_gxy_count = config['galaxy_density'] * (config['box_shape'] / config['mesh_shape']).prod()
     # NOTE: careful about mesh_shape int overflow, perform float cast before

@@ -135,7 +135,7 @@ def get_biases(prior_config,
 
 
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
-                       b1, b2, bs2, bn2, init_mesh, **params):
+                       b1, b2, bs2, bn2, init_mesh):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
