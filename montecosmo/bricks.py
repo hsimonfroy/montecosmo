@@ -20,7 +20,7 @@ from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
 
 
 
-def base2samp(params, config, inv=False, scaling=1.) -> dict:
+def base2samp(params, config, inv=False, temp=1.) -> dict:
     """
     Return base params from sample params.
     """
@@ -32,7 +32,7 @@ def base2samp(params, config, inv=False, scaling=1.) -> dict:
 
         loc, scale = config[name]['loc'], config[name]['scale']
         low, high = config[name].get('low', -jnp.inf), config[name].get('high', jnp.inf)
-        scale *= scaling
+        scale *= temp**.5
 
         # Reparametrize
         if not inv:
@@ -53,14 +53,14 @@ def base2samp(params, config, inv=False, scaling=1.) -> dict:
 
 
 
-def base2samp_mesh(init, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, scaling=1.) -> dict:
+def base2samp_mesh(init, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, temp=1.) -> dict:
     """
     Return initial wavevectors at a=1 from sample mesh.
     """
-    in_name = init.keys()[0]
+    in_name, = init.keys()
     mesh = init[in_name]
     out_name = in_name+'_' if inv else in_name[:-1]
-    mesh *= scaling
+    mesh *= temp**.5
 
     # Compute initial power spectrum
     pk_fn = linear_pk_interp(cosmo, n_interp=256)
@@ -75,7 +75,6 @@ def base2samp_mesh(init, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, 
         else:
             mesh = jnp.fft.rfftn(mesh)
         mesh *= pk_mesh**0.5
-    
     else:
         mesh /= pk_mesh**0.5   
         if fourier:
@@ -121,7 +120,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     mesh_shape = delta.shape
     kvec = fftk(mesh_shape)
     kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
+            for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
 
     # Init weights
     weights = 1
@@ -170,7 +169,7 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
 def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-3,
            grad_fd=True, lap_fd=False):
     if a_lpt == a_obs:
-        return particles
+        return particles[None]
     else:
         terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
         solver = Dopri5()
@@ -312,8 +311,6 @@ def gradient_kernel(kvec, direction, fd=False):
     ki = kvec[direction]
     if fd:
         ki = (8. * np.sin(ki) - np.sin(2. * ki)) / 6.
-    else:
-        pass
     return 1j * ki
 
 
@@ -338,14 +335,17 @@ def pm_forces(positions, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_sp
                       for i in range(3)], axis=-1)
 
 
-def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_fd=True, lap_fd=False):
+def lpt(cosmo:Cosmology, init_mesh, positions, a, mesh_shape=None, order=1, grad_fd=True, lap_fd=False):
     """
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
     a = jnp.atleast_1d(a)
     E = jc.background.Esqr(cosmo, a)**.5
-    mesh_shape = init_mesh.shape
-    delta_k = jnp.fft.rfftn(init_mesh)
+    if jnp.isrealobj(init_mesh):
+        delta_k = jnp.fft.rfftn(init_mesh)
+        mesh_shape = init_mesh.shape
+    else:
+        delta_k = init_mesh
 
     init_force = pm_forces(positions, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
     dq = growth_factor(cosmo, a) * init_force
@@ -393,9 +393,9 @@ def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
     Computed with respect scale factor and line-of-sight.
     """
     a = jnp.atleast_1d(a)
-    los = jnp.asarray(los)
+    los = np.asarray(los)
     los = los / np.linalg.norm(los)
-    # Divide PM momentum by `a` once to retrieve velocity, and once again for comobile velocity  
+    # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
     dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
     # Project velocity on line-of-sight
     dx_rsd = dx_rsd * los

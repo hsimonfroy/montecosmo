@@ -1,5 +1,10 @@
 from __future__ import annotations # for Union typing with | in python<3.10
 
+from functools import partial
+from dataclasses import dataclass
+from IPython.display import display
+from pprint import pformat
+
 import numpyro.distributions as dist
 from numpyro import sample, deterministic, handlers, render_model
 from numpyro.infer.util import log_density
@@ -7,16 +12,14 @@ import numpy as np
 
 from jax import numpy as jnp, random as jr, jit, vmap, grad, debug
 from jax.tree_util import tree_map
-from functools import partial
-from dataclasses import dataclass
-from IPython.display import display
+from jax.experimental.ode import odeint
+
+# from jaxpm.pm import lpt, make_ode_fn
+from jaxpm.painting import cic_paint
 
 from montecosmo.bricks import base2samp, base2samp_mesh, get_cosmology, lpt, nbody, lagrangian_weights, rsd 
 from montecosmo.metrics import power_spectrum
 
-from jax.experimental.ode import odeint
-# from jaxpm.pm import lpt, make_ode_fn
-from jaxpm.painting import cic_paint
 
 
 
@@ -25,7 +28,7 @@ default_config={
             'mesh_shape':3 * (64,), # int
             'box_shape':3 * (640.,), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # LSS formation
-            'a_lpt':0.5, 
+            'a_lpt':0.1, 
             'a_obs':0.5,
             'lpt_order':1,
             # Galaxies
@@ -45,25 +48,25 @@ default_config={
                                     'loc':0.8102,
                                     'scale':0.2,
                                     'low': 0.,},
-                        'b1': {'group':'biases',
+                        'b1': {'group':'bias',
                                     'label':'{b}_1',
                                     'loc':1.,
                                     'scale':0.5,},
-                        'b2': {'group':'biases',
+                        'b2': {'group':'bias',
                                     'label':'{b}_2',
                                     'loc':0.,
                                     'scale':2.,},
-                        'bs2': {'group':'biases',
+                        'bs2': {'group':'bias',
                                     'label':'{b}_{s^2}',
                                     'loc':0.,
                                     'scale':2.,},
-                        'bn2': {'group':'biases',
+                        'bn2': {'group':'bias',
                                     'label':'{b}_{\\nabla^2}',
                                     'loc':0.,
                                     'scale':2.,},
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},},
-            'fourier':False,                    
+            'fourier':True,                    
             'obs':'mesh', # 'mesh', 'pk', 'plk', 'bk' # TODO
             'snapshots':5, # number of PM snapshots
             }
@@ -78,17 +81,7 @@ bench_config = {
         }
 
 
-def get_groups(latent:dict):
-    """
-    Return groups from latent config.
-    """
-    groups = {}
-    for name in latent:
-        group = latent[name]['group']
-        if group not in groups:
-            groups[group] = []
-        groups[group].append(name)
-    return groups
+
 
 
 class Model():
@@ -118,11 +111,12 @@ class Model():
     def condition(self, data=None):
         self.model = handlers.condition(self.model, data=data)
 
-    def block(self, hide=None, expose=None):
-        self.model = handlers.block(self.model, hide=hide, expose=expose)
+    def block(self, hide_fn=None, hide=None, expose_types=None, expose=None):
+        self.model = handlers.block(self.model, 
+                                    hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
 
-    def render(self):
-        display(render_model(self.model, render_distributions=True, render_params=True))
+    def render(self, render_dist=False, render_params=False):
+        display(render_model(self.model, render_distributions=render_dist, render_params=render_params))
 
 
 
@@ -165,7 +159,8 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         assert(self.a_lpt <= self.a_obs), "a_lpt must be less (<=) than a_obs"
-        self.groups = get_groups(self.latent)
+        self.groups = self._get_groups(self.latent)
+        self.prior_loc = self._get_prior_loc(self.latent)
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         self.box_shape = np.asarray(self.box_shape)
@@ -179,12 +174,15 @@ class FieldLevelModel(Model):
 
 
     def __str__(self):
-        print(f"# CONFIG\n{self.__dict__}\n")
-        print("# INFOS")
-        print(f"cell_shape:     {list(self.cell_shape)} Mpc/h")
-        print(f"dk:             {self.dk:.5f} h/Mpc")
-        print(f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc")
-        print(f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n")
+        out = ""
+        out += f"# CONFIG\n"
+        out += pformat(self.__dict__, width=1)
+        out += "\n\n# INFOS\n"
+        out += f"cell_shape:     {list(self.cell_shape)} Mpc/h\n"
+        out += f"dk:             {self.dk:.5f} h/Mpc\n"
+        out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
+        out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n"
+        return out
 
 
     def _model(self):
@@ -201,57 +199,56 @@ class FieldLevelModel(Model):
 
         Return standardized params for computing cosmology, initial conditions, and Lagrangian biases.
         """
-        for group in ['cosmo', 'biases', 'init']:
+        # Sample standardized cosmology and biases
+        for group in ['cosmo', 'bias']:
             params_ = {}
             for name in self.groups[group]:            
                 name_ = name+'_'
-                if name == 'init_mesh':
-                    # Sample standardized initial conditions
-                    params_[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
-                else:
-                    # Sample standardized cosmology and biases
-                    params_[name_] = sample(name_, dist.Normal(0, 1))
+                params_[name_] = sample(name_, dist.Normal(0, 1))
             yield params_
 
+        # Sample standardized initial conditions
+        name_ = self.groups['init'][0]+'_'         
+        mesh = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
+        yield {name_:mesh}
+
     
-    def reparam(self, params, inv=False, fourier=True, scaling=1.):
+    def reparam(self, params, inv=False, fourier=True, temp=1.):
         """
         Transform sample params into base params.
         """
-        cosmo, biases, init = params
+        cosmo, bias, init = params
 
         # Cosmology and Biases
-        cosmo = base2samp(cosmo, self.latent, inv=inv, scaling=scaling)
-        biases = base2samp(biases, self.latent, inv=inv, scaling=scaling)
+        cosmo = base2samp(cosmo, self.latent, inv=inv, temp=temp)
+        bias = base2samp(bias, self.latent, inv=inv, temp=temp)
 
         # Initial conditions
-        init = base2samp_mesh(init, self.mesh_shape, inv=inv, fourier=fourier, scaling=scaling)
-        return cosmo, biases, init
+        cosmology = get_cosmology(**cosmo)
+        init = base2samp_mesh(init, cosmology, self.mesh_shape, self.box_shape, inv=inv, fourier=fourier, temp=temp)
+        return cosmo, bias, init
 
 
     def evolve(self, params):
-        cosmo, biases, init = params
+        cosmo, bias, init = params
         cosmology = get_cosmology(**cosmo)
 
         # Create regular grid of particles
         q = jnp.indices(self.mesh_shape).reshape(3,-1).T
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **biases, **init)
+        lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **bias, **init)
 
         # LPT displacement at a_lpt
-        cosmology._workspace = {}  # HACK: temporary fix
-        dq, p, f = lpt(cosmology, init['init_mesh'], q, a=self.a_lpt, order=self.lpt_order)
         # NOTE: lpt supposes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
+        cosmology._workspace = {}  # HACK: temporary fix
+        dq, p, f = lpt(cosmology, init['init_mesh'], q, a=self.a_lpt, mesh_shape=self.mesh_shape, order=self.lpt_order)
         particles = jnp.stack([q + dq, p])
 
         # PM displacement from a_lpt to a_obs
         particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
+        debug.print("particles: {i}", i=(particles.shape, particles[0].mean(), particles[0].std(), particles[0].min(), particles[0].max()))
         particles = deterministic('pm_part', particles)[-1]
-
-        # # Uncomment only to trace bias mesh without rsd
-        # biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
-        # biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
 
         # RSD displacement at a_obs
         dq = rsd(cosmology, self.a_obs, particles[1])
@@ -260,27 +257,24 @@ class FieldLevelModel(Model):
 
         # CIC paint weighted by Lagrangian bias expansion weights
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
-
+        biased_mesh = deterministic('bias_mesh', biased_mesh)        
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
-
-        biased_mesh = deterministic('bias_mesh', biased_mesh)        
         return biased_mesh
 
 
-    def likelihood(self, mesh, noise=0.):
+    def likelihood(self, mesh, temp=1.):
         """
         A likelihood for cosmological model.
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-        base_var = 1 + noise**2
         mesh_shape, box_shape = np.asarray(self.mesh_shape), np.asarray(self.box_shape)
 
         if self.obs == 'mesh':
             gxy_count = (self.gxy_density * (box_shape / mesh_shape).prod())
-            obs_mesh = sample('obs', dist.Normal(mesh, (base_var / gxy_count)**.5)) # Gaussian noise
+            obs_mesh = sample('obs', dist.Normal(mesh, (temp / gxy_count)**.5)) # Gaussian noise
             return obs_mesh
 
         # elif self.obs == 'pk':
@@ -298,72 +292,33 @@ class FieldLevelModel(Model):
 
 
 
-    def spectrum(self, mesh, mesh2, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
-        return power_spectrum(mesh, mesh2, box_shape=self.box_shape, 
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
+        return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                               kedges=kedges, multipoles=multipoles, los=los)
 
 
-
-
-
-
-def get_param_fn(mesh_shape, box_shape, prior_config, fourier=False,
-                 trace_reparam=False, scaling=1., **config):
-    """
-    Return a partial replay model function for given config.
-    """
-    def param_fn(inverse=False, **params_):
+    def _get_prior_loc(self, latent):
         """
-        Partially replay model, i.e. transform latent params into params of interest.
+        Return location values of the prior config.
         """
-        if not inverse:
-            sufx = '_'
-        else:
-            sufx = ''
-
-        if all([name+sufx in params_ for name in ['Omega_m', 'sigma8']]):
-            cosmo = get_cosmo(prior_config, trace_reparam, inverse, scaling, **params_)
-
-            if 'init_mesh'+sufx in params_:
-                if not inverse:
-                    cosmology = get_cosmology(**cosmo)
-                else:
-                    cosmology = get_cosmology(**params_)
-
-                init_mesh = get_init_mesh(cosmology, mesh_shape, box_shape, fourier, 
-                                          trace_reparam, inverse, scaling, **params_)
-            else: init_mesh = {}
-        else: cosmo, init_mesh = {}, {}
-
-        if all([name+sufx in params_ for name in ['b1', 'b2', 'bs2', 'bn2']]):
-            biases = get_biases(prior_config, trace_reparam, inverse, scaling, **params_)
-        else: biases = {}
-
-        # params = dict(**cosmo, **init_mesh, **biases)
-        params = cosmo | init_mesh | biases  # XXX: python>=3.9
-        return params
-    return param_fn
+        dic = {}
+        for name in latent:
+            loc = latent[name].get('loc')
+            if loc is not None:
+                dic[name] = loc
+        return dic
+    
+    def _get_groups(self, latent):
+        """
+        Return groups from latent config.
+        """
+        groups = {}
+        for name in latent:
+            group = latent[name]['group']
+            if group not in groups:
+                groups[group] = []
+            groups[group].append(name)
+        return groups
 
 
-
-def get_prior_loc(model:partial|dict):
-    """
-    Return location values of the prior config from a partial model.
-    Alternatively, a config can directly be provided.
-    """
-    # Get prior config
-    if isinstance(model, dict):
-        config = model
-    else:
-        assert isinstance(model, partial), "No partial model or config provided."
-        config = model.keywords
-    prior_config = config['prior_config']
-
-    # Get locs
-    loc_dic = {}
-    for name in prior_config:
-        mean = prior_config[name][1]
-        if mean is not None:
-            loc_dic |= {name: mean}
-    return loc_dic
 
