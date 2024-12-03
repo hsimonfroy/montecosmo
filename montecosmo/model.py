@@ -11,8 +11,8 @@ from functools import partial
 from dataclasses import dataclass
 from IPython.display import display
 
-from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lpt, nbody, lagrangian_weights, rsd 
-from montecosmo.metrics import power_spectrum, _initialize_pk
+from montecosmo.bricks import base2samp, base2samp_mesh, get_cosmology, lpt, nbody, lagrangian_weights, rsd 
+from montecosmo.metrics import power_spectrum
 
 from jax.experimental.ode import odeint
 # from jaxpm.pm import lpt, make_ode_fn
@@ -38,7 +38,7 @@ default_config={
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
                                     'scale':0.2,
-                                    'low': 0.05, # XXX: Omega_m<0 implies nan
+                                    'low': 0.05, # XXX: Omega_m < Omega_c implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
                                     'label':'{\\sigma}_8',
@@ -65,6 +65,7 @@ default_config={
                                       'label':'{\\delta}_L',},},
             'fourier':False,                    
             'obs':'mesh', # 'mesh', 'pk', 'plk', 'bk' # TODO
+            'snapshots':5, # number of PM snapshots
             }
 
 bench_config = {
@@ -160,8 +161,10 @@ class FieldLevelModel(Model):
     latent:dict
     fourier:bool
     obs:dict
+    snapshots:int|list
 
     def __post_init__(self):
+        assert(self.a_lpt <= self.a_obs), "a_lpt must be less (<=) than a_obs"
         self.groups = get_groups(self.latent)
 
         self.mesh_shape = np.asarray(self.mesh_shape)
@@ -175,6 +178,14 @@ class FieldLevelModel(Model):
         self.gxy_count = self.gxy_density * (self.box_shape / self.mesh_shape).prod()
 
 
+    def __str__(self):
+        print(f"# CONFIG\n{self.__dict__}\n")
+        print("# INFOS")
+        print(f"cell_shape:     {list(self.cell_shape)} Mpc/h")
+        print(f"dk:             {self.dk:.5f} h/Mpc")
+        print(f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc")
+        print(f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n")
+
 
     def _model(self):
         x = self.prior()
@@ -183,8 +194,6 @@ class FieldLevelModel(Model):
         return self.likelihood(x)
     
 
-
- 
 
     def prior(self):
         """
@@ -203,6 +212,61 @@ class FieldLevelModel(Model):
                     # Sample standardized cosmology and biases
                     params_[name_] = sample(name_, dist.Normal(0, 1))
             yield params_
+
+    
+    def reparam(self, params, inv=False, fourier=True, scaling=1.):
+        """
+        Transform sample params into base params.
+        """
+        cosmo, biases, init = params
+
+        # Cosmology and Biases
+        cosmo = base2samp(cosmo, self.latent, inv=inv, scaling=scaling)
+        biases = base2samp(biases, self.latent, inv=inv, scaling=scaling)
+
+        # Initial conditions
+        init = base2samp_mesh(init, self.mesh_shape, inv=inv, fourier=fourier, scaling=scaling)
+        return cosmo, biases, init
+
+
+    def evolve(self, params):
+        cosmo, biases, init = params
+        cosmology = get_cosmology(**cosmo)
+
+        # Create regular grid of particles
+        q = jnp.indices(self.mesh_shape).reshape(3,-1).T
+
+        # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
+        lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **biases, **init)
+
+        # LPT displacement at a_lpt
+        cosmology._workspace = {}  # HACK: temporary fix
+        dq, p, f = lpt(cosmology, init['init_mesh'], q, a=self.a_lpt, order=self.lpt_order)
+        # NOTE: lpt supposes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
+        particles = jnp.stack([q + dq, p])
+
+        # PM displacement from a_lpt to a_obs
+        particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
+        particles = deterministic('pm_part', particles)[-1]
+
+        # # Uncomment only to trace bias mesh without rsd
+        # biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
+        # biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
+
+        # RSD displacement at a_obs
+        dq = rsd(cosmology, self.a_obs, particles[1])
+        particles = particles.at[0].add(dq)
+        particles = deterministic('rsd_part', particles)
+
+        # CIC paint weighted by Lagrangian bias expansion weights
+        biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
+
+        # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
+        # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
+        # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
+
+        biased_mesh = deterministic('bias_mesh', biased_mesh)        
+        return biased_mesh
 
 
     def likelihood(self, mesh, noise=0.):
@@ -233,82 +297,10 @@ class FieldLevelModel(Model):
         #     return obs_pk
 
 
-        
-    def __str__(self):
-        print(f"# CONFIG\n{self.__dict__}\n")
-        print("# INFOS")
-        print(f"cell_shape:     {list(self.cell_shape)} Mpc/h")
-        print(f"dk:             {self.dk:.5f} h/Mpc")
-        print(f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc")
-        print(f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n")
 
-
-    def evolve(self, params):
-        cosmo, biases, init = params
-        cosmology = get_cosmology(**cosmo)
-
-        # Create regular grid of particles
-        x_part = jnp.indices(self.mesh_shape).reshape(3,-1).T
-
-        # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, self.a_obs, x_part, self.box_shape, **biases, **init)
-
-        # LPT displacement at a_lpt
-        cosmology._workspace = {}  # HACK: temporary fix
-        dx, p_part, f = lpt(cosmology, init['init_mesh'], x_part, a=self.a_lpt, order=self.lpt_order)
-        # NOTE: lpt supposes given mesh follows linear pk at a=1, 
-        # and correct by growth factor to get forces at wanted scale factor
-        particles = jnp.stack([x_part + dx, p_part])
-
-        # PM displacement from a_lpt to a_obs
-        assert(self.a_lpt <= self.a_obs), "a_lpt must be less (<=) than a_obs"
-        assert(self.a_lpt < self.a_obs or 0 <= trace_meshes <= 1), \
-            f"required trace_meshes={trace_meshes:d} LPT+PM snapshots, but a_lpt == a_obs == {self.a_lpt:.2f}"
-        
-        if trace_meshes == 1:
-            particles = deterministic('pm_part', particles[None])[0]
-
-        if self.a_lpt < self.a_obs:
-            particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, trace_meshes)
-
-            if trace_meshes >= 2:
-                particles = deterministic('pm_part', particles)
-
-            particles = particles[-1]
-        
-        # # Uncomment only to trace bias mesh without rsd
-        # biased_mesh = cic_paint(jnp.zeros(mesh_shape), particles[0], lbe_weights)
-        # if trace_meshes: 
-        #     biased_mesh = deterministic('bias_prersd_mesh', biased_mesh)
-
-        # RSD displacement at a_obs
-        dx = rsd(cosmology, self.a_obs, particles[1])
-        particles = particles.at[0].add(dx)
-
-        if trace_meshes: 
-            particles = deterministic('rsd_part', particles)
-        
-        # CIC paint weighted by Lagrangian bias expansion weights
-        biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
-
-        # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
-        # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
-        # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
-
-        if trace_meshes: 
-            biased_mesh = deterministic('bias_mesh', biased_mesh)
-        
-        return biased_mesh
-    
-
-    def spectral(self, mesh, mesh2, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
+    def spectrum(self, mesh, mesh2, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
         return power_spectrum(mesh, mesh2, box_shape=self.box_shape, 
                               kedges=kedges, multipoles=multipoles, los=los)
-
-
-
-
-
 
 
 

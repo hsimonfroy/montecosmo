@@ -19,47 +19,73 @@ from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
 
 
 
-   
 
-def get_cosmo(prior_config, 
-              trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
+def base2samp(params, config, inv=False, scaling=1.) -> dict:
     """
-    Return cosmological params from latent params.
+    Return base params from sample params.
     """
-    cosmo = {}
-    for name in ['Omega_m', 'sigma8']:
-        label, loc, scale = prior_config[name]
+    out = {}
+    for in_name in params:
+        value = params[in_name]
+        name = in_name if inv else in_name[:-1]
+        out_name = in_name+'_' if inv else in_name[:-1]
+
+        loc, scale = config[name]['loc'], config[name]['scale']
+        low, high = config[name].get('low', -jnp.inf), config[name].get('high', jnp.inf)
         scale *= scaling
 
-        if not inverse:
-            input_name, output_name = name+'_', name
-            trunc_push = std2trunc # truncate value in interval
-            notrunc_push = lambda x : x * scale + loc
+        # Reparametrize
+        if not inv:
+            if low != -jnp.inf or high != jnp.inf:
+                push = lambda x: std2trunc(x, loc, scale, low, high) # truncate value in interval
+            else:
+                push = lambda x: x * scale + loc
         else:
-            input_name, output_name = name, name+'_'
-            trunc_push = trunc2std
-            notrunc_push = lambda x : (x - loc) / scale
+            if low != -jnp.inf or high != jnp.inf:
+                push = lambda x: trunc2std(x, loc, scale, low, high)
+            else:
+                push = lambda x: (x - loc) / scale
 
-        value = params_[input_name]
-        if name == 'Omega_m':
-            value = trunc_push(value, loc, scale, Planck18.keywords['Omega_b'], 1) # Omega_m > 0.05 > Omega_b
-        elif name == 'sigma8':
-            value = trunc_push(value, loc, scale, 0)
+        value = push(value)
+        value = deterministic(out_name, value)
+        out[out_name] = value
+    return out
+
+
+
+def base2samp_mesh(init, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, scaling=1.) -> dict:
+    """
+    Return initial wavevectors at a=1 from sample mesh.
+    """
+    in_name = init.keys()[0]
+    mesh = init[in_name]
+    out_name = in_name+'_' if inv else in_name[:-1]
+    mesh *= scaling
+
+    # Compute initial power spectrum
+    pk_fn = linear_pk_interp(cosmo, n_interp=256)
+    kvec = fftk(mesh_shape)
+    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+    pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+
+    # Reparametrize
+    if not inv:
+        if fourier:
+            mesh = rg2cgh(mesh)
         else:
-            value = notrunc_push(value)
+            mesh = jnp.fft.rfftn(mesh)
+        mesh *= pk_mesh**0.5
+    
+    else:
+        mesh /= pk_mesh**0.5   
+        if fourier:
+            mesh = cgh2rg(mesh)
+        else:
+            mesh = jnp.fft.irfftn(mesh)
 
-        if trace_reparam:
-            value = deterministic(output_name, value)
-        cosmo[output_name] = value
-    return cosmo
+    mesh = deterministic(out_name, mesh)
+    return {out_name:mesh}
 
-## To reparametrize automaticaly
-# from numpyro.infer.reparam import LocScaleReparam
-#     reparam_config = {'Omega_m': LocScaleReparam(centered=0),
-#                       'sigma8': LocScaleReparam(centered=0)}
-#     with numpyro.handlers.reparam(config=reparam_config):
-#         Omega_m = sample('Omega_m', dist.Normal(0.25, 0.2**2))
-#         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
 def get_cosmology(**cosmo) -> Cosmology:
@@ -69,69 +95,6 @@ def get_cosmology(**cosmo) -> Cosmology:
     return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
                     sigma8 = cosmo['sigma8'])
 
-
-def get_init_mesh(cosmo:Cosmology, mesh_shape, box_shape, fourier=False,
-                  trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
-    """
-    Return initial conditions at a=1 from latent params.
-    """
-    # Compute initial power spectrum
-    pk_fn = linear_pk_interp(cosmo, n_interp=256)
-    kvec = fftk(mesh_shape)
-    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
-    pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
-    pk_mesh *= scaling**2
-
-
-    # Parametrize
-    name = 'init_mesh'
-    if not inverse:
-        input_name, output_name = name+'_', name
-        init = params_[input_name]
-        if fourier:
-            delta_k = rg2cgh(init)
-        else:
-            delta_k = jnp.fft.rfftn(init)
-        delta_k *= pk_mesh**0.5
-        init = jnp.fft.irfftn(delta_k)
-    
-    else:
-        input_name, output_name = name, name+'_'
-        delta_k = jnp.fft.rfftn(params_[input_name])
-        delta_k /= pk_mesh**0.5   
-        if fourier:
-            init = cgh2rg(delta_k)
-        else:
-            init = jnp.fft.irfftn(delta_k)
-
-    if trace_reparam:
-        init = deterministic(output_name, init)
-    return {output_name:init}
-
-
-def get_biases(prior_config, 
-               trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
-    """
-    Return biases params from latent params.
-    """
-    biases = {}
-    for name in ['b1', 'b2', 'bs2', 'bn2']:
-        _, loc, scale = prior_config[name]
-        scale *= scaling
-
-        if not inverse:
-            input_name, output_name = name+'_', name
-            notrunc_push = lambda x : x * scale + loc
-        else:
-            input_name, output_name = name, name+'_'
-            notrunc_push = lambda x : (x - loc) / scale
-
-        value = notrunc_push(params_[input_name])
-
-        if trace_reparam:
-            value = deterministic(output_name, value)
-        biases[output_name] = value
-    return biases
 
 
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
@@ -204,20 +167,28 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     return pk_fn
 
 
-def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, 
-          grad_fd=True, lap_fd=False, trace_meshes=2, tol=1e-5):
-    terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
-    solver = Dopri5()
-    controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
-    if trace_meshes < 2: 
-        saveat = SaveAt(t1=True)
-    else: 
-        saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
-    sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                            stepsize_controller=controller, max_steps=8, saveat=saveat)
-    particles = sol.ys
-    debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
-    return particles
+def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-3,
+           grad_fd=True, lap_fd=False):
+    if a_lpt == a_obs:
+        return particles
+    else:
+        terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
+        solver = Dopri5()
+        controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
+
+        if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
+            saveat = SaveAt(t1=True)
+        elif isinstance(snapshots, int): 
+            saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, snapshots))   
+        else: 
+            saveat = SaveAt(ts=jnp.asarray(snapshots))   
+
+        sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
+                                stepsize_controller=controller, max_steps=9, saveat=saveat)
+        particles = sol.ys
+        debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        return particles
+
 
 
 
@@ -377,8 +348,8 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_fd=True, lap_fd=
     delta_k = jnp.fft.rfftn(init_mesh)
 
     init_force = pm_forces(positions, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
-    dx = growth_factor(cosmo, a) * init_force
-    p = a**2 * growth_rate(cosmo, a) * E * dx
+    dq = growth_factor(cosmo, a) * init_force
+    p = a**2 * growth_rate(cosmo, a) * E * dq
     f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
@@ -401,15 +372,15 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_fd=True, lap_fd=
 
         
         init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd)
-        dx2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
-        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dx2
+        dq2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2
         f2 = (a**2 * E * dGf2a(cosmo, a) * 3/7) * init_force2
 
-        dx += dx2
+        dq += dq2
         p  += p2
         f  += f2
 
-    return dx, p, f
+    return dq, p, f
 
 
 

@@ -92,7 +92,7 @@ def std2trunc(x, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     Transport standard normal variable to a general truncated normal variable. 
     """
     scale_nonzero = jnp.where(scale==0, 1, scale)
-    lowhigh = (jnp.stack((low, high)) - loc) / scale_nonzero
+    lowhigh = (jnp.stack([low, high]) - loc) / scale_nonzero
     low, high = jnp.where(scale==0, jnp.stack([-jnp.inf, jnp.inf]), lowhigh)
     lim = 12 # switch to a more stable approx at 12 sigma
     condlist = [(x < -lim) & (low < -lim), (lim < x) & (lim < high)]
