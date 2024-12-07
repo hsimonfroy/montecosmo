@@ -77,6 +77,8 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
     mesh_shape = np.array(mesh.shape)
     if box_shape is None:
         box_shape = mesh_shape
+    else:
+        plt.xlabel("$x$ [Mpc/$h$]"), plt.ylabel("$y$ [Mpc/$h$]")
 
     mesh2d = mean_slice(mesh, sli)
 
@@ -90,7 +92,6 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
     xs, ys = np.linspace(0, box_shape[0], mesh_shape[0]), np.linspace(0, box_shape[1], mesh_shape[1])
     xx, yy = np.meshgrid(xs, ys)
     quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, cmap=cmap)
-    plt.xlabel("$x$ [Mpc/$h$]"), plt.ylabel("$y$ [Mpc/$h$]")
     plt.gca().set_aspect(1)
     return quad
 

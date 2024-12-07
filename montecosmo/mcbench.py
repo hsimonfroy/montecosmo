@@ -29,10 +29,14 @@ from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
 
+
 from dataclasses import dataclass
 from collections import UserDict
-from jax import tree
+from jax import tree, tree_util
 
+
+# @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
+@tree_util.register_pytree_node_class
 @dataclass
 class Sample(UserDict):
     """
@@ -40,38 +44,36 @@ class Sample(UserDict):
     Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
     """
     data: dict
-    group: dict
+    groups: dict
 
-    def __getitem__(self, key):
+    def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
         if self._istreeof(key, (int, slice)):
-            # return self.map(lambda x: x[key])
-            return Sample(self.map(lambda x: x[key]), self.group)
+            return Sample(self.map(lambda x: x[key]), self.groups)
 
         # Querying with groups
         elif self._istreeof(key, str):
             if isinstance(key, str):
-                if key in self.group:
-                    group = list(self.group[key])
+                if key in self.groups:
+                    group = list(self.groups[key])
                     if len(group) == 1: # handle length 1 group
-                        return self.data[group[0]]
+                        return self._get(group[0], default_fn)
                     else:
-                        return tuple(self.data[k] for k in group)
+                        return tuple(self._get(k, default_fn) for k in group)
                 else:
-                    return self.data[key]
+                    return self._get(key, default_fn)
                 
             elif isinstance(key, list):
-                # return {k:self.data[k] for k in self._expand_key(key)}
-                return Sample({k:self.data[k] for k in self._expand_key(key)}, self.group)
+                return Sample({k:self._get(k, default_fn) for k in self._expand_key(key)}, self.groups)
             
             elif isinstance(key, tuple):
-                return tuple(self[k] for k in self._expand_key(key))
+                return tuple(self.__getitem__(k, default_fn) for k in self._expand_key(key))
     
     def _expand_key(self, key):
         newkey = ()
         for k in key:
-            if isinstance(k, str) and k in self.group:
-                newkey += tuple(self.group[k])
+            if isinstance(k, str) and k in self.groups:
+                newkey += tuple(self.groups[k])
             else:
                 newkey += (k,)
         return newkey
@@ -79,16 +81,32 @@ class Sample(UserDict):
     def _istreeof(self, obj, type):
         return tree.all(tree.map(lambda x: isinstance(x, type), obj))
     
-    def map(self, fn):
-        return tree.map(fn, self.data)
-    
+    def _get(self, key, default_fn=None):
+        """
+        Rewrite dict get method to raise KeyError by default.
+        """
+        if key in self.data:
+            return self.data[key]
+        elif default_fn is not None:
+            return default_fn(key)
+        else:
+            raise KeyError(key)
+
+    def get(self, key, default=None, default_fn=None):
+        return self.__getitem__(key, default_fn=(lambda k: default) if default_fn is None else default_fn)
+
     @property
     def shape(self):
-        return self.map(np.shape)
-
-
-
-
+        return tree.map(jnp.shape, self.data)
+    
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_flatten(self):
+        return (self.data,), self.groups
+    
+    @classmethod
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_unflatten(cls, groups, data):
+        return cls(*data, groups)
 
 
 

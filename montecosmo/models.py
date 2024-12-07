@@ -10,7 +10,7 @@ from jax import numpy as jnp, random as jr, jit, vmap, grad, debug
 from jax.tree_util import tree_map
 from functools import partial
 
-from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lpt, nbody, lagrangian_weights, rsd 
+# from montecosmo.bricks import get_cosmo, get_cosmology, get_init_mesh, get_biases, lpt, nbody, lagrangian_weights, rsd 
 from montecosmo.metrics import power_spectrum, _initialize_pk
 
 from jax.experimental.ode import odeint

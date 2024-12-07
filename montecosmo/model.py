@@ -208,8 +208,9 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         assert(self.a_lpt <= self.a_obs), "a_lpt must be less (<=) than a_obs"
-        self.groups = self._get_groups(self.latent)
-        self.prior_loc = self._get_prior_loc(self.latent)
+        self.groups = self._groups_config(self.latent, base=True)
+        self.groups_ = self._groups_config(self.latent, base=False)
+        self.prior_loc = self._prior_loc(self.latent)
 
         self.mesh_shape = np.asarray(self.mesh_shape) # avoid int overflow
         self.box_shape = np.asarray(self.box_shape)
@@ -233,98 +234,41 @@ class FieldLevelModel(Model):
 
     def _model(self):
         x = self.prior()
-        # x = self.reparam(x)
         x = self.evolve(x)
         return self.likelihood(x)
     
 
 
-    # def prior(self):
-    #     """
-    #     A prior for cosmological model. 
 
-    #     Return standardized params for computing cosmology, initial conditions, and Lagrangian biases.
-    #     """
-    #     # Sample reparametrized cosmology and biases
-    #     for group in ['cosmo', 'bias']:
-    #         params_ = {}
-    #         for name in self.groups[group]:            
-    #             name_ = name+'_'
-    #             params_[name_] = sample(name_, dist.Normal(0, 1))
-    #         yield params_
 
-    #     # Sample reparametrized initial conditions
-    #     name_ = self.groups['init'][0]+'_'         
-    #     mesh = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
-    #     yield {name_:mesh}
 
-    def prior(self, temp=1., fourier=True):
+    def prior(self, temp=1.):
         """
         A prior for cosmological model. 
 
-        Return standardized params for computing cosmology, initial conditions, and Lagrangian biases.
+        Return base parameters, as reparametrization of sample parameters.
         """
-        # Sample reparametrized cosmology and biases
-        cosmo = {}
-        for name in self.groups['cosmo']:            
-            name_ = name+'_'
-            cosmo[name_] = sample(name_, dist.Normal(0, 1))
-        cosmo = samp2base(cosmo, self.latent, inv=False, temp=temp)
+        # Sample cosmology and biases
+        tup = ()
+        for g in ['cosmo', 'bias']:
+            dic = {}
+            for name in list(self.groups[g]):
+                name_ = name+'_'
+                dic[name_] = sample(name_, dist.Normal(0, 1))
+            tup += (samp2base(dic, self.latent, inv=False, temp=temp),)
+        cosmo, bias = tup
+        cosmology = get_cosmology(**cosmo)        
 
-        bias = {}
-        for name in self.groups['bias']:            
-            name_ = name+'_'
-            bias[name_] = sample(name_, dist.Normal(0, 1))
-        bias = samp2base(bias, self.latent, inv=False, temp=temp)
-        
-
-        # Sample reparametrized initial conditions
+        # Sample initial conditions
         init = {}
         name_ = list(self.groups['init'])[0]+'_'
-        cosmology = get_cosmology(**cosmo)
         init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
-        init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, inv=False, fourier=fourier, temp=temp)
-        return cosmo, bias, init
+        init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=False, temp=temp)
+        return cosmology, bias, init
 
 
-    
-    # def reparam(self, params, inv=False, fourier=True, temp=1.):
-    #     """
-    #     Transform sample params into base params.
-    #     """
-    #     cosmo, bias, init = params
-
-    #     # Cosmology and Biases
-    #     cosmo = samp2base(cosmo, self.latent, inv=inv, temp=temp)
-    #     bias = samp2base(bias, self.latent, inv=inv, temp=temp)
-
-    #     # Initial conditions
-    #     cosmology = get_cosmology(**cosmo)
-    #     init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, inv=inv, fourier=fourier, temp=temp)
-    #     return cosmo, bias, init
-
-
-    # def reparam2(self, params, inv=False, fourier=True, temp=1.):
-    #     """
-    #     Transform sample params into base params.
-    #     """
-    #     cosmo, bias, init = params
-
-    #     # Cosmology and Biases
-    #     cosmo = samp2base(cosmo, self.latent, inv=inv, temp=temp)
-    #     bias = samp2base(bias, self.latent, inv=inv, temp=temp)
-
-    #     # Initial conditions
-    #     cosmology = get_cosmology(**cosmo)
-    #     init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, inv=inv, fourier=fourier, temp=temp)
-    #     return cosmo, bias, init
-
-
-
-
-    def evolve(self, params):
-        cosmo, bias, init = params
-        cosmology = get_cosmology(**cosmo)
+    def evolve(self, params:tuple):
+        cosmology, bias, init = params
 
         # Create regular grid of particles
         q = jnp.indices(self.mesh_shape).reshape(3,-1).T
@@ -340,7 +284,6 @@ class FieldLevelModel(Model):
 
         # PM displacement from a_lpt to a_obs
         particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
-        debug.print("particles: {i}", i=(particles.shape, particles[0].mean(), particles[0].std(), particles[0].min(), particles[0].max()))
         particles = deterministic('pm_part', particles)[-1]
 
         # RSD displacement at a_obs
@@ -385,28 +328,49 @@ class FieldLevelModel(Model):
 
 
 
+
+    def reparam(self, params:dict, inv=False, temp=1.):
+        """
+        Transform sample params into base params.
+        """
+        # Extract full groups from params
+        cosmo_, bias_, init_ = self._get_full_groups(params, inv=inv)
+
+        # Cosmology and Biases
+        cosmo = samp2base(cosmo_, self.latent, inv=inv, temp=temp)
+        bias = samp2base(bias_, self.latent, inv=inv, temp=temp)
+
+        # Initial conditions
+        if cosmo != {}:
+            cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
+            init = samp2base_mesh(init_, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
+        else:
+            init = {}
+        return cosmo | bias | init
+
+    def _get_full_groups(self, params, inv=True):
+        tup = ()
+        for g in self.groups.values():
+            dic = {}
+            for k in list(g):
+                k = k if inv else k+'_'
+                if k in params:
+                    dic[k] = params[k]
+                else:
+                    dic = {}
+                    break            
+            tup += (dic,)
+        return tup
+
+        
+
+
     def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
         return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                               kedges=kedges, multipoles=multipoles, los=los)
     
 
-    def block_det(self, hide_base=True, hide_det=True):
-        base_name = self.latent.keys()
-        if hide_base:
-            if hide_det:
-                hide_fn = lambda site: site['type'] == 'deterministic'
-            else:
-                hide_fn = lambda site: site['type'] == 'deterministic' and site['name'] in base_name
-        else:
-            if hide_det:
-                hide_fn = lambda site: site['type'] == 'deterministic' and site['name'] not in base_name
-            else:
-                hide_fn = lambda site: False
-        self.model = handlers.block(self.model, hide_fn=hide_fn)
-        return self.model
-
-
-    def _get_prior_loc(self, latent):
+    def _prior_loc(self, latent, base=True):
         """
         Return location values of the prior config.
         """
@@ -414,31 +378,57 @@ class FieldLevelModel(Model):
         for name in latent:
             loc = latent[name].get('loc')
             if loc is not None:
-                dic[name] = loc
+                dic[name] = loc if base else jnp.zeros_like(loc)
         return dic
     
-    def _get_groups(self, latent):
+    def _groups_config(self, latent, base=True):
         """
-        Return groups from latent config.
+        Return groups config from latent config.
         """
         groups = {}
         for name in latent:
             group = latent[name]['group']
             if group not in groups:
                 groups[group] = []
-            groups[group].append(name)
+            groups[group].append(name if base else name+'_')
         return groups
 
-    # def _get_groups(self, latent):
-    #     """
-    #     Return groups from latent config.
-    #     """
-    #     groups = {}
-    #     for name in latent:
-    #         group = latent[name]['group']
-    #         if group not in groups:
-    #             groups[group] = []
-    #         groups[group].append(name)
-    #     return groups
 
 
+
+
+
+
+    # def prior(self):
+    #     """
+    #     A prior for cosmological model. 
+
+    #     Return standardized params for computing cosmology, initial conditions, and Lagrangian biases.
+    #     """
+    #     # Sample reparametrized cosmology and biases
+    #     for group in ['cosmo', 'bias']:
+    #         params_ = {}
+    #         for name in self.groups[group]:            
+    #             name_ = name+'_'
+    #             params_[name_] = sample(name_, dist.Normal(0, 1))
+    #         yield params_
+
+    #     # Sample reparametrized initial conditions
+    #     name_ = self.groups['init'][0]+'_'         
+    #     mesh = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
+    #     yield {name_:mesh}
+    
+    # def reparam(self, params, inv=False, temp=1.):
+    #     """
+    #     Transform sample params into base params.
+    #     """
+    #     cosmo, bias, init = params
+
+    #     # Cosmology and Biases
+    #     cosmo = samp2base(cosmo, self.latent, inv=inv, temp=temp)
+    #     cosmology = get_cosmology(**cosmo)
+    #     bias = samp2base(bias, self.latent, inv=inv, temp=temp)
+
+    #     # Initial conditions
+    #     init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
+    #     return cosmology, bias, init

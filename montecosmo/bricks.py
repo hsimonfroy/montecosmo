@@ -25,8 +25,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     Transform sample params into base params.
     """
     out = {}
-    for in_name in params:
-        value = params[in_name]
+    for in_name, value in params.items():
         name = in_name if inv else in_name[:-1]
         out_name = in_name+'_' if inv else in_name[:-1]
 
@@ -57,33 +56,34 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=Fa
     """
     Transform sample mesh into base mesh, i.e. initial wavevectors at a=1.
     """
-    in_name, = init.keys()
-    mesh = init[in_name]
-    out_name = in_name+'_' if inv else in_name[:-1]
-    mesh *= temp**.5
+    assert len(init) <= 1, "init dict should only have one or zero key"
+    for in_name, mesh in init.items():
+        out_name = in_name+'_' if inv else in_name[:-1]
+        mesh *= temp**.5
 
-    # Compute initial power spectrum
-    pk_fn = linear_pk_interp(cosmo, n_interp=256)
-    kvec = fftk(mesh_shape)
-    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
-    pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+        # Compute initial power spectrum
+        pk_fn = linear_pk_interp(cosmo, n_interp=256)
+        kvec = fftk(mesh_shape)
+        k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+        pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
 
-    # Reparametrize
-    if not inv:
-        if fourier:
-            mesh = rg2cgh(mesh)
+        # Reparametrize
+        if not inv:
+            if fourier:
+                mesh = rg2cgh(mesh)
+            else:
+                mesh = jnp.fft.rfftn(mesh)
+            mesh *= pk_mesh**0.5
         else:
-            mesh = jnp.fft.rfftn(mesh)
-        mesh *= pk_mesh**0.5
-    else:
-        mesh /= pk_mesh**0.5   
-        if fourier:
-            mesh = cgh2rg(mesh)
-        else:
-            mesh = jnp.fft.irfftn(mesh)
+            mesh /= pk_mesh**0.5   
+            if fourier:
+                mesh = cgh2rg(mesh)
+            else:
+                mesh = jnp.fft.irfftn(mesh)
 
-    mesh = deterministic(out_name, mesh)
-    return {out_name:mesh}
+        mesh = deterministic(out_name, mesh)
+        return {out_name:mesh}
+    return {}
 
 
 
@@ -172,7 +172,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
         return particles[None]
     else:
         terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
-        solver = Tsit5()
+        solver = Tsit5() # Tsit5 usually better than Dopri5
         controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
 
         if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
@@ -185,7 +185,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
                                 stepsize_controller=controller, max_steps=9, saveat=saveat)
         particles = sol.ys
-        debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
         return particles
 
 
