@@ -13,16 +13,16 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
-from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
+from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5, Tsit5
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
 
 
 
 
 
-def base2samp(params, config, inv=False, temp=1.) -> dict:
+def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     """
-    Return base params from sample params.
+    Transform sample params into base params.
     """
     out = {}
     for in_name in params:
@@ -53,9 +53,9 @@ def base2samp(params, config, inv=False, temp=1.) -> dict:
 
 
 
-def base2samp_mesh(init, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, temp=1.) -> dict:
+def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, temp=1.) -> dict:
     """
-    Return initial wavevectors at a=1 from sample mesh.
+    Transform sample mesh into base mesh, i.e. initial wavevectors at a=1.
     """
     in_name, = init.keys()
     mesh = init[in_name]
@@ -172,7 +172,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
         return particles[None]
     else:
         terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
-        solver = Dopri5()
+        solver = Tsit5()
         controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
 
         if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 

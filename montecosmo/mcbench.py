@@ -22,6 +22,79 @@ from montecosmo.models import get_param_fn, get_pk_fn
 from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
+
+
+
+
+
+
+
+from dataclasses import dataclass
+from collections import UserDict
+from jax import tree
+
+@dataclass
+class Sample(UserDict):
+    """
+    Global slicing and indexing s[1:3,2]
+    Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
+    """
+    data: dict
+    group: dict
+
+    def __getitem__(self, key):
+        # Global indexing and slicing
+        if self._istreeof(key, (int, slice)):
+            # return self.map(lambda x: x[key])
+            return Sample(self.map(lambda x: x[key]), self.group)
+
+        # Querying with groups
+        elif self._istreeof(key, str):
+            if isinstance(key, str):
+                if key in self.group:
+                    group = list(self.group[key])
+                    if len(group) == 1: # handle length 1 group
+                        return self.data[group[0]]
+                    else:
+                        return tuple(self.data[k] for k in group)
+                else:
+                    return self.data[key]
+                
+            elif isinstance(key, list):
+                # return {k:self.data[k] for k in self._expand_key(key)}
+                return Sample({k:self.data[k] for k in self._expand_key(key)}, self.group)
+            
+            elif isinstance(key, tuple):
+                return tuple(self[k] for k in self._expand_key(key))
+    
+    def _expand_key(self, key):
+        newkey = ()
+        for k in key:
+            if isinstance(k, str) and k in self.group:
+                newkey += tuple(self.group[k])
+            else:
+                newkey += (k,)
+        return newkey
+    
+    def _istreeof(self, obj, type):
+        return tree.all(tree.map(lambda x: isinstance(x, type), obj))
+    
+    def map(self, fn):
+        return tree.map(fn, self.data)
+    
+    @property
+    def shape(self):
+        return self.map(np.shape)
+
+
+
+
+
+
+
+
+
+
 ###########
 # Loading #
 ###########
