@@ -1,24 +1,23 @@
 from __future__ import annotations # for Union typing with | in python<3.10
 
 from functools import partial
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from IPython.display import display
 from pprint import pformat
+import os
 
 import numpyro.distributions as dist
 from numpyro import sample, deterministic, handlers, render_model
 from numpyro.infer.util import log_density
 import numpy as np
 
-from jax import numpy as jnp, random as jr, jit, vmap, grad, debug
-from jax.tree_util import tree_map
-from jax.experimental.ode import odeint
+from jax import numpy as jnp, random as jr, vmap, grad, debug
 
 # from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
-
 from montecosmo.bricks import samp2base, samp2base_mesh, get_cosmology, lpt, nbody, lagrangian_weights, rsd 
 from montecosmo.metrics import power_spectrum
+from montecosmo.utils import pdump, pload
 
 
 
@@ -33,11 +32,8 @@ default_config={
             'lpt_order':1,
             # Galaxies
             'gxy_density':1e-3, # in galaxy / (Mpc/h)^3
-            # Debugging
-            'trace_reparam':False, 
-            'trace_meshes':False, # if int, number of PM mesh snapshots (LPT included)
             # Prior config {name: [group, label, loc, scale, low, high]}
-            'latent': {'Omega_m': {'group':'cosmo', 
+            'latents': {'Omega_m': {'group':'cosmo', 
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
                                     'scale':0.2,
@@ -65,10 +61,10 @@ default_config={
                                     'loc':0.,
                                     'scale':2.,},
                         'init_mesh': {'group':'init',
-                                      'label':'{\\delta}_L',},},
+                                      'label':'{\\delta}_L',},}, # TODO: rajouter obs? so rename latent variables?
             'fourier':True,                    
             'obs':'mesh', # 'mesh', 'pk', 'plk', 'bk' # TODO
-            'snapshots':5, # number of PM snapshots
+            'snapshots':None, # PM snapshots
             }
 
 bench_config = {
@@ -100,8 +96,11 @@ class Model():
     def __call__(self):
         return self.model()
     
+    def reparam(self, params, inv=False):
+        return params
+    
     def block_det(self, model, hide_base=True, hide_det=True):
-        base_name = self.latent.keys()
+        base_name = self.latents.keys()
         if hide_base:
             if hide_det:
                 hide_fn = lambda site: site['type'] == 'deterministic'
@@ -114,41 +113,67 @@ class Model():
                 hide_fn = lambda site: False
         return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=0, samples=None, hide_base=True, hide_det=True, hide_samp=False):
+    def predict(self, rng=0, samples=None, batch_ndims=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
         """
         Run model conditionned on samples.
         If samples is None, return a single prediction.
-        If samples is an int, return a prediction of such length.
-        If samples is a dict, return a prediction for each sample.
+        If samples is an int or tuple, return a prediction of such shape.
+        If samples is a dict, return a prediction for each sample, assuming batch_ndims batch dimensions.
         """
         if isinstance(rng, int):
             rng = jr.key(rng)
 
         def single_prediction(rng, sample={}):
+            # Optionally reparametrize base to sample params
+            if frombase:
+                sample = self.reparam(sample, inv=True)
+
+            # Condition then block
             model = handlers.condition(self.model, data=sample)
             if hide_samp:
                 model = handlers.block(model, hide=sample.keys())
             model = self.block_det(model, hide_base=hide_base, hide_det=hide_det)
 
+            # Trace and return values
             tr = handlers.trace(handlers.seed(model, rng_seed=rng)).get_trace()
             return {k: v['value'] for k, v in tr.items()}
 
         if samples is None:
             return single_prediction(rng)
-        if isinstance(samples, int):
+        
+        elif isinstance(samples, (int, tuple)):
+            if isinstance(samples, int):
+                samples = (samples,)
             rng = jr.split(rng, samples)
-            return vmap(single_prediction)(rng)
-        else:
-            # All samples should have the same first dimension
-            n_samples = samples[next(iter(samples))].shape[0]
-            rng = jr.split(rng, n_samples)
-            return vmap(single_prediction)(rng, samples)
+            # Nest vmaps
+            pred_fn = single_prediction
+            for _ in range(len(samples)):
+                pred_fn = vmap(pred_fn)
+            return pred_fn(rng)
+        
+        elif isinstance(samples, dict):
+            # All item shapes should match on the first batch_ndims dimensions,
+            # so take the first key shape
+            shape = jnp.shape(samples[next(iter(samples))])[:batch_ndims]
+            rng = jr.split(rng, shape)
+            # Nest vmaps
+            pred_fn = single_prediction
+            for _ in range(len(shape)):
+                pred_fn = vmap(pred_fn)
+            return pred_fn(rng, samples)
     
+
     ############
     # Wrappers #
     ############
+    def logp(self, params):
+        return log_density(self.model, (), {}, params)[0]
+
     def potential(self, params):
-        return - log_density(self.model, (), {}, params)[0]
+        return - self.logp(params)
+    
+    def force(self, params):
+        return grad(self.logp)(params) # force = - grad potential = grad logp
     
     def trace(self, rng=0):
         return handlers.trace(handlers.seed(self.model, rng_seed=rng)).get_trace()
@@ -156,11 +181,21 @@ class Model():
     def seed(self, rng=0):
         self.model = handlers.seed(self.model, rng_seed=rng)
 
-    def condition(self, data=None):
+    def condition(self, data=None, frombase=False):
+        # Optionally reparametrize base to sample params
+        if frombase:
+            data = self.reparam(data, inv=True)
         self.model = handlers.condition(self.model, data=data or {})
 
-    def block(self, hide_fn=None, hide=None, expose_types=None, expose=None):
-        self.model = handlers.block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
+    def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
+        """
+        Priority is given according to the order hide_fn, hide, expose_types, expose, (hide_base, hide_det).
+        Default call thus hides base and other deterministic sites, for sampling purposes.
+        """
+        if all(x is None for x in (hide_fn, hide, expose_types, expose)):
+            self.model = self.block_det(self.model, hide_base=hide_base, hide_det=hide_det)
+        else:
+            self.model = handlers.block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
 
     def render(self, render_dist=False, render_params=False):
         display(render_model(self.model, render_distributions=render_dist, render_params=render_params))
@@ -199,18 +234,16 @@ class FieldLevelModel(Model):
     a_obs:float
     lpt_order:int
     gxy_density:float
-    trace_reparam:bool
-    trace_meshes:bool|int
-    latent:dict
+    latents:dict
     fourier:bool
     obs:dict
     snapshots:int|list
 
     def __post_init__(self):
         assert(self.a_lpt <= self.a_obs), "a_lpt must be less (<=) than a_obs"
-        self.groups = self._groups_config(self.latent, base=True)
-        self.groups_ = self._groups_config(self.latent, base=False)
-        self.prior_loc = self._prior_loc(self.latent)
+        self.groups = self._groups_config(self.latents, base=True)
+        self.groups_ = self._groups_config(self.latents, base=False)
+        self.prior_loc = self._prior_loc(self.latents)
 
         self.mesh_shape = np.asarray(self.mesh_shape) # avoid int overflow
         self.box_shape = np.asarray(self.box_shape)
@@ -248,22 +281,24 @@ class FieldLevelModel(Model):
 
         Return base parameters, as reparametrization of sample parameters.
         """
-        # Sample cosmology and biases
+        # Sample, reparametrize, and register cosmology and biases
         tup = ()
         for g in ['cosmo', 'bias']:
             dic = {}
-            for name in list(self.groups[g]):
+            for name in self.groups[g]:
                 name_ = name+'_'
-                dic[name_] = sample(name_, dist.Normal(0, 1))
-            tup += (samp2base(dic, self.latent, inv=False, temp=temp),)
+                dic[name_] = sample(name_, dist.Normal(0, 1)) # sample
+            dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
+            tup += ({k: deterministic(k, v) for k,v in dic.items()},) # register base params
         cosmo, bias = tup
         cosmology = get_cosmology(**cosmo)        
 
-        # Sample initial conditions
+        # Sample, reparametrize, and register initial conditions
         init = {}
-        name_ = list(self.groups['init'])[0]+'_'
+        name_ = self.groups['init'][0]+'_'
         init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
         init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=False, temp=temp)
+        init = {k: deterministic(k, v) for k,v in init.items()} # register base params
         return cosmology, bias, init
 
 
@@ -279,7 +314,7 @@ class FieldLevelModel(Model):
         # LPT displacement at a_lpt
         # NOTE: lpt supposes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
         cosmology._workspace = {}  # HACK: temporary fix
-        dq, p, f = lpt(cosmology, init['init_mesh'], q, a=self.a_lpt, mesh_shape=self.mesh_shape, order=self.lpt_order)
+        dq, p, f = lpt(cosmology, **init, positions=q, a=self.a_lpt, mesh_shape=self.mesh_shape, order=self.lpt_order)
         particles = jnp.stack([q + dq, p])
 
         # PM displacement from a_lpt to a_obs
@@ -334,70 +369,70 @@ class FieldLevelModel(Model):
         Transform sample params into base params.
         """
         # Extract full groups from params
-        cosmo_, bias_, init_ = self._get_full_groups(params, inv=inv)
+        cosmo_, bias, init = self._getbygroups(params, ['cosmo','bias','init'], inv=inv)
 
         # Cosmology and Biases
-        cosmo = samp2base(cosmo_, self.latent, inv=inv, temp=temp)
-        bias = samp2base(bias_, self.latent, inv=inv, temp=temp)
+        cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
+        bias = samp2base(bias, self.latents, inv=inv, temp=temp)
 
         # Initial conditions
-        if cosmo != {}:
+        if init != {}:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            init = samp2base_mesh(init_, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
-        else:
-            init = {}
+            init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
         return cosmo | bias | init
 
-    def _get_full_groups(self, params, inv=True):
+    def _getbygroups(self, params, groups, inv=True):
+        """
+        Given group names, return corresponding params dict.
+        """
         tup = ()
-        for g in self.groups.values():
+        for g in groups:
             dic = {}
-            for k in list(g):
+            for k in self.groups[g]:
                 k = k if inv else k+'_'
                 if k in params:
-                    dic[k] = params[k]
-                # else:
-                #     dic = {}
-                #     break            
+                    dic[k] = params[k]        
             tup += (dic,)
         return tup
 
-        
-
-
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
-        return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                              kedges=kedges, multipoles=multipoles, los=los)
-    
-
-    def _prior_loc(self, latent, base=True):
+    def _prior_loc(self, latents, base=True):
         """
-        Return location values of the prior config.
+        Return location values of the latents config.
         """
         dic = {}
-        for name in latent:
-            loc = latent[name].get('loc')
+        for name in latents:
+            loc = latents[name].get('loc')
             if loc is not None:
                 dic[name] = loc if base else jnp.zeros_like(loc)
         return dic
     
-    def _groups_config(self, latent, base=True):
+    def _groups_config(self, latents, base=True):
         """
-        Return groups config from latent config.
+        Return groups config from latents config.
         """
         groups = {}
-        for name in latent:
-            group = latent[name]['group']
+        for name in latents:
+            group = latents[name]['group']
             if group not in groups:
                 groups[group] = []
             groups[group].append(name if base else name+'_')
         return groups
 
 
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
+        return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
+                              kedges=kedges, multipoles=multipoles, los=los)
+    
+    def save(self, dir_path):
+        pdump(asdict(self), os.path.join(dir_path, "model.p"))
+
+    @classmethod
+    def load(cls, dir_path):
+        return cls(**pload(os.path.join(dir_path, "model.p")))
 
 
 
-
+    # def load(self, path):
 
     # def prior(self):
     #     """

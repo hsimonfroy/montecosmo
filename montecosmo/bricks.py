@@ -45,9 +45,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
             else:
                 push = lambda x: (x - loc) / scale
 
-        value = push(value)
-        value = deterministic(out_name, value)
-        out[out_name] = value
+        out[out_name] = push(value)
     return out
 
 
@@ -81,7 +79,6 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=Fa
             else:
                 mesh = jnp.fft.irfftn(mesh)
 
-        mesh = deterministic(out_name, mesh)
         return {out_name:mesh}
     return {}
 
@@ -183,7 +180,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
             saveat = SaveAt(ts=jnp.asarray(snapshots))   
 
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                                stepsize_controller=controller, max_steps=9, saveat=saveat)
+                                stepsize_controller=controller, max_steps=10, saveat=saveat)
         particles = sol.ys
         # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
         return particles
@@ -409,7 +406,7 @@ def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     los = los / np.linalg.norm(los)
 
     kvec = fftk(mesh_shape)
-    kmesh = sum(kk**2 for kk in kvec)**0.5 # cell units
+    kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
     kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 

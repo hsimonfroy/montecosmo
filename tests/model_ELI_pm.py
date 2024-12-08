@@ -21,7 +21,7 @@ from numpyro.handlers import seed, condition, trace
 from functools import partial
 from getdist import plots
 
-from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
+from montecosmo.utils import pdump, pload, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
@@ -70,8 +70,8 @@ print_config(model)
 # Load fiducial and chain init params
 # fiduc_params = pickle_load(save_dir+"fiduc_params.p")
 # init_params_ = pickle_load(save_dir+"init_params_.p")
-fiduc_params = pickle_load(save_dir+"fiduc_params_pm.p")
-init_params_ = pickle_load(save_dir+"init_params_pm_.p")
+fiduc_params = pload(save_dir+"fiduc_params_pm.p")
+init_params_ = pload(save_dir+"init_params_pm_.p")
 
 # Condition model on observables
 obs_names = ['obs_mesh']

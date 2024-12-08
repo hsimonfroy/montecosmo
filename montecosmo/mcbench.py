@@ -17,10 +17,9 @@ from numpyro.diagnostics import print_summary
 from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
-from montecosmo.utils import pickle_dump, pickle_load
+from montecosmo.utils import pdump, pload
 from montecosmo.models import get_param_fn, get_pk_fn
 from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
-
 
 
 
@@ -44,7 +43,13 @@ class Sample(UserDict):
     Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
     """
     data: dict
-    groups: dict
+    groups: dict = None # dict of list of keys
+
+    def __post_init__(self):
+        if self.groups is None:
+            self.groups = {}
+        if isinstance(self.data, Sample):
+            self.data = self.data.data # avoid nested Sample
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
@@ -55,7 +60,7 @@ class Sample(UserDict):
         elif self._istreeof(key, str):
             if isinstance(key, str):
                 if key in self.groups:
-                    group = list(self.groups[key])
+                    group = self.groups[key]
                     if len(group) == 1: # handle length 1 group
                         return self._get(group[0], default_fn)
                     else:
@@ -112,7 +117,6 @@ class Sample(UserDict):
 
 
 
-
 ###########
 # Loading #
 ###########
@@ -126,7 +130,7 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
 
     for i_run in range(start_run, end_run+1):
         # Load
-        samples_part = pickle_load(load_path+f"_{i_run}.p")   
+        samples_part = pload(load_path+f"_{i_run}.p")   
         if None in var_names: # NOTE: var_names should not be a consumable iterator
             var_names = list(samples_part.keys())
         samples_part = {key: samples_part[key] for key in var_names}
@@ -720,6 +724,9 @@ def transform_ess(traj):
 ###############
 # NumPyro API #
 ###############
+
+# TODO: can select var_names directly in numpyro run api
+
 def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, 
              extra_fields:list=[], group_by_chain:bool=True):
     """
@@ -739,11 +746,11 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None,
         samples.update(extra)
         del extra
 
-    pickle_dump(samples, save_path+f"_{i_run}.p")
+    pdump(samples, save_path+f"_{i_run}.p")
     del samples
 
     # Save or overwrite last state
-    pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
+    pdump(mcmc.last_state, save_path+f"_laststate.p") 
 
 
 def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 
