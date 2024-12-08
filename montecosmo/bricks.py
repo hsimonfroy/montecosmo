@@ -409,12 +409,11 @@ def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     los = los / np.linalg.norm(los)
 
     kvec = fftk(mesh_shape)
-    kmesh = sum(kk**2 for kk in kvec)**0.5
+    kmesh = sum(kk**2 for kk in kvec)**0.5 # cell units
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
     kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 
-    mumesh = mumesh / kmesh_nozeros 
-    mumesh = jnp.where(kmesh==0, 0, mumesh)
+    mumesh = jnp.where(kmesh==0, 0, mumesh / kmesh_nozeros )
 
     return b + growth_rate(cosmo, a) * mumesh**2
 

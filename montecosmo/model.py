@@ -356,9 +356,9 @@ class FieldLevelModel(Model):
                 k = k if inv else k+'_'
                 if k in params:
                     dic[k] = params[k]
-                else:
-                    dic = {}
-                    break            
+                # else:
+                #     dic = {}
+                #     break            
             tup += (dic,)
         return tup
 
