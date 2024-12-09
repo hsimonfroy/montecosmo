@@ -57,13 +57,14 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=Fa
     assert len(init) <= 1, "init dict should only have one or zero key"
     for in_name, mesh in init.items():
         out_name = in_name+'_' if inv else in_name[:-1]
-        mesh *= temp**.5
 
         # Compute initial power spectrum
         pk_fn = linear_pk_interp(cosmo, n_interp=256)
         kvec = fftk(mesh_shape)
         k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
         pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+        transfer = pk_mesh**.5
+        transfer *= temp**.5
 
         # Reparametrize
         if not inv:
@@ -71,9 +72,9 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=Fa
                 mesh = rg2cgh(mesh)
             else:
                 mesh = jnp.fft.rfftn(mesh)
-            mesh *= pk_mesh**0.5
+            mesh *= transfer
         else:
-            mesh /= pk_mesh**0.5   
+            mesh /= transfer  
             if fourier:
                 mesh = cgh2rg(mesh)
             else:

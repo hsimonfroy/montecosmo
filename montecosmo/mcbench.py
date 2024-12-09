@@ -18,7 +18,6 @@ from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
 from montecosmo.utils import pdump, pload
-from montecosmo.models import get_param_fn, get_pk_fn
 from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
@@ -29,15 +28,16 @@ from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from collections import UserDict
 from jax import tree, tree_util
 
 
-# @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
 @tree_util.register_pytree_node_class
+# @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
 @dataclass
-class Sample(UserDict):
+class Samples(UserDict):
+    # TODO: is UserDict slower than dict?
     """
     Global slicing and indexing s[1:3,2]
     Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
@@ -48,13 +48,13 @@ class Sample(UserDict):
     def __post_init__(self):
         if self.groups is None:
             self.groups = {}
-        if isinstance(self.data, Sample):
-            self.data = self.data.data # avoid nested Sample
+        if isinstance(self.data, Samples):
+            self.data = self.data.data # avoid nested Samples
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
         if self._istreeof(key, (int, slice)):
-            return Sample(self.map(lambda x: x[key]), self.groups)
+            return tree.map(lambda x: x[key], self)
 
         # Querying with groups
         elif self._istreeof(key, str):
@@ -68,8 +68,11 @@ class Sample(UserDict):
                 else:
                     return self._get(key, default_fn)
                 
-            elif isinstance(key, list):
-                return Sample({k:self._get(k, default_fn) for k in self._expand_key(key)}, self.groups)
+            elif isinstance(key, list): # construct new instance
+                # return type(self)({k:self._get(k, default_fn) for k in self._expand_key(key)}, self.groups)
+                data = {'data': {k:self._get(k, default_fn) for k in self._expand_key(key)}}
+                # TODO: better way to propagate cosntruction through inheritance? e.g. only pass relevant labels?
+                return type(self)(**asdict(self) | data) 
             
             elif isinstance(key, tuple):
                 return tuple(self.__getitem__(k, default_fn) for k in self._expand_key(key))
@@ -104,15 +107,49 @@ class Sample(UserDict):
     def shape(self):
         return tree.map(jnp.shape, self.data)
     
+    @property
+    def ndim(self):
+        return tree.map(jnp.ndim, self.data)
+    
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
-        return (self.data,), self.groups
+        return (self.data,), (self.groups,)
     
     @classmethod
     # NOTE: no need with register_dataclass JAX >=0.4.27
-    def tree_unflatten(cls, groups, data):
-        return cls(*data, groups)
+    def tree_unflatten(cls, aux, data):
+        return cls(*data, *aux)
 
+
+
+
+@tree_util.register_pytree_node_class
+@dataclass
+class Chains(Samples):
+    labels: dict = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.labels is None:
+            self.labels = {}
+        # assert tree.all(tree.map(lambda x: x>=2, self.ndim)), " all values must have at least 2 dimensions"
+
+    def to_getdist(self, label=None):
+        dic = tree.map(lambda x: jnp.concatenate(x, 0), self.data) # concatenate all chains
+        samples, names, labels = [], [], []
+        for k, v in dic.items():
+            samples.append(v)
+            names.append(k)
+            labels.append(self.labels.get(k, None))
+        return MCSamples(samples=samples, names=names, labels=labels, label=label)
+
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_flatten(self):
+        return (self.data,), (self.groups, self.labels)
+
+    @classmethod
+    def load(cls):
+        pass
 
 
 
@@ -750,7 +787,7 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None,
     del samples
 
     # Save or overwrite last state
-    pdump(mcmc.last_state, save_path+f"_laststate.p") 
+    pdump(mcmc.last_state, save_path+f"_last_state.p") 
 
 
 def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 

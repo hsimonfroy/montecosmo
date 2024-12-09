@@ -84,11 +84,11 @@ class Model():
     ###############
     # Model calls #
     ###############
-    def _model(self):
+    def _model(self, *args, **kwargs):
         raise NotImplementedError
 
-    def model(self):
-        return self._model()
+    def model(self, *args, **kwargs):
+        return self._model(*args, **kwargs)
     
     def reset(self):
         self.model = self._model
@@ -99,7 +99,7 @@ class Model():
     def reparam(self, params, inv=False):
         return params
     
-    def block_det(self, model, hide_base=True, hide_det=True):
+    def _block_det(self, model, hide_base=True, hide_det=True):
         base_name = self.latents.keys()
         if hide_base:
             if hide_det:
@@ -113,12 +113,12 @@ class Model():
                 hide_fn = lambda site: False
         return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=0, samples=None, batch_ndims=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
+    def predict(self, rng=0, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
         """
         Run model conditionned on samples.
         If samples is None, return a single prediction.
         If samples is an int or tuple, return a prediction of such shape.
-        If samples is a dict, return a prediction for each sample, assuming batch_ndims batch dimensions.
+        If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
         """
         if isinstance(rng, int):
             rng = jr.key(rng)
@@ -132,7 +132,7 @@ class Model():
             model = handlers.condition(self.model, data=sample)
             if hide_samp:
                 model = handlers.block(model, hide=sample.keys())
-            model = self.block_det(model, hide_base=hide_base, hide_det=hide_det)
+            model = self._block_det(model, hide_base=hide_base, hide_det=hide_det)
 
             # Trace and return values
             tr = handlers.trace(handlers.seed(model, rng_seed=rng)).get_trace()
@@ -152,9 +152,9 @@ class Model():
             return pred_fn(rng)
         
         elif isinstance(samples, dict):
-            # All item shapes should match on the first batch_ndims dimensions,
+            # All item shapes should match on the first batch_ndim dimensions,
             # so take the first key shape
-            shape = jnp.shape(samples[next(iter(samples))])[:batch_ndims]
+            shape = jnp.shape(samples[next(iter(samples))])[:batch_ndim]
             rng = jr.split(rng, shape)
             # Nest vmaps
             pred_fn = single_prediction
@@ -189,17 +189,34 @@ class Model():
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
         """
-        Priority is given according to the order hide_fn, hide, expose_types, expose, (hide_base, hide_det).
-        Default call thus hides base and other deterministic sites, for sampling purposes.
+        Precedence is given according to the order hide_fn, hide, expose_types, expose, (hide_base, hide_det).
+        Only the set of parameters with the precedence is considered.
+        The default call thus hides base and other deterministic sites, for sampling purposes.
         """
         if all(x is None for x in (hide_fn, hide, expose_types, expose)):
-            self.model = self.block_det(self.model, hide_base=hide_base, hide_det=hide_det)
+            self.model = self._block_det(self.model, hide_base=hide_base, hide_det=hide_det)
         else:
             self.model = handlers.block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
 
     def render(self, render_dist=False, render_params=False):
         display(render_model(self.model, render_distributions=render_dist, render_params=render_params))
 
+    def partial(self, *args, **kwargs): # TODO: copy signature?
+        self.model = partial(self.model, *args, **kwargs)
+
+    def copy(self):
+        return type(self)(**asdict(self))
+
+
+    #################
+    # Save and load #
+    #################
+    def save(self, dir_path): # XXX: path or dir_path?
+        pdump(asdict(self), os.path.join(dir_path, "model.p"))
+
+    @classmethod
+    def load(cls, dir_path): # XXX: path or dir_path?
+        return cls(**pload(os.path.join(dir_path, "model.p")))
 
 
 
@@ -240,10 +257,10 @@ class FieldLevelModel(Model):
     snapshots:int|list
 
     def __post_init__(self):
-        assert(self.a_lpt <= self.a_obs), "a_lpt must be less (<=) than a_obs"
-        self.groups = self._groups_config(self.latents, base=True)
-        self.groups_ = self._groups_config(self.latents, base=False)
-        self.prior_loc = self._prior_loc(self.latents)
+        assert(self.a_lpt <= self.a_obs), "a_lpt must be less than (<=) a_obs"
+        self.groups = self._groups_config(base=True)
+        self.groups_ = self._groups_config(base=False)
+        self.prior_loc = self._prior_loc(base=True)
 
         self.mesh_shape = np.asarray(self.mesh_shape) # avoid int overflow
         self.box_shape = np.asarray(self.box_shape)
@@ -257,7 +274,7 @@ class FieldLevelModel(Model):
     def __str__(self):
         out = ""
         out += f"# CONFIG\n"
-        out += pformat(self.__dict__, width=1)
+        out += pformat(asdict(self), width=1)
         out += "\n\n# INFOS\n"
         out += f"cell_shape:     {list(self.cell_shape)} Mpc/h\n"
         out += f"dk:             {self.dk:.5f} h/Mpc\n"
@@ -265,10 +282,10 @@ class FieldLevelModel(Model):
         out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n"
         return out
 
-    def _model(self):
-        x = self.prior()
+    def _model(self, temp=1.):
+        x = self.prior(temp=temp)
         x = self.evolve(x)
-        return self.likelihood(x)
+        return self.likelihood(x, temp=temp)
     
 
 
@@ -284,10 +301,7 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
         for g in ['cosmo', 'bias']:
-            dic = {}
-            for name in self.groups[g]:
-                name_ = name+'_'
-                dic[name_] = sample(name_, dist.Normal(0, 1)) # sample
+            dic = self._sample_group(self.groups[g], base=False) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k,v in dic.items()},) # register base params
         cosmo, bias = tup
@@ -312,7 +326,7 @@ class FieldLevelModel(Model):
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **bias, **init)
 
         # LPT displacement at a_lpt
-        # NOTE: lpt supposes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
+        # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
         cosmology._workspace = {}  # HACK: temporary fix
         dq, p, f = lpt(cosmology, **init, positions=q, a=self.a_lpt, mesh_shape=self.mesh_shape, order=self.lpt_order)
         particles = jnp.stack([q + dq, p])
@@ -369,7 +383,7 @@ class FieldLevelModel(Model):
         Transform sample params into base params.
         """
         # Extract full groups from params
-        cosmo_, bias, init = self._getbygroups(params, ['cosmo','bias','init'], inv=inv)
+        cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
@@ -381,7 +395,16 @@ class FieldLevelModel(Model):
             init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
         return cosmo | bias | init
 
-    def _getbygroups(self, params, groups, inv=True):
+
+
+    def _sample_group(self, group, base=False):
+        dic = {}
+        for name in group:
+            name = name if base else name+'_'
+            dic[name] = sample(name, dist.Normal(0, 1)) # sample
+        return dic
+
+    def _get_by_groups(self, params, groups, base=True):
         """
         Given group names, return corresponding params dict.
         """
@@ -389,46 +412,50 @@ class FieldLevelModel(Model):
         for g in groups:
             dic = {}
             for k in self.groups[g]:
-                k = k if inv else k+'_'
+                k = k if base else k+'_'
                 if k in params:
                     dic[k] = params[k]        
             tup += (dic,)
         return tup
 
-    def _prior_loc(self, latents, base=True):
+    def _prior_loc(self, base=True):
         """
         Return location values of the latents config.
         """
         dic = {}
-        for name in latents:
-            loc = latents[name].get('loc')
+        for name, v in self.latents.items():
+            loc = v.get('loc')
             if loc is not None:
                 dic[name] = loc if base else jnp.zeros_like(loc)
         return dic
     
-    def _groups_config(self, latents, base=True):
+    def _groups_config(self, base=True):
         """
         Return groups config from latents config.
         """
         groups = {}
-        for name in latents:
-            group = latents[name]['group']
+        for name, v in self.latents.items():
+            group = v['group']
+            group = group if base else group+'_'
             if group not in groups:
                 groups[group] = []
             groups[group].append(name if base else name+'_')
         return groups
 
+    @property
+    def labels(self):
+        labs = {}
+        for name, v in self.latents.items():
+            lab = v['label']
+            labs[name] = lab
+            labs[name+'_'] = "\\tilde"+lab
+        return labs
 
     def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
         return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                               kedges=kedges, multipoles=multipoles, los=los)
     
-    def save(self, dir_path):
-        pdump(asdict(self), os.path.join(dir_path, "model.p"))
 
-    @classmethod
-    def load(cls, dir_path):
-        return cls(**pload(os.path.join(dir_path, "model.p")))
 
 
 
