@@ -426,12 +426,12 @@ class FieldLevelModel(Model):
         """
         Return location values of the latents config.
         """
-        dic = {}
+        locs = {}
         for name, val in self.latents.items():
             loc = val.get('loc')
             if loc is not None:
-                dic[name] = loc if base else jnp.zeros_like(loc)
-        return dic
+                locs[name] = loc if base else jnp.zeros_like(loc)
+        return locs
     
     def _groups_config(self, base=True):
         """
@@ -455,9 +455,9 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
 
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(True, True), multipoles=0, los=[0.,0.,1.]):
         return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                              kedges=kedges, multipoles=multipoles, los=los)
+                              comp=comp, kedges=kedges, multipoles=multipoles, los=los)
     
 
 

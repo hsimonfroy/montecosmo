@@ -2,6 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
+from jaxpm.kernels import fftk, cic_compensation
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 from functools import partial
 # from blackjax.diagnostics import effective_sample_size
@@ -102,14 +103,14 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
     """
     kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
 
-    if isinstance(kedges, None | int | float):
+    if kedges is None or isinstance(kedges, (int, float)):
         if kedges is None:
             dk = 2*np.pi / np.min(box_shape) * 2 # twice the minimum wavenumber
         if isinstance(kedges, int):
-            dk = kmax / (kedges+1) # final number of bins will be kedges-1
+            dk = kmax / kedges # final number of bins will be kedges-1
         elif isinstance(kedges, float):
             dk = kedges
-        kedges = np.arange(dk, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
+        kedges = np.arange(0, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
 
     kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
     kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
@@ -135,7 +136,7 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
     return dig, kcount, kavg, mumesh
 
 
-def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
+def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, comp=(True, True), multipoles=0, los=[0.,0.,1.]):
     """
     Compute the auto and cross spectrum of 3D fields, with multipoles.
     """
@@ -152,15 +153,33 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         los = np.asarray(los)
         los /= np.linalg.norm(los)
     poles = np.atleast_1d(multipoles)
+
+    if isinstance(comp, int):
+        comp = (comp, comp)
+
     dig, kcount, kavg, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
     n_bins = len(kavg) + 2
 
     # FFTs
-    meshk = jnp.fft.fftn(mesh, norm='ortho')
+    mesh = jnp.fft.fftn(mesh, norm='ortho')
+    if comp[0]:
+        kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
+        kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
+            for m, kshape in zip(mesh_shape, kshapes)] # cell units
+        # kvec = fftk(mesh_shape)
+        mesh *= cic_compensation(kvec)
+
     if mesh2 is None:
-        mmk = meshk.real**2 + meshk.imag**2
+        mmk = mesh.real**2 + mesh.imag**2
     else:
-        mmk = meshk * jnp.fft.fftn(mesh2, norm='ortho').conj()
+        mesh2 = jnp.fft.fftn(mesh2, norm='ortho')
+        if mesh[1]:
+            kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
+            kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
+                for m, kshape in zip(mesh_shape, kshapes)] # cell units
+            # kvec = fftk(mesh_shape)
+            mesh2 *= cic_compensation(kvec)
+        mmk = mesh * mesh2.conj()
 
     # Sum powers
     pk = jnp.empty((len(poles), n_bins))
