@@ -7,7 +7,7 @@
 # In[1]:
 
 
-import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.99' # NOTE: jax preallocates GPU (default 75%)
+import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,7 +26,7 @@ from getdist import plots
 # mlflow.set_experiment("ELI")
 from montecosmo.utils import pickle_dump, pickle_load
 from montecosmo.mcbench import sample_and_save
-save_dir = os.path.expanduser("~/scratch/pickles/")
+save_dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
 
 
 # In[ ]:
@@ -46,7 +46,7 @@ config.update(a_lpt=0.1, mesh_shape=64*np.ones(3, dtype=int), fourier=True)
 # config.update(a_lpt=0.5, mesh_shape=64*np.ones(3, dtype=int), fourier=False)
 model = partial(pmrsd_model, **config)
 print_config(model)
-expe_prefix = "fourier_pm_pk_"
+expe_prefix = "fourier_pm"
 
 # Get fiducial parameters
 param_fn = get_param_fn(**config)

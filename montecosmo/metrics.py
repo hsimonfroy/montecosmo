@@ -143,7 +143,8 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int | float | list=N
     if multipoles==0:
         los = None
     else:
-        los = np.asarray(los) / np.linalg.norm(los)
+        los = np.asarray(los)
+        los /= np.linalg.norm(los)
     poles = np.atleast_1d(multipoles)
     dig, kcount, kedges, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
 

@@ -418,7 +418,7 @@ def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
     Computed with respect scale factor and line-of-sight.
     """
     a = jnp.atleast_1d(a)
-    los = jnp.asarray(los)
+    los = np.asarray(los)
     los = los / np.linalg.norm(los)
     # Divide PM momentum by `a` once to retrieve velocity, and once again for comobile velocity  
     dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
