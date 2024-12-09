@@ -206,6 +206,10 @@ class Model():
 
     def copy(self):
         return type(self)(**asdict(self))
+    
+    def deepcopy(self):
+        import copy
+        return copy.deepcopy(self)
 
 
     #################
