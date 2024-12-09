@@ -427,8 +427,8 @@ class FieldLevelModel(Model):
         Return location values of the latents config.
         """
         dic = {}
-        for name, v in self.latents.items():
-            loc = v.get('loc')
+        for name, val in self.latents.items():
+            loc = val.get('loc')
             if loc is not None:
                 dic[name] = loc if base else jnp.zeros_like(loc)
         return dic
@@ -438,8 +438,8 @@ class FieldLevelModel(Model):
         Return groups config from latents config.
         """
         groups = {}
-        for name, v in self.latents.items():
-            group = v['group']
+        for name, val in self.latents.items():
+            group = val['group']
             group = group if base else group+'_'
             if group not in groups:
                 groups[group] = []
@@ -449,8 +449,8 @@ class FieldLevelModel(Model):
     @property
     def labels(self):
         labs = {}
-        for name, v in self.latents.items():
-            lab = v['label']
+        for name, val in self.latents.items():
+            lab = val['label']
             labs[name] = lab
             labs[name+'_'] = "\\tilde"+lab
         return labs
