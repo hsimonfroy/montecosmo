@@ -77,6 +77,8 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
     mesh_shape = np.array(mesh.shape)
     if box_shape is None:
         box_shape = mesh_shape
+    else:
+        plt.xlabel("$x$ [Mpc/$h$]"), plt.ylabel("$y$ [Mpc/$h$]")
 
     mesh2d = mean_slice(mesh, sli)
 
@@ -90,7 +92,6 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
     xs, ys = np.linspace(0, box_shape[0], mesh_shape[0]), np.linspace(0, box_shape[1], mesh_shape[1])
     xx, yy = np.meshgrid(xs, ys)
     quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, cmap=cmap)
-    plt.xlabel("$x$ [Mpc/$h$]"), plt.ylabel("$y$ [Mpc/$h$]")
     plt.gca().set_aspect(1)
     return quad
 
@@ -168,7 +169,7 @@ def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[flo
 ##################
 # Power Spectrum #
 ##################
-def plot_pk(ks, pk, i_ell=None, log=False, **kwargs):
+def plot_pk(ks, pk, *args, i_ell=None, log=False, **kwargs):
     if i_ell is None:
         sub = ""
     else:
@@ -177,40 +178,40 @@ def plot_pk(ks, pk, i_ell=None, log=False, **kwargs):
         pk = pk[i_ell]
 
     if log:
-        plt.loglog(ks, pk, **kwargs)
+        plt.loglog(ks, pk, *args, **kwargs)
         plt.ylabel("$P"+sub+"(k)$ [Mpc/$h$]$^3$")
     else:
-        plt.plot(ks, ks * pk, **kwargs)
+        plt.plot(ks, ks * pk, *args, **kwargs)
         plt.ylabel("$k P"+sub+"(k)$ [Mpc/$h$]$^2$")
     plt.xlabel("$k$ [$h$/Mpc]")
 
 
-def plot_trans(ks, trans, log=False, **kwargs):
+def plot_trans(ks, trans, *args, log=False, **kwargs):
     if log:
-        plt.loglog(ks, trans, **kwargs)
+        plt.loglog(ks, trans, *args, **kwargs)
     else:
-        plt.semilogy(ks, trans, **kwargs)
+        plt.semilogy(ks, trans, *args, **kwargs)
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
 
 
-def plot_coh(ks, coh, log=False, **kwargs):
+def plot_coh(ks, coh, *args, log=False, **kwargs):
     if log:
-        plt.loglog(ks, coh, **kwargs)
+        plt.loglog(ks, coh, *args, **kwargs)
     else:
-        plt.semilogy(ks, coh, **kwargs)
+        plt.semilogy(ks, coh, *args, **kwargs)
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
 
 
-def plot_pktranscoh(ks, pk1, trans, coh, log=False, **kwargs):
+def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, **kwargs):
     plt.subplot(131)
-    plot_pk(ks, pk1, log=log, **kwargs)
+    plot_pk(ks, pk1, *args, log=log, **kwargs)
     plt.legend()
 
     plt.subplot(132)
-    plot_trans(ks, trans, log=log, **kwargs)
+    plot_trans(ks, trans, *args, log=log, **kwargs)
 
     plt.subplot(133)
-    plot_coh(ks, coh, log=log, **kwargs)
+    plot_coh(ks, coh, *args, log=log, **kwargs)
 
 
 

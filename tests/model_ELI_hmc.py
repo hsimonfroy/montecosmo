@@ -22,7 +22,7 @@ from functools import partial
 from getdist import plots
 
 
-from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
+from montecosmo.utils import pdump, pload, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
@@ -68,8 +68,8 @@ print_config(model)
 # pickle_dump(init_params_, save_dir+"init_params_fourier_.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params.p")
-init_params_ = pickle_load(save_dir+"init_params_.p")
+fiduc_params = pload(save_dir+"fiduc_params.p")
+init_params_ = pload(save_dir+"init_params_.p")
 # fiduc_params = pickle_load(save_dir+"fiduc_params_pm.p")
 # init_params_ = pickle_load(save_dir+"init_params_pm_.p")
 # fiduc_params = pickle_load(save_dir+"fiduc_params_fourier.p")
@@ -154,7 +154,7 @@ mcmc = numpyro.infer.MCMC(
     chain_method="vectorized",
     progress_bar=True,)
 
-last_state = pickle_load(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
+last_state = pload(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
 print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
 mcmc.post_warmup_state = last_state
 # invmm = list(last_state.adapt_state.inverse_mass_matrix.values())[0][0]

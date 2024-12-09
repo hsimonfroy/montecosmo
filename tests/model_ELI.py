@@ -24,7 +24,7 @@ from getdist import plots
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("ELI")
-from montecosmo.utils import pickle_dump, pickle_load
+from montecosmo.utils import pdump, pload
 from montecosmo.mcbench import sample_and_save
 save_dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
 
@@ -66,8 +66,8 @@ def sample_init_chains(rng_key, scale_std):
 # init_params_ = sample_init_chains(jr.split(jr.key(1), 7), jnp.array(7*[1/10]))
 # init_params_ = tree_map(lambda x,y: jnp.concatenate((jnp.array(x)[None], y), axis=0), fiduc_params_, init_params_)
 init_params_ = tree_map(lambda x: jnp.tile(x, (8,*len(jnp.shape(x))*[1])), fiduc_lat_)
-pickle_dump(fiduc_trace, save_dir + expe_prefix + "fiduc_trace.p")
-pickle_dump(init_params_, save_dir + expe_prefix + "init_params_.p")
+pdump(fiduc_trace, save_dir + expe_prefix + "fiduc_trace.p")
+pdump(init_params_, save_dir + expe_prefix + "init_params_.p")
 
 # Load fiducial and chain init params
 # fiduc_params = pickle_load(save_dir + expe_prefix + "fiduc_params.p")
@@ -419,7 +419,7 @@ ESSs = get_metric_traj(multi_ess_fn, samples, n_toplot, 1)
 # GRs = get_metric_traj(multi_gr_fn, samples, n_toplot, 1)
 GRs = get_metric_traj(multi_gr_fn2, samples, n_toplot, 1)
 
-moments_true = pickle_load(save_dir+"NUTS/NUTS_moments20.p")
+moments_true = pload(save_dir+"NUTS/NUTS_moments20.p")
 # SEs = get_metric_traj(sqrerr_moments_fn, moments, n_toplot, 0, moments_true)
 # NMSEs = get_metric_traj(sqrerr_locscale_fn, moments, n_toplot, 0, moments_true)
 NMSEs = get_metric_traj(sqrerr_locscale_fn2, moments, n_toplot, 0, moments_true)
@@ -580,7 +580,7 @@ for lab, s in zip(mc_labels, samples):
 n_toplot = 200
 ESSs = [get_metric_traj(multi_ess_fn, s, n_toplot, 1) for s in samples]
 GRs = [get_metric_traj(multi_gr_fn2, s, n_toplot, 1) for s in samples]
-moments_true = pickle_load(save_dir+"NUTS/NUTS_moments20.p")
+moments_true = pload(save_dir+"NUTS/NUTS_moments20.p")
 # NMSEs = [get_metric_traj(sqrerr_locscale_fn, m, n_toplot, 0, moments_true) for m in moments]
 NMSEs = [get_metric_traj(sqrerr_locscale_fn2, m, n_toplot, 0, moments_true) for m in moments]
 

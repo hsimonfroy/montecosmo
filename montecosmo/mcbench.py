@@ -17,9 +17,141 @@ from numpyro.diagnostics import print_summary
 from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
-from montecosmo.utils import pickle_dump, pickle_load
-from montecosmo.models import get_param_fn, get_pk_fn
+from montecosmo.utils import pdump, pload
 from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
+
+
+
+
+
+
+
+
+
+from dataclasses import dataclass, asdict
+from collections import UserDict
+from jax import tree, tree_util
+
+
+@tree_util.register_pytree_node_class
+# @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
+@dataclass
+class Samples(UserDict):
+    # TODO: is UserDict slower than dict?
+    """
+    Global slicing and indexing s[1:3,2]
+    Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
+    """
+    data: dict
+    groups: dict = None # dict of list of keys
+
+    def __post_init__(self):
+        if self.groups is None:
+            self.groups = {}
+        if isinstance(self.data, Samples):
+            self.data = self.data.data # avoid nested Samples
+
+    def __getitem__(self, key, default_fn=None):
+        # Global indexing and slicing
+        if self._istreeof(key, (int, slice)):
+            return tree.map(lambda x: x[key], self)
+
+        # Querying with groups
+        elif self._istreeof(key, str):
+            if isinstance(key, str):
+                if key in self.groups:
+                    group = self.groups[key]
+                    if len(group) == 1: # handle length 1 group
+                        return self._get(group[0], default_fn)
+                    else:
+                        return tuple(self._get(k, default_fn) for k in group)
+                else:
+                    return self._get(key, default_fn)
+                
+            elif isinstance(key, list): # construct new instance
+                # return type(self)({k:self._get(k, default_fn) for k in self._expand_key(key)}, self.groups)
+                data = {'data': {k:self._get(k, default_fn) for k in self._expand_key(key)}}
+                # TODO: better way to propagate cosntruction through inheritance? e.g. only pass relevant labels?
+                return type(self)(**asdict(self) | data) 
+            
+            elif isinstance(key, tuple):
+                return tuple(self.__getitem__(k, default_fn) for k in self._expand_key(key))
+    
+    def _expand_key(self, key):
+        newkey = ()
+        for k in key:
+            if isinstance(k, str) and k in self.groups:
+                newkey += tuple(self.groups[k])
+            else:
+                newkey += (k,)
+        return newkey
+    
+    def _istreeof(self, obj, type):
+        return tree.all(tree.map(lambda x: isinstance(x, type), obj))
+    
+    def _get(self, key, default_fn=None):
+        """
+        Rewrite dict get method to raise KeyError by default.
+        """
+        if key in self.data:
+            return self.data[key]
+        elif default_fn is not None:
+            return default_fn(key)
+        else:
+            raise KeyError(key)
+
+    def get(self, key, default=None, default_fn=None):
+        return self.__getitem__(key, default_fn=(lambda k: default) if default_fn is None else default_fn)
+
+    @property
+    def shape(self):
+        return tree.map(jnp.shape, self.data)
+    
+    @property
+    def ndim(self):
+        return tree.map(jnp.ndim, self.data)
+    
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_flatten(self):
+        return (self.data,), (self.groups,)
+    
+    @classmethod
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_unflatten(cls, aux, data):
+        return cls(*data, *aux)
+
+
+
+
+@tree_util.register_pytree_node_class
+@dataclass
+class Chains(Samples):
+    labels: dict = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.labels is None:
+            self.labels = {}
+        # assert tree.all(tree.map(lambda x: x>=2, self.ndim)), " all values must have at least 2 dimensions"
+
+    def to_getdist(self, label=None):
+        dic = tree.map(lambda x: jnp.concatenate(x, 0), self.data) # concatenate all chains
+        samples, names, labels = [], [], []
+        for k, v in dic.items():
+            samples.append(v)
+            names.append(k)
+            labels.append(self.labels.get(k, None))
+        return MCSamples(samples=samples, names=names, labels=labels, label=label)
+
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_flatten(self):
+        return (self.data,), (self.groups, self.labels)
+
+    @classmethod
+    def load(cls):
+        pass
+
+
 
 
 ###########
@@ -35,7 +167,7 @@ def _load_runs(load_path:str, start_run:int, end_run:int,
 
     for i_run in range(start_run, end_run+1):
         # Load
-        samples_part = pickle_load(load_path+f"_{i_run}.p")   
+        samples_part = pload(load_path+f"_{i_run}.p")   
         if None in var_names: # NOTE: var_names should not be a consumable iterator
             var_names = list(samples_part.keys())
         samples_part = {key: samples_part[key] for key in var_names}
@@ -629,6 +761,9 @@ def transform_ess(traj):
 ###############
 # NumPyro API #
 ###############
+
+# TODO: can select var_names directly in numpyro run api
+
 def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, 
              extra_fields:list=[], group_by_chain:bool=True):
     """
@@ -648,11 +783,11 @@ def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None,
         samples.update(extra)
         del extra
 
-    pickle_dump(samples, save_path+f"_{i_run}.p")
+    pdump(samples, save_path+f"_{i_run}.p")
     del samples
 
     # Save or overwrite last state
-    pickle_dump(mcmc.last_state, save_path+f"_laststate.p") 
+    pdump(mcmc.last_state, save_path+f"_last_state.p") 
 
 
 def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 

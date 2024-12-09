@@ -25,7 +25,7 @@ from getdist import plots
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("ELI")
-from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
+from montecosmo.utils import pdump, pload, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
@@ -72,9 +72,9 @@ print_config(model)
 # pickle_dump(init_params_, save_dir+"init_params_2.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params.p")
+fiduc_params = pload(save_dir+"fiduc_params.p")
 # fiduc_params = pickle_load(save_dir+"fiduc_params_fourier.p")
-init_params_ = pickle_load(save_dir+"init_params_fourier_.p")
+init_params_ = pload(save_dir+"init_params_fourier_.p")
 
 # Condition model on observables
 obs_names = ['obs_mesh']

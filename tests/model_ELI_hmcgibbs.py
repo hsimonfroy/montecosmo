@@ -22,7 +22,7 @@ from functools import partial
 from getdist import plots
 
 
-from montecosmo.utils import pickle_dump, pickle_load, get_vlim, theme_switch, sample_and_save, load_runs
+from montecosmo.utils import pdump, pload, get_vlim, theme_switch, sample_and_save, load_runs
 save_dir = os.path.expanduser("~/scratch/pickles/")
 
 
@@ -68,8 +68,8 @@ print_config(model)
 # pickle_dump(init_params_, save_dir+"init_params_fourier_.p")
 
 # Load fiducial and chain init params
-fiduc_params = pickle_load(save_dir+"fiduc_params.p")
-init_params_ = pickle_load(save_dir+"init_params_.p")
+fiduc_params = pload(save_dir+"fiduc_params.p")
+init_params_ = pload(save_dir+"init_params_.p")
 # fiduc_params = pickle_load(save_dir+"fiduc_params_pm.p")
 # init_params_ = pickle_load(save_dir+"init_params_pm_.p")
 # fiduc_params = pickle_load(save_dir+"fiduc_params_fourier.p")
@@ -356,13 +356,13 @@ step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
 warmup_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=True)))
 key = jr.key(42)
 # last_state = jit(vmap(init_state_fn))(init_params_)
-last_state = pickle_load(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
+last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
 
 
 (last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), n_chains), last_state)
 print(parameters,'\n=======\n')
-pickle_dump(samples | infos, save_path+f"_{0}.p")
-pickle_dump(last_state, save_path+f"_laststate.p")
+pdump(samples | infos, save_path+f"_{0}.p")
+pdump(last_state, save_path+f"_laststate.p")
 
 run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
 i_shift = 0
@@ -371,8 +371,8 @@ for i_run in range(i_shift+1, i_shift+n_runs+1):
     key, run_key = jr.split(key, 2)
     # last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
     last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state, parameters=parameters)
-    pickle_dump(samples | infos, save_path+f"_{i_run}.p")
-    pickle_dump(last_state, save_path+f"_laststate.p")
+    pdump(samples | infos, save_path+f"_{i_run}.p")
+    pdump(last_state, save_path+f"_laststate.p")
 
 raise
 
@@ -438,7 +438,7 @@ mcmc = numpyro.infer.MCMC(
     chain_method="vectorized",
     progress_bar=True,)
 
-last_state = pickle_load(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
+last_state = pload(save_dir+"HMC/HMC_ns256_x_nc8"+"_laststate20.p")
 print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
 mcmc.post_warmup_state = last_state
 # invmm = list(last_state.adapt_state.inverse_mass_matrix.values())[0][0]

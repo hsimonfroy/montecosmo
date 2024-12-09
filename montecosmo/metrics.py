@@ -83,8 +83,8 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
     box_shape : tuple of float
         Physical dimensions of the box.
     kedges : None, int, float, or list
-        If None, set dk to twice the minimum. 
-        If int, specifies number of edges. 
+        If None, set dk to twice the minimum.
+        If int, specifies number of edges.
         If float, specifies dk.
     los : array_like
         Line-of-sight vector.
@@ -100,11 +100,11 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
     mumesh : ndarray
         Mu values for the mesh grid.
     """
-    kmax = 2*np.pi * np.min(mesh_shape / box_shape) / 2 # =knyquist/2
+    kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
 
     if isinstance(kedges, None | int | float):
         if kedges is None:
-            dk = 2*np.pi / np.min(box_shape) * 2
+            dk = 2*np.pi / np.min(box_shape) * 2 # twice the minimum wavenumber
         if isinstance(kedges, int):
             dk = kmax / (kedges+1) # final number of bins will be kedges-1
         elif isinstance(kedges, float):
@@ -113,11 +113,16 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
 
     kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
     kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
-            for m, l, kshape in zip(mesh_shape, box_shape, kshapes)]
+            for m, l, kshape in zip(mesh_shape, box_shape, kshapes)] # h/Mpc physical units
     kmesh = sum(ki**2 for ki in kvec)**0.5
 
     dig = np.digitize(kmesh.reshape(-1), kedges)
     kcount = np.bincount(dig, minlength=len(kedges)+1)
+
+    # Central value of each bin
+    # kavg = (kedges[1:] + kedges[:-1]) / 2
+    kavg = np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges)+1) / kcount
+    kavg = kavg[1:-1]
 
     if los is None:
         mumesh = 1.
@@ -125,11 +130,12 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
         mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
         kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
         mumesh = np.where(kmesh==0, 0, mumesh / kmesh_nozeros)
+
     
-    return dig, kcount, kedges, mumesh
+    return dig, kcount, kavg, mumesh
 
 
-def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int | float | list=None, multipoles=0, los=[0.,0.,1.]):
+def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, multipoles=0, los=[0.,0.,1.]):
     """
     Compute the auto and cross spectrum of 3D fields, with multipoles.
     """
@@ -146,7 +152,8 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int | float | list=N
         los = np.asarray(los)
         los /= np.linalg.norm(los)
     poles = np.atleast_1d(multipoles)
-    dig, kcount, kedges, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
+    dig, kcount, kavg, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
+    n_bins = len(kavg) + 2
 
     # FFTs
     meshk = jnp.fft.fftn(mesh, norm='ortho')
@@ -156,27 +163,25 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int | float | list=N
         mmk = meshk * jnp.fft.fftn(mesh2, norm='ortho').conj()
 
     # Sum powers
-    pk = jnp.empty((len(poles), len(kedges)+1))
+    pk = jnp.empty((len(poles), n_bins))
     for i_ell, ell in enumerate(poles):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh)).reshape(-1)
         if mesh2 is None:
-            psum = jnp.bincount(dig, weights=weights, length=len(kedges)+1)
-        else: # bincount is really slow with complex numbers
-            psum_real = jnp.bincount(dig, weights=weights.real, length=len(kedges)+1)
-            psum_imag = jnp.bincount(dig, weights=weights.imag, length=len(kedges)+1)
+            psum = jnp.bincount(dig, weights=weights, length=n_bins)
+        else: # XXX: bincount is really slow with complex numbers
+            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
+            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
             psum = (psum_real**2 + psum_imag**2)**.5
         pk = pk.at[i_ell].set(psum)
 
     # Normalization and conversion from cell units to [Mpc/h]^3
     pk = (pk / kcount)[:,1:-1] * (box_shape / mesh_shape).prod()
 
-    # Find central values of each bin
-    kbins = (kedges[1:] + kedges[:-1]) / 2
-    # pk = jnp.concatenate([kbins[None], pk])
+    # pk = jnp.concatenate([kavg[None], pk])
     if np.ndim(multipoles)==0:
-        return kbins, pk[0]
+        return kavg, pk[0]
     else:
-        return kbins, pk
+        return kavg, pk
   
 
 def transfer(mesh0, mesh1, box_shape, kedges:int | float | list=None):
@@ -193,7 +198,7 @@ def coherence(mesh0, mesh1, box_shape, kedges:int | float | list=None):
     ks, pk1 = pk_fn(mesh1)
     return ks, pk01 / (pk0 * pk1)**.5
 
-from jax import debug
+
 def pktranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None):
     pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
     ks, pk01 = pk_fn(mesh0, mesh1)  

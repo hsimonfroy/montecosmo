@@ -13,53 +13,76 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
-from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5
+from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5, Tsit5
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
 
 
 
 
-   
 
-def get_cosmo(prior_config, 
-              trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
+def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     """
-    Return cosmological params from latent params.
+    Transform sample params into base params.
     """
-    cosmo = {}
-    for name in ['Omega_m', 'sigma8']:
-        label, loc, scale = prior_config[name]
-        scale *= scaling
+    out = {}
+    for in_name, value in params.items():
+        name = in_name if inv else in_name[:-1]
+        out_name = in_name+'_' if inv else in_name[:-1]
 
-        if not inverse:
-            input_name, output_name = name+'_', name
-            trunc_push = std2trunc # truncate value in interval
-            notrunc_push = lambda x : x * scale + loc
+        loc, scale = config[name]['loc'], config[name]['scale']
+        low, high = config[name].get('low', -jnp.inf), config[name].get('high', jnp.inf)
+        scale *= temp**.5
+
+        # Reparametrize
+        if not inv:
+            if low != -jnp.inf or high != jnp.inf:
+                push = lambda x: std2trunc(x, loc, scale, low, high) # truncate value in interval
+            else:
+                push = lambda x: x * scale + loc
         else:
-            input_name, output_name = name, name+'_'
-            trunc_push = trunc2std
-            notrunc_push = lambda x : (x - loc) / scale
+            if low != -jnp.inf or high != jnp.inf:
+                push = lambda x: trunc2std(x, loc, scale, low, high)
+            else:
+                push = lambda x: (x - loc) / scale
 
-        value = params_[input_name]
-        if name == 'Omega_m':
-            value = trunc_push(value, loc, scale, Planck18.keywords['Omega_b'], 1) # Omega_m > 0.05 > Omega_b
-        elif name == 'sigma8':
-            value = trunc_push(value, loc, scale, 0)
+        out[out_name] = push(value)
+    return out
+
+
+
+def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, temp=1.) -> dict:
+    """
+    Transform sample mesh into base mesh, i.e. initial wavevectors at a=1.
+    """
+    assert len(init) <= 1, "init dict should only have one or zero key"
+    for in_name, mesh in init.items():
+        out_name = in_name+'_' if inv else in_name[:-1]
+
+        # Compute initial power spectrum
+        pk_fn = linear_pk_interp(cosmo, n_interp=256)
+        kvec = fftk(mesh_shape)
+        k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+        pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+        transfer = pk_mesh**.5
+        transfer *= temp**.5
+
+        # Reparametrize
+        if not inv:
+            if fourier:
+                mesh = rg2cgh(mesh)
+            else:
+                mesh = jnp.fft.rfftn(mesh)
+            mesh *= transfer
         else:
-            value = notrunc_push(value)
+            mesh /= transfer  
+            if fourier:
+                mesh = cgh2rg(mesh)
+            else:
+                mesh = jnp.fft.irfftn(mesh)
 
-        if trace_reparam:
-            value = deterministic(output_name, value)
-        cosmo[output_name] = value
-    return cosmo
+        return {out_name:mesh}
+    return {}
 
-## To reparametrize automaticaly
-# from numpyro.infer.reparam import LocScaleReparam
-#     reparam_config = {'Omega_m': LocScaleReparam(centered=0),
-#                       'sigma8': LocScaleReparam(centered=0)}
-#     with numpyro.handlers.reparam(config=reparam_config):
-#         Omega_m = sample('Omega_m', dist.Normal(0.25, 0.2**2))
-#         sigma8 = sample('sigma8', dist.Normal(0.831, 0.14**2))
 
 
 def get_cosmology(**cosmo) -> Cosmology:
@@ -70,72 +93,9 @@ def get_cosmology(**cosmo) -> Cosmology:
                     sigma8 = cosmo['sigma8'])
 
 
-def get_init_mesh(cosmo:Cosmology, mesh_shape, box_shape, fourier=False,
-                  trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
-    """
-    Return initial conditions at a=1 from latent params.
-    """
-    # Compute initial power spectrum
-    pk_fn = linear_pk_interp(cosmo, n_interp=256)
-    kvec = fftk(mesh_shape)
-    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
-    pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
-    pk_mesh *= scaling**2
-
-
-    # Parametrize
-    name = 'init_mesh'
-    if not inverse:
-        input_name, output_name = name+'_', name
-        init = params_[input_name]
-        if fourier:
-            delta_k = rg2cgh(init)
-        else:
-            delta_k = jnp.fft.rfftn(init)
-        delta_k *= pk_mesh**0.5
-        init = jnp.fft.irfftn(delta_k)
-    
-    else:
-        input_name, output_name = name, name+'_'
-        delta_k = jnp.fft.rfftn(params_[input_name])
-        delta_k /= pk_mesh**0.5   
-        if fourier:
-            init = cgh2rg(delta_k)
-        else:
-            init = jnp.fft.irfftn(delta_k)
-
-    if trace_reparam:
-        init = deterministic(output_name, init)
-    return {output_name:init}
-
-
-def get_biases(prior_config, 
-               trace_reparam=False, inverse=False, scaling=1., **params_) -> dict:
-    """
-    Return biases params from latent params.
-    """
-    biases = {}
-    for name in ['b1', 'b2', 'bs2', 'bn2']:
-        _, loc, scale = prior_config[name]
-        scale *= scaling
-
-        if not inverse:
-            input_name, output_name = name+'_', name
-            notrunc_push = lambda x : x * scale + loc
-        else:
-            input_name, output_name = name, name+'_'
-            notrunc_push = lambda x : (x - loc) / scale
-
-        value = notrunc_push(params_[input_name])
-
-        if trace_reparam:
-            value = deterministic(output_name, value)
-        biases[output_name] = value
-    return biases
-
 
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
-                       b1, b2, bs2, bn2, init_mesh, **params):
+                       b1, b2, bs2, bn2, init_mesh):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -158,7 +118,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     mesh_shape = delta.shape
     kvec = fftk(mesh_shape)
     kk_box = sum((ki  * (m / l))**2 
-                 for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
+            for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
 
     # Init weights
     weights = 1
@@ -204,20 +164,28 @@ def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
     return pk_fn
 
 
-def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, trace_meshes):
-    terms = ODETerm(get_ode_fn(cosmo, mesh_shape))
-    solver = Dopri5()
-    # controller = PIDController(rtol=1e-5, atol=1e-5, pcoeff=0.4, icoeff=1, dcoeff=0)
-    controller = PIDController(rtol=1e-2, atol=1e-2, pcoeff=0.4, icoeff=1, dcoeff=0)
-    if trace_meshes < 2: 
-        saveat = SaveAt(t1=True)
-    else: 
-        saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, trace_meshes))      
-    sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                            stepsize_controller=controller, max_steps=8, saveat=saveat)
-    particles = sol.ys
-    # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
-    return particles
+def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-3,
+           grad_fd=True, lap_fd=False):
+    if a_lpt == a_obs:
+        return particles[None]
+    else:
+        terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
+        solver = Tsit5() # Tsit5 usually better than Dopri5
+        controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
+
+        if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
+            saveat = SaveAt(t1=True)
+        elif isinstance(snapshots, int): 
+            saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, snapshots))   
+        else: 
+            saveat = SaveAt(ts=jnp.asarray(snapshots))   
+
+        sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
+                                stepsize_controller=controller, max_steps=10, saveat=saveat)
+        particles = sol.ys
+        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        return particles
+
 
 
 
@@ -252,14 +220,14 @@ Planck18 = partial(Cosmology,
     wa=0.0,)
 
 
-def get_ode_fn(cosmo:Cosmology, mesh_shape, grad_order=1):
+def get_ode_fn(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
 
     def nbody_ode(a, state, args):
         """
         state is a phase space state array [*position, *velocities]
         """
         pos, vel = state
-        forces = pm_forces(pos, mesh_shape, grad_order=grad_order) * 1.5 * cosmo.Omega_m
+        forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -272,7 +240,7 @@ def get_ode_fn(cosmo:Cosmology, mesh_shape, grad_order=1):
     return nbody_ode
 
 
-def make_ode_fn(mesh_shape, grad_order=1, lap_order=0):
+def make_ode_fn(mesh_shape, grad_fd=True, lap_fd=False):
     
     def nbody_ode(state, a, cosmo):
         """
@@ -280,7 +248,7 @@ def make_ode_fn(mesh_shape, grad_order=1, lap_order=0):
         """
         pos, vel = state
 
-        forces = pm_forces(pos, mesh_shape, grad_order=grad_order, lap_order=lap_order) * 1.5 * cosmo.Omega_m
+        forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -294,7 +262,7 @@ def make_ode_fn(mesh_shape, grad_order=1, lap_order=0):
 
 
 
-def invlaplace_kernel(kvec, order=1):
+def invlaplace_kernel(kvec, fd=False):
     """
     Compute the inverse Laplace kernel.
 
@@ -304,21 +272,23 @@ def invlaplace_kernel(kvec, order=1):
     -----------
     kvec: list
         List of wave-vectors
+    fd: bool
+        Finite difference kernel
 
     Returns
     --------
     wts: array
         Complex kernel values
     """
-    if order == 0:
-        kk = sum(ki**2 for ki in kvec)
-    elif order == 1:
+    if fd:
         kk = sum((ki * np.sinc(ki / (2 * np.pi)))**2 for ki in kvec)
+    else:
+        kk = sum(ki**2 for ki in kvec)
     kk_nozeros = np.where(kk==0, 1, kk) 
     return - np.where(kk==0, 0, 1 / kk_nozeros)
 
 
-def gradient_kernel(kvec, direction, order=1):
+def gradient_kernel(kvec, direction, fd=False):
     """
     Computes the gradient kernel in the requested direction
     
@@ -328,6 +298,8 @@ def gradient_kernel(kvec, direction, order=1):
         List of wave-vectors in Fourier space
     direction: int
         Index of the direction in which to take the gradient
+    fd: bool
+        Finite difference kernel
 
     Returns
     --------
@@ -335,16 +307,14 @@ def gradient_kernel(kvec, direction, order=1):
         Complex kernel values
     """
     ki = kvec[direction]
-    if order == 0:
-        pass
-    elif order == 1:
+    if fd:
         ki = (8. * np.sin(ki) - np.sin(2. * ki)) / 6.
     return 1j * ki
 
 
 
 
-def pm_forces(positions, mesh_shape, mesh=None, grad_order=1, lap_order=0, r_split=0):
+def pm_forces(positions, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0):
     """
     Computes gravitational forces on particles using a PM scheme
     """
@@ -357,55 +327,58 @@ def pm_forces(positions, mesh_shape, mesh=None, grad_order=1, lap_order=0, r_spl
 
     # Computes gravitational potential
     kvec = fftk(mesh_shape)
-    pot_k = delta_k * invlaplace_kernel(kvec, lap_order) * longrange_kernel(kvec, r_split=r_split)
+    pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
     # Computes gravitational forces
-    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_order) * pot_k), positions) 
+    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), positions) 
                       for i in range(3)], axis=-1)
 
 
-def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_order=1, lap_order=1):
+def lpt(cosmo:Cosmology, init_mesh, positions, a, mesh_shape=None, order=1, grad_fd=True, lap_fd=False):
     """
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
     a = jnp.atleast_1d(a)
     E = jc.background.Esqr(cosmo, a)**.5
-    mesh_shape = init_mesh.shape
-    delta_k = jnp.fft.rfftn(init_mesh)
+    if jnp.isrealobj(init_mesh):
+        delta_k = jnp.fft.rfftn(init_mesh)
+        mesh_shape = init_mesh.shape
+    else:
+        delta_k = init_mesh
 
-    init_force = pm_forces(positions, mesh_shape, mesh=delta_k, grad_order=grad_order, lap_order=lap_order)
-    dx = growth_factor(cosmo, a) * init_force
-    p = a**2 * growth_rate(cosmo, a) * E * dx
+    init_force = pm_forces(positions, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
+    dq = growth_factor(cosmo, a) * init_force
+    p = a**2 * growth_rate(cosmo, a) * E * dq
     f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
         kvec = fftk(mesh_shape)
-        pot_k = delta_k * invlaplace_kernel(kvec, lap_order)
+        pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
 
         delta2 = 0
         shear_acc = 0
         for i in range(3):
             # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            shear_ii = gradient_kernel(kvec, i, grad_order)**2
+            shear_ii = gradient_kernel(kvec, i, grad_fd)**2
             shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
             delta2 += shear_ii * shear_acc 
             shear_acc += shear_ii
 
             for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
-                hess_ij = gradient_kernel(kvec, i, grad_order) * gradient_kernel(kvec, j, grad_order)
+                hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
 
         
-        init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_order=grad_order)
-        dx2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
-        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dx2
+        init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd)
+        dq2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2
         f2 = (a**2 * E * dGf2a(cosmo, a) * 3/7) * init_force2
 
-        dx += dx2
+        dq += dq2
         p  += p2
         f  += f2
 
-    return dx, p, f
+    return dq, p, f
 
 
 
@@ -420,7 +393,7 @@ def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
     a = jnp.atleast_1d(a)
     los = np.asarray(los)
     los = los / np.linalg.norm(los)
-    # Divide PM momentum by `a` once to retrieve velocity, and once again for comobile velocity  
+    # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
     dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
     # Project velocity on line-of-sight
     dx_rsd = dx_rsd * los
@@ -434,12 +407,11 @@ def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     los = los / np.linalg.norm(los)
 
     kvec = fftk(mesh_shape)
-    kmesh = sum(kk**2 for kk in kvec)**0.5
+    kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
     kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 
-    mumesh = mumesh / kmesh_nozeros 
-    mumesh = jnp.where(kmesh==0, 0, mumesh)
+    mumesh = jnp.where(kmesh==0, 0, mumesh / kmesh_nozeros )
 
     return b + growth_rate(cosmo, a) * mumesh**2
 
