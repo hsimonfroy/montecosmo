@@ -28,7 +28,7 @@ from montecosmo.mcbench import sample_and_save
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
+# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
 
 
 # ## Config and fiduc
@@ -38,6 +38,7 @@ get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer
 
 # Config
 save_dir = os.path.expanduser("~/scratch/pickles/")
+# save_dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
 config = {
           # Mesh and box parameters
           'mesh_shape':3 * (64,), # int
@@ -51,7 +52,8 @@ config = {
 # Load and save model
 model = FieldLevelModel(**default_config | config)
 save_dir += f"m{model.mesh_shape[0]:d}_b{model.box_shape[0]:.1f}"
-save_dir += f"_al{model.a_lpt:.1f}_ao{model.a_obs:.1f}_lo{model.lpt_order:d}_f{model.fourier:d}_o{model.obs}/"
+save_dir += f"_al{model.a_lpt:.1f}_ao{model.a_obs:.1f}_lo{model.lpt_order:d}_f{model.precond:d}_o{model.obs}/"
+# print(model)
 # model.render()
 
 if not os.path.exists(save_dir):
@@ -66,13 +68,13 @@ if not os.path.exists(save_dir):
     model.reset()
     truth = model.predict(samples=truth, hide_base=False, frombase=True)
 
+    print(f"Saving model and truth at {save_dir}")
     os.mkdir(save_dir)
     model.save(save_dir)    
     pdump(truth, save_dir + "truth.p")
-    print(f"Saving model and truth at {save_dir}")
 else:
-    truth = pload(save_dir + "truth.p")
     print(f"Loading truth from {save_dir}")
+    truth = pload(save_dir + "truth.p")
 
 model.condition({'obs': truth['obs']})
 model.block()
@@ -120,7 +122,7 @@ mcmc = infer.MCMC(
 
 
 continue_run = False
-if not continue_run:
+if continue_run:
     mcmc.num_warmup = 0
     last_state = pload(save_path + "_last_state.p")
     mcmc.post_warmup_state = last_state

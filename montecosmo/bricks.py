@@ -18,7 +18,43 @@ from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg
 
 
 
+def lin_power_interp(cosmo:Cosmology, a=1., n_interp=256):
+    """
+    Return a light emulation of the linear matter spectral power.
+    """
+    k = jnp.logspace(-4, 1, n_interp)
+    pk = jc.power.linear_matter_power(cosmo, k, a=a)
+    pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape(-1), k, pk).reshape(x.shape)
+    return pk_fn
 
+def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
+    """
+    Return linear matter spectral power field.
+    """
+    pk_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
+    kvec = fftk(mesh_shape)
+    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+    return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+
+def gausslin_posterior(obs_mesh, cosmo:Cosmology, a, mesh_shape, box_shape, gxy_count):
+    """
+    Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
+    by assuming Gaussian linear model. All fields are in harmonic space.
+    """
+    pk_mesh = lin_power_mesh(cosmo, mesh_shape, box_shape)
+    D1 = growth_factor(cosmo, jnp.atleast_1d(a))
+    stds = (gxy_count * D1**2 + pk_mesh**-1)**-.5
+    means = stds**2 * gxy_count * D1 * obs_mesh
+    return means, stds, pk_mesh
+
+
+
+def get_cosmology(**cosmo) -> Cosmology:
+    """
+    Return full cosmology object from cosmological params.
+    """
+    return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
+                    sigma8 = cosmo['sigma8'])
 
 def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     """
@@ -48,49 +84,95 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
         out[out_name] = push(value)
     return out
 
-
-
-def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, fourier=False, inv=False, temp=1.) -> dict:
+def samp2base_mesh(init:dict, cosmo:Cosmology, mesh_shape, box_shape, precond=False, 
+                   guide1=None, guide2=None, inv=False, temp=1.) -> dict:
     """
     Transform sample mesh into base mesh, i.e. initial wavevectors at a=1.
     """
     assert len(init) <= 1, "init dict should only have one or zero key"
     for in_name, mesh in init.items():
         out_name = in_name+'_' if inv else in_name[:-1]
-
         # Compute initial power spectrum
-        pk_fn = linear_pk_interp(cosmo, n_interp=256)
-        kvec = fftk(mesh_shape)
-        k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
-        pk_mesh = pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
-        transfer = pk_mesh**.5
-        transfer *= temp**.5
 
         # Reparametrize
         if not inv:
-            if fourier:
-                mesh = rg2cgh(mesh)
-            else:
-                mesh = jnp.fft.rfftn(mesh)
-            mesh *= transfer
+            if precond in [0, 1, 2]:
+
+                if precond==0:
+                    # Sample in direct space
+                    mesh = jnp.fft.rfftn(mesh) # ~ G(0, I)
+
+                elif precond==1:
+                    # Sample in harmonic space
+                    mesh = rg2cgh(mesh) # ~ G(0, I)
+
+                elif precond==2:
+                    # Sample in harmonic space with
+                    # partial (and static) posterior preconditioning assuming Gaussian linear model and fiducial cosmology
+                    # as done in [Bayer+2023](http://arxiv.org/abs/2307.09504)
+                    if guide1 is not None:
+                        transfer = guide1 # sigma = (I + n * P_fid(a_obs))^1/2
+                    else:
+                        pk_mesh_fiduc, gxy_count = guide2 # P_fid(a_obs)
+                        transfer = (1 + gxy_count * pk_mesh_fiduc)**.5
+
+                    mesh = rg2cgh(mesh) # ~ G(0, I + n * P_fid(a_obs))
+                    mesh /= transfer # ~ G(0, I)
+
+                pk_mesh = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
+                mesh *= pk_mesh**.5 # ~ G(0, P)
+
+            elif precond==3:
+                # Sample in harmonic space with
+                # complete (and dynamic) posterior preconditioning assuming Gaussian linear model
+                if guide1 is not None:
+                    means, stds = guide1 # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
+                else:
+                    obs_mesh, a, gxy_count = guide2 # delta_obs, a_obs, n
+                    means, stds, _ = gausslin_posterior(obs_mesh, cosmo, a, mesh_shape, box_shape, gxy_count)
+
+                mesh = rg2cgh(mesh) # ~ G( -mu * sigma^-1, sigma^-2 * P) 
+                mesh = stds * mesh + means # ~ G(0, P)
+
+            mesh *= temp**.5
         else:
-            mesh /= transfer  
-            if fourier:
+            mesh /= temp**.5
+            if precond in [0, 1, 2]:
+
+                pk_mesh = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
+                mesh /= pk_mesh**.5 # ~ G(0, I)
+
+                if precond==0:
+                    mesh = jnp.fft.irfftn(mesh)
+
+                elif precond==1:
+                    mesh = cgh2rg(mesh)
+
+                elif precond==2:
+                    if guide1 is not None:
+                        transfer = guide1 # sigma = (I + n * P_fid(a_obs))^1/2
+                    else:
+                        pk_mesh_fiduc, gxy_count = guide2 # P_fid(a_obs)
+                        transfer = (1 + gxy_count * pk_mesh_fiduc)**.5
+
+                    mesh *= transfer # ~ G(0, I + n * P_fid(a_obs))
+                    mesh = cgh2rg(mesh)
+
+            elif precond==3:          
+                if guide1 is not None:
+                    means, stds = guide1 # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
+                else:
+                    obs_mesh, a, gxy_count = guide2 # delta_obs, a_obs, n
+                    means, stds, _ = gausslin_posterior(obs_mesh, cosmo, a, mesh_shape, box_shape, gxy_count)
+
+                mesh = (mesh - means) / stds # ~ G( -mu * sigma^-1, sigma^-2 * P) 
                 mesh = cgh2rg(mesh)
-            else:
-                mesh = jnp.fft.irfftn(mesh)
 
         return {out_name:mesh}
     return {}
 
 
 
-def get_cosmology(**cosmo) -> Cosmology:
-    """
-    Return full cosmology object from cosmological params.
-    """
-    return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
-                    sigma8 = cosmo['sigma8'])
 
 
 
@@ -153,15 +235,6 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
     return weights
 
-
-def linear_pk_interp(cosmo:Cosmology, a=1., n_interp=256):
-    """
-    Return a light emulation of the linear matter power spectrum.
-    """
-    k = jnp.logspace(-4, 1, n_interp)
-    pk = jc.power.linear_matter_power(cosmo, k, a=a)
-    pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape(-1), k, pk).reshape(x.shape)
-    return pk_fn
 
 
 def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-3,
@@ -368,7 +441,6 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, mesh_shape=None, order=1, grad
                 hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
 
-        
         init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd)
         dq2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2

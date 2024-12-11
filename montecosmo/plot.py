@@ -20,6 +20,9 @@ def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, surf=False, **kwargs):
         plt.subplot(121, projection="3d")
         plot_bivar(my_pdf, surf=True)
     """
+    if isinstance(box, (int, float)):
+        box = [[-box, box], [-box, box]]
+
     xs, ys = np.linspace(*box[0], n), np.linspace(*box[1], n)
     xx, yy = np.meshgrid(xs, ys)
     zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
@@ -57,7 +60,7 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
         The 3D mesh to be plotted.
     box_shape : tuple of int, optional
         The shape of the mesh physical box in Mpc/h. If None, it defaults to mesh shape.
-    sli : int or slice, optional
+    sli : int, float or slice, optional
         The slice to be averaged along the last axis of the mesh. 
         If None, entire axis is used. 
         If integer, specifies the number of slices used starting from 0. 

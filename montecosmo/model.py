@@ -7,7 +7,7 @@ from pprint import pformat
 import os
 
 import numpyro.distributions as dist
-from numpyro import sample, deterministic, handlers, render_model
+from numpyro import sample, deterministic, param, handlers, render_model
 from numpyro.infer.util import log_density
 import numpy as np
 
@@ -15,10 +15,12 @@ from jax import numpy as jnp, random as jr, vmap, grad, debug
 
 # from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
-from montecosmo.bricks import samp2base, samp2base_mesh, get_cosmology, lpt, nbody, lagrangian_weights, rsd 
+from montecosmo.bricks import (samp2base, samp2base_mesh, gausslin_posterior, get_cosmology, 
+                                lpt, nbody, lagrangian_weights, rsd) 
 from montecosmo.metrics import power_spectrum
 from montecosmo.utils import pdump, pload
 
+from montecosmo.utils import cgh2rg, id_cgh
 
 
 
@@ -62,9 +64,11 @@ default_config={
                                     'scale':2.,},
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},}, # TODO: rajouter obs? so rename latent variables?
-            'fourier':True,                    
             'obs':'mesh', # 'mesh', 'pk', 'plk', 'bk' # TODO
-            'snapshots':None, # PM snapshots
+            # Preconditioning mode
+            'precond':3, # from 0 to 3
+            # PM snapshots                    
+            'snapshots':None,
             }
 
 bench_config = {
@@ -113,7 +117,7 @@ class Model():
                 hide_fn = lambda site: False
         return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=0, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
+    def predict(self, rng, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
         """
         Run model conditionned on samples.
         If samples is None, return a single prediction.
@@ -175,10 +179,10 @@ class Model():
     def force(self, params):
         return grad(self.logp)(params) # force = - grad potential = grad logp
     
-    def trace(self, rng=0):
+    def trace(self, rng):
         return handlers.trace(handlers.seed(self.model, rng_seed=rng)).get_trace()
     
-    def seed(self, rng=0):
+    def seed(self, rng):
         self.model = handlers.seed(self.model, rng_seed=rng)
 
     def condition(self, data=None, frombase=False):
@@ -256,7 +260,7 @@ class FieldLevelModel(Model):
     lpt_order:int
     gxy_density:float
     latents:dict
-    fourier:bool
+    precond:int
     obs:dict
     snapshots:int|list
 
@@ -314,8 +318,26 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_'
-        init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
-        init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=False, temp=temp)
+        if not self.precond or self.precond==1:
+            init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
+            guide = None
+
+        elif self.precond==2:
+            pk_mesh_fiduc = param('pk_mesh_fiduc', jnp.zeros((*self.mesh_shape[:2], self.mesh_shape[2]//2+1))) # NOTE: fiducial spectral power mesh at a=a_obs
+            transfer = (1 + self.gxy_count * pk_mesh_fiduc)**.5
+            init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(transfer, amp=False)))
+            guide = transfer
+
+        elif self.precond==3:
+            obs_mesh = param('obs_mesh', 0.)
+            obs_mesh = jnp.fft.rfftn(obs_mesh)
+            means, stds, pk_mesh = gausslin_posterior(obs_mesh, cosmology, 
+                                                      self.a_obs, self.mesh_shape, 
+                                                      self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(cgh2rg(-means / stds, amp=False), cgh2rg(pk_mesh**.5 / stds, amp=False)))
+            guide = (means, stds)
+
+        init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.precond, guide1=guide, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k,v in init.items()} # register base params
         return cosmology, bias, init
 
@@ -359,11 +381,9 @@ class FieldLevelModel(Model):
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-        mesh_shape, box_shape = np.asarray(self.mesh_shape), np.asarray(self.box_shape)
 
         if self.obs == 'mesh':
-            gxy_count = (self.gxy_density * (box_shape / mesh_shape).prod())
-            obs_mesh = sample('obs', dist.Normal(mesh, (temp / gxy_count)**.5)) # Gaussian noise
+            obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5)) # Gaussian noise
             return obs_mesh
 
         # elif self.obs == 'pk':
@@ -396,7 +416,7 @@ class FieldLevelModel(Model):
         # Initial conditions
         if init != {}:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
+            init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.precond, inv=inv, temp=temp)
         return cosmo | bias | init
 
 
