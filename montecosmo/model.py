@@ -15,12 +15,13 @@ from jax import numpy as jnp, random as jr, vmap, grad, debug
 
 # from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
-from montecosmo.bricks import (samp2base, samp2base_mesh, gausslin_posterior, get_cosmology, 
-                                lpt, nbody, lagrangian_weights, rsd) 
+from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
+                               gausslin_posterior, lin_power_mesh, 
+                               lpt, nbody, lagrangian_weights, rsd) 
 from montecosmo.metrics import power_spectrum
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, id_cgh
+from montecosmo.utils import cgh2rg, r2chshape
 
 
 
@@ -117,7 +118,7 @@ class Model():
                 hide_fn = lambda site: False
         return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, rng, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
+    def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
         """
         Run model conditionned on samples.
         If samples is None, return a single prediction.
@@ -318,26 +319,20 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_'
-        if not self.precond or self.precond==1:
+        if self.precond==0 or self.precond==1:
             init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
             guide = None
 
         elif self.precond==2:
-            pk_mesh_fiduc = param('pk_mesh_fiduc', jnp.zeros((*self.mesh_shape[:2], self.mesh_shape[2]//2+1))) # NOTE: fiducial spectral power mesh at a=a_obs
-            transfer = (1 + self.gxy_count * pk_mesh_fiduc)**.5
-            init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(transfer, amp=False)))
-            guide = transfer
+            guide = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
+            init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(guide, amp=True)))
 
         elif self.precond==3:
-            obs_mesh = param('obs_mesh', 0.)
-            obs_mesh = jnp.fft.rfftn(obs_mesh)
-            means, stds, pk_mesh = gausslin_posterior(obs_mesh, cosmology, 
-                                                      self.a_obs, self.mesh_shape, 
-                                                      self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(cgh2rg(-means / stds, amp=False), cgh2rg(pk_mesh**.5 / stds, amp=False)))
+            means, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(cgh2rg(-means / stds), cgh2rg(pmeshk**.5 / stds, amp=True)))
             guide = (means, stds)
 
-        init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.precond, guide1=guide, inv=False, temp=temp)
+        init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k,v in init.items()} # register base params
         return cosmology, bias, init
 
@@ -354,7 +349,7 @@ class FieldLevelModel(Model):
         # LPT displacement at a_lpt
         # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
         cosmology._workspace = {}  # HACK: temporary fix
-        dq, p, f = lpt(cosmology, **init, positions=q, a=self.a_lpt, mesh_shape=self.mesh_shape, order=self.lpt_order)
+        dq, p, f = lpt(cosmology, **init, positions=q, a=self.a_lpt, order=self.lpt_order)
         particles = jnp.stack([q + dq, p])
 
         # PM displacement from a_lpt to a_obs
@@ -383,8 +378,9 @@ class FieldLevelModel(Model):
         """
 
         if self.obs == 'mesh':
-            obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5)) # Gaussian noise
-            return obs_mesh
+            # Gaussian noise
+            obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5))
+            return obs_mesh # NOTE: this is 1+delta_obs
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
@@ -416,7 +412,18 @@ class FieldLevelModel(Model):
         # Initial conditions
         if init != {}:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.precond, inv=inv, temp=temp)
+
+            if self.precond==0 or self.precond==1:
+                guide = None
+
+            elif self.precond==2:
+                guide = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
+
+            elif self.precond==3:
+                means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
+                guide = (means, stds)
+
+            init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=inv, temp=temp)
         return cosmo | bias | init
 
 
@@ -425,7 +432,7 @@ class FieldLevelModel(Model):
         dic = {}
         for name in group:
             name = name if base else name+'_'
-            dic[name] = sample(name, dist.Normal(0, 1)) # sample
+            dic[name] = sample(name, dist.Normal(0, 1))
         return dic
 
     def _get_by_groups(self, params, groups, base=True):
@@ -475,11 +482,38 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
 
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(True, True), multipoles=0, los=[0.,0.,1.]):
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), multipoles=0, los=[0.,0.,1.]):
         return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                               comp=comp, kedges=kedges, multipoles=multipoles, los=los)
     
+    @property
+    def obs_meshk(self):
+        if hasattr(self, "_obs_meshk"):
+            return self._obs_meshk
+        else:
+            print("No observed mesh stored. Default to zero mesh.")
+            return jnp.zeros(r2chshape(self.mesh_shape))
+    
+    @obs_meshk.setter
+    def obs_meshk(self, obs_mesh):
+        if jnp.isrealobj(obs_mesh):
+            self._obs_meshk = jnp.fft.rfftn(obs_mesh)
+        else:
+            self._obs_meshk = obs_mesh
 
+    @property
+    def pmeshk_fiduc(self):
+        if hasattr(self, "_pmeshk_fiduc"):
+            return self._pmeshk_fiduc
+        else:
+            print("No fiducial spectral power mesh stored. Will use location of cosmology prior as fiducial.")
+            # NOTE: Alternatively, could also use the spectral power mesh of observed mesh
+            self._pmeshk_fiduc = lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
+            return self._pmeshk_fiduc
+    
+    @pmeshk_fiduc.setter
+    def pmeshk_fiduc(self, value):
+        self._pmeshk_fiduc = value
 
 
 

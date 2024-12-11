@@ -136,7 +136,7 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
     return dig, kcount, kavg, mumesh
 
 
-def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, comp=(True, True), multipoles=0, los=[0.,0.,1.]):
+def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, comp=(False, False), multipoles=0, los=[0.,0.,1.]):
     """
     Compute the auto and cross spectrum of 3D fields, with multipoles.
     """
@@ -167,7 +167,7 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
             for m, kshape in zip(mesh_shape, kshapes)] # cell units
         # kvec = fftk(mesh_shape)
-        mesh *= cic_compensation(kvec)
+        mesh *= cic_compensation(kvec) # TODO: rfftn, and remove shot noise before compensation 
 
     if mesh2 is None:
         mmk = mesh.real**2 + mesh.imag**2

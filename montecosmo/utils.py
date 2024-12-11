@@ -140,29 +140,29 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
 
 
 
-def id_cgh(mesh_shape, part="real", norm="backward"):
+def id_cgh(shape, part="real", norm="backward"):
     """
     Return indices and weights to permute a real Gaussian tensor of shape ``mesh_shape`` (3D)
     into a complex Gaussian Hermitian tensor. 
     Handle the Hermitian symmetry, specificaly at border faces, edges, and vertices.
     """
-    mesh_shape = np.asarray(mesh_shape)
-    sx, sy, sz = mesh_shape
+    shape = np.asarray(shape)
+    sx, sy, sz = shape
     assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
     
-    hx, hy, hz = mesh_shape//2
-    kmesh_shape = (sx, sy, hz+1)
+    hx, hy, hz = shape//2
+    kshape = (sx, sy, hz+1)
     
-    weights = np.ones(kmesh_shape)
+    weights = np.ones(kshape) / 2**.5
     if norm == "backward":
-        weights *= mesh_shape.prod()**.5 
+        weights *= shape.prod()**.5 
     elif norm == "forward":
-        weights /= mesh_shape.prod()**.5
+        weights /= shape.prod()**.5
     else:
         assert norm=="ortho", "norm must be either 'backward', 'forward', or 'ortho'."
 
-    id = np.zeros((3,*kmesh_shape), dtype=int)
-    xyz = np.indices(mesh_shape)
+    id = np.zeros((3,*kshape), dtype=int)
+    xyz = np.indices(shape)
 
     if part == "imag":
         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
@@ -199,41 +199,53 @@ def rg2cgh(mesh, amp:bool=False, norm="backward"):
     """
     Permute a real Gaussian tensor (3D) into a complex Gaussian Hermitian tensor.
     The output would therefore be distributed as the real Fourier transform of a Gaussian tensor.
+
+    This means that by setting `mean, amp = cgh2rg(meank, norm), cgh2rg(ampk, True, norm)`\\
+    then `rg2cgh(mean + amp * N(0,I), norm)` is distributed as `meank + ampk * rfftn(N(0,I), norm)`
+
+    In particular `rg2cgh(N(0,I), norm)` is distributed as `rfftn(N(0,I), norm)`
     """
-    mesh_shape = mesh.shape
-    id_real, w_real = id_cgh(mesh_shape, part="real", norm=norm)
-    id_imag, w_imag = id_cgh(mesh_shape, part="imag", norm=norm)
+    shape = mesh.shape
+    id_real, w_real = id_cgh(shape, part="real", norm=norm)
+    id_imag, w_imag = id_cgh(shape, part="imag", norm=norm)
     if not amp:
         return mesh[*id_real] * w_real + 1j * mesh[*id_imag] * w_imag
     else:
-        # Return wavevector amplitude
-        return (mesh[*id_real]**2 + mesh[*id_imag]**2)**.5
+        # Average wavevector real and imaginary power and return amplitude
+        return ((mesh[*id_real]**2 + mesh[*id_imag]**2) / 2)**.5
 
 
 
 def cgh2rg(meshk, amp:bool=False, norm="backward"):
     """
     Permute a complex Gaussian Hermitian tensor into a real Gaussian tensor (3D).
+
+    This means that by setting `mean, amp = cgh2rg(meank, norm), cgh2rg(ampk, True, norm)`\\
+    then `rg2cgh(mean + amp * N(0,I), norm)` is distributed as `meank + ampk * rfftn(N(0,I), norm)`
+
+    In particular `rg2cgh(N(0,I), norm)` is distributed as `rfftn(N(0,I), norm)`
     """
-    meshk_shape = meshk.shape
-    mesh_shape = *meshk_shape[:2], 2*(meshk_shape[2]-1)
-    id_real, w_real = id_cgh(mesh_shape, part="real", norm=norm)
-    id_imag, w_imag = id_cgh(mesh_shape, part="imag", norm=norm)
+    shape = ch2rshape(meshk.shape)
+    id_real, w_real = id_cgh(shape, part="real", norm=norm)
+    id_imag, w_imag = id_cgh(shape, part="imag", norm=norm)
     
-    mesh = jnp.zeros(mesh_shape)
+    mesh = jnp.zeros(shape)
     if not amp:
         mesh = mesh.at[*id_imag].set(meshk.imag / w_imag)
         mesh = mesh.at[*id_real].set(meshk.real / w_real)
         # NOTE: real after imag to get rid of infs
     else:
-        # Divide power equally between wavevector real and imaginary part, 
-        # cf. Complex Gaussian definition
-        mesh = mesh.at[*id_imag].set(meshk.real / 2**.5)
-        mesh = mesh.at[*id_real].set(meshk.real / 2**.5)
+        # Give same amplitude to wavevector real and imaginary part
+        mesh = mesh.at[*id_imag].set(meshk.real)
+        mesh = mesh.at[*id_real].set(meshk.real)
     return mesh
 
 
+def ch2rshape(kshape):
+    return (*kshape[:2], 2*(kshape[2]-1))
 
+def r2chshape(shape):
+    return (*shape[:2], shape[2]//2+1)
 
 
 
