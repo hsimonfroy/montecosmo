@@ -219,7 +219,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-3,
+def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-2,
            grad_fd=True, lap_fd=False):
     if a_lpt == a_obs:
         return particles[None]
@@ -238,7 +238,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
                                 stepsize_controller=controller, max_steps=10, saveat=saveat)
         particles = sol.ys
-        debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
         return particles
 
 

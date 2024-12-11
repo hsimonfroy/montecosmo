@@ -13,7 +13,7 @@ from jax import numpy as jnp, random as jr, jit, vmap, grad
 from jax.tree_util import tree_map
 
 from numpyro.infer import MCMC
-from numpyro.diagnostics import print_summary
+from numpyro import diagnostics
 from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
@@ -46,10 +46,12 @@ class Samples(UserDict):
     groups: dict = None # dict of list of keys
 
     def __post_init__(self):
-        if self.groups is None:
-            self.groups = {}
         if isinstance(self.data, Samples):
             self.data = self.data.data # avoid nested Samples
+            if self.groups is None:
+                self.groups = self.data.groups # inherit groups
+        if self.groups is None:
+            self.groups = {}
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
@@ -130,15 +132,16 @@ class Chains(Samples):
 
     def __post_init__(self):
         super().__post_init__()
+        if isinstance(self.data, Chains):
+            if self.labels is None:
+                self.labels = self.data.labels
         if self.labels is None:
             self.labels = {}
-        # assert tree.all(tree.map(lambda x: x>=2, self.ndim)), " all values must have at least 2 dimensions"
 
     def to_getdist(self, label=None):
-        dic = tree.map(lambda x: jnp.concatenate(x, 0), self.data) # concatenate all chains
         samples, names, labels = [], [], []
-        for k, v in dic.items():
-            samples.append(v)
+        for k, v in self.data.items():
+            samples.append(v.reshape(-1))
             names.append(k)
             labels.append(self.labels.get(k, None))
         return MCSamples(samples=samples, names=names, labels=labels, label=label)
@@ -148,8 +151,33 @@ class Chains(Samples):
         return (self.data,), (self.groups, self.labels)
 
     @classmethod
-    def load(cls):
-        pass
+    def load_from_runs(cls, path, start_run, end_run, transforms=None, groups=None, labels=None, axis=1):
+        print(f"Loading: {os.path.basename(path)}, from run {start_run} to run {end_run} (included)")
+        if transforms is None:
+            transforms = []
+        transforms = np.atleast_1d(transforms)
+
+        for i_run in range(start_run, end_run+1):
+            # Load
+            part = cls(pload(path+f"_{i_run}.p"), groups=groups, labels=labels)
+            for trans in transforms:
+                part = trans(part)
+
+            # Init or append samples
+            if i_run == start_run:
+                samples = part
+            else:
+                samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=axis), samples, part)
+                del part  
+
+        return samples
+
+
+
+
+
+    def print_summary(self, group_by_chain=True):
+        diagnostics.print_summary(self.data, group_by_chain=group_by_chain)
 
 
 
