@@ -11,7 +11,7 @@ from numpyro import sample, deterministic, param, handlers, render_model
 from numpyro.infer.util import log_density
 import numpy as np
 
-from jax import numpy as jnp, random as jr, vmap, grad, debug
+from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 
 # from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
@@ -21,7 +21,8 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology,
 from montecosmo.metrics import power_spectrum
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, r2chshape
+from montecosmo.utils import cgh2rg, r2chshape, nvmap, thin_array
+from montecosmo.mcbench import Chains
 
 
 
@@ -151,22 +152,24 @@ class Model():
                 samples = (samples,)
             rng = jr.split(rng, samples)
             # Nest vmaps
-            pred_fn = single_prediction
-            for _ in range(len(samples)):
-                pred_fn = vmap(pred_fn)
-            return pred_fn(rng)
+            # pred_fn = single_prediction
+            # for _ in range(len(samples)):
+            #     pred_fn = vmap(pred_fn)
+            # return pred_fn(rng)
+            return nvmap(single_prediction, len(samples))(rng)
         
         elif isinstance(samples, dict):
             # All item shapes should match on the first batch_ndim dimensions,
-            # so take the first key shape
+            # so take the first item shape
             shape = jnp.shape(samples[next(iter(samples))])[:batch_ndim]
             rng = jr.split(rng, shape)
-            # Nest vmaps
-            pred_fn = single_prediction
-            for _ in range(len(shape)):
-                pred_fn = vmap(pred_fn)
-            return pred_fn(rng, samples)
+            # # Nest vmaps
+            # pred_fn = single_prediction
+            # for _ in range(len(shape)):
+            #     pred_fn = vmap(pred_fn)
+            return nvmap(single_prediction, len(shape))(rng, samples)
     
+
 
     ############
     # Wrappers #
@@ -226,6 +229,10 @@ class Model():
     @classmethod
     def load(cls, dir_path): # XXX: path or dir_path?
         return cls(**pload(os.path.join(dir_path, "model.p")))
+
+
+
+
 
 
 
@@ -516,8 +523,34 @@ class FieldLevelModel(Model):
         self._pmeshk_fiduc = value
 
 
+    def load_runs(self, path, start_run, end_run, transforms=None, batch_ndim=2) -> Chains:
+        return Chains.load_runs(path, start_run, end_run, transforms, 
+                                groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
-    # def load(self, path):
+
+    def reparam_chains(self, chains, batch_ndim=2): # TODO: Merge with reparam
+        chains.data |= nvmap(self.reparam, batch_ndim)(chains.data)
+        return chains
+    
+    def thin_chains(self, chains, thinning=1, moment=None, batch_ndim=2):
+        axis = max(batch_ndim-1, 0)
+        info = "n_evals"
+        if info in chains:
+            infos, rest = chains[[info], ['~'+info]]
+            fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
+            infos = tree.map(fn, infos)
+        else:
+            rest = chains
+            infos = {}
+
+        fn = lambda x: thin_array(x, thinning, moment, axis=axis)
+        return tree.map(fn, rest) | infos
+
+    def choice_cells(self, chains, rng, n, batch_ndim=2):
+        pass
+
+
+
 
     # def prior(self):
     #     """

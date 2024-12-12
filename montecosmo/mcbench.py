@@ -43,19 +43,20 @@ class Samples(UserDict):
     Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
     """
     data: dict
-    groups: dict = None # dict of list of keys
+    groups: dict = None # dict of list of key
 
     def __post_init__(self):
         if isinstance(self.data, Samples):
-            self.data = self.data.data # avoid nested Samples
+            samples = self.data
+            self.data = samples.data # avoid nested Samples
             if self.groups is None:
-                self.groups = self.data.groups # inherit groups
+                self.groups = samples.groups # inherit groups
         if self.groups is None:
             self.groups = {}
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
-        if self._istreeof(key, (int, slice)):
+        if self._istreeof(key, (int, slice, type(Ellipsis))):
             return tree.map(lambda x: x[key], self)
 
         # Querying with groups
@@ -71,21 +72,26 @@ class Samples(UserDict):
                     return self._get(key, default_fn)
                 
             elif isinstance(key, list): # construct new instance
-                # return type(self)({k:self._get(k, default_fn) for k in self._expand_key(key)}, self.groups)
-                data = {'data': {k:self._get(k, default_fn) for k in self._expand_key(key)}}
-                # TODO: better way to propagate cosntruction through inheritance? e.g. only pass relevant labels?
+                data = {'data': {k:self._get(k, default_fn) for k in self._parse_key(key)}}
                 return type(self)(**asdict(self) | data) 
             
             elif isinstance(key, tuple):
-                return tuple(self.__getitem__(k, default_fn) for k in self._expand_key(key))
+                return tuple(self.__getitem__(k, default_fn) for k in self._parse_key(key))
     
-    def _expand_key(self, key):
+    def _parse_key(self, key):
         newkey = ()
         for k in key:
-            if isinstance(k, str) and k in self.groups:
-                newkey += tuple(self.groups[k])
+            if isinstance(k, str) and k.startswith('~'): # everything but
+                k = k[1:]
+                if k in self.groups:
+                    newkey += tuple(self.data.keys() - set(self.groups[k]))
+                else:
+                    newkey += tuple(self.data.keys() - {k})
             else:
-                newkey += (k,)
+                if isinstance(k, str) and k in self.groups:
+                    newkey += tuple(self.groups[k])
+                else:
+                    newkey += (k,) # handle str and list
         return newkey
     
     def _istreeof(self, obj, type):
@@ -121,6 +127,22 @@ class Samples(UserDict):
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_unflatten(cls, aux, data):
         return cls(*data, *aux)
+    
+    def __or__(self, other):
+        if isinstance(other, UserDict):
+            data = {'data': self.data | other.data}
+            return type(self)(**asdict(self) | data)
+        if isinstance(other, dict):
+            data = {'data': self.data | other}
+            return type(self)(**asdict(self) | data)
+        return NotImplemented
+
+    def __ior__(self, other):
+        new = super().__ior__(other)
+        if isinstance(other, Samples):
+            new.groups |= other.groups
+        return self
+
 
 
 
@@ -133,10 +155,28 @@ class Chains(Samples):
     def __post_init__(self):
         super().__post_init__()
         if isinstance(self.data, Chains):
+            chains = self.data
             if self.labels is None:
-                self.labels = self.data.labels
+                self.labels = chains.labels
         if self.labels is None:
             self.labels = {}
+
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_flatten(self):
+        return (self.data,), (self.groups, self.labels)
+    
+    def __or__(self, other):
+        new = super().__or__(other)
+        if isinstance(other, Chains):
+            print("ho")
+            new.labels |= other.labels
+        return new
+
+    def __ior__(self, other):
+        new = super().__ior__(other)
+        if isinstance(other, Chains):
+            new.labels |= other.labels
+        return self
 
     def to_getdist(self, label=None):
         samples, names, labels = [], [], []
@@ -145,39 +185,49 @@ class Chains(Samples):
             names.append(k)
             labels.append(self.labels.get(k, None))
         return MCSamples(samples=samples, names=names, labels=labels, label=label)
+    
 
-    # NOTE: no need with register_dataclass JAX >=0.4.27
-    def tree_flatten(self):
-        return (self.data,), (self.groups, self.labels)
+    def print_summary(self, group_by_chain=True):
+        diagnostics.print_summary(self.data, group_by_chain=group_by_chain)
 
     @classmethod
-    def load_from_runs(cls, path, start_run, end_run, transforms=None, groups=None, labels=None, axis=1):
+    def load_runs(cls, path, start_run, end_run, transforms=None, groups=None, labels=None, batch_ndim=2):
+        """
+        Load and append runs (or extra fields) saved in different files with same name except index.
+
+        Both runs `start_run` and `end_run` are included.
+        Runs are concatenated along last batch dimension.
+        """
         print(f"Loading: {os.path.basename(path)}, from run {start_run} to run {end_run} (included)")
         if transforms is None:
             transforms = []
         transforms = np.atleast_1d(transforms)
 
+        # @jit
+        def transform(samples):
+            for trans in transforms:
+                samples = trans(samples, batch_ndim=batch_ndim)
+            return samples
+
         for i_run in range(start_run, end_run+1):
             # Load
             part = cls(pload(path+f"_{i_run}.p"), groups=groups, labels=labels)
-            for trans in transforms:
-                part = trans(part)
+            part = transform(part)
 
             # Init or append samples
+            if batch_ndim == 0:
+                part = tree.map(lambda x: x[None], part)
+
             if i_run == start_run:
                 samples = part
             else:
-                samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=axis), samples, part)
+                samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=max(batch_ndim-1, 0)), samples, part)
                 del part  
 
         return samples
 
 
 
-
-
-    def print_summary(self, group_by_chain=True):
-        diagnostics.print_summary(self.data, group_by_chain=group_by_chain)
 
 
 
@@ -792,64 +842,68 @@ def transform_ess(traj):
 
 # TODO: can select var_names directly in numpyro run api
 
-def save_run(mcmc:MCMC, i_run:int, save_path:str, var_names:list=None, 
-             extra_fields:list=[], group_by_chain:bool=True):
+def save_run(mcmc:MCMC, i_run:int, path:str, names:list=None, 
+             extra_fields:list=None, group_by_chain:bool=True):
     """
     Save one run of MCMC sampling, with extra fields and last state.
     If `var_names` is None, save all the variables.
     """
     # Save samples (and extra fields)
     samples = mcmc.get_samples(group_by_chain)
-    if var_names is not None:
-        samples = {key: samples[key] for key in var_names}
+    if names is not None:
+        samples = {key: samples[key] for key in names}
 
-    if extra_fields:
+    if extra_fields is not None:
         extra = mcmc.get_extra_fields(group_by_chain)
-        if "num_steps" in extra.keys(): # renaming num_steps into clearer n_evals
+        if "num_steps" in extra: # renaming num_steps into clearer n_evals
             n_evals = extra.pop("num_steps")
             samples.update(n_evals=n_evals)
-        samples.update(extra)
+        samples |= extra
         del extra
 
-    pdump(samples, save_path+f"_{i_run}.p")
+    pdump(samples, path+f"_{i_run}.p")
+    # jnp.savez(save_path+f"_{i_run}.npz", **samples) # better for dict of array-likes
     del samples
 
     # Save or overwrite last state
-    pdump(mcmc.last_state, save_path+f"_last_state.p") 
+    pdump(mcmc.last_state, path+f"_last_state.p") 
 
 
-def sample_and_save(mcmc:MCMC, n_runs:int, save_path:str, var_names:list=None, 
-                    extra_fields:list=[], rng_key=jr.key(0), group_by_chain:bool=True, init_params=None) -> MCMC:
+def sample_and_save(mcmc:MCMC, n_runs:int, path:str, names:list=None, 
+                    extra_fields:list=[], rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
     Do `mcmc.num_warmup` warmup steps, followed by `n_runs` times `mcmc.num_samples` sampling steps.
     If `var_names` is None, save all the variables.
     """
+    if isinstance(rng, int):
+        rng = jr.key(rng)
+
     # Warmup sampling
     if mcmc.num_warmup>=1:
         print(f"run {0}/{n_runs} (warmup)")
 
         # Warmup
-        mcmc.warmup(rng_key, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
-        save_run(mcmc, 0, save_path, var_names, extra_fields, group_by_chain)
+        mcmc.warmup(rng, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
+        save_run(mcmc, 0, path, names, extra_fields, group_by_chain)
 
         # Handling rng key and destroy init_params
-        key_run = mcmc.post_warmup_state.rng_key
+        rng_run = mcmc.post_warmup_state.rng_key
         init_params = None
     else:
-        key_run = rng_key
+        rng_run = rng
 
     # Run sampling
     for i_run in range(1, n_runs+1):
         print(f"run {i_run}/{n_runs}")
             
         # Run
-        mcmc.run(key_run, extra_fields=extra_fields, init_params=init_params)
-        save_run(mcmc, i_run, save_path, var_names, extra_fields)
+        mcmc.run(rng_run, extra_fields=extra_fields, init_params=init_params)
+        save_run(mcmc, i_run, path, names, extra_fields)
 
         # Init next run at last state
         mcmc.post_warmup_state = mcmc.last_state
-        key_run = mcmc.post_warmup_state.rng_key
+        rng_run = mcmc.post_warmup_state.rng_key
     return mcmc
 
 

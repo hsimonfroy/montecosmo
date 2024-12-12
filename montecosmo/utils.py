@@ -6,8 +6,7 @@ from functools import wraps
 import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
-from jax import jit, vmap, grad
-from jax.tree_util import tree_map
+from jax import jit, vmap, grad, tree
 
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
@@ -55,7 +54,13 @@ def get_jit(*args, **kwargs):
     return custom_jit
 
 
-
+def nvmap(fun, n):
+    """
+    Nest vmap n times.
+    """
+    for _ in range(n):
+        fun = vmap(fun)
+    return fun
 
 
 
@@ -254,7 +259,27 @@ def r2chshape(shape):
 
 
 
+def thin_array(a, thinning=1, moment:int|list=None, axis=0):
+    """
+    If moment is array-like, moment dimension is added as a last dimension.
+    """
+    a = jnp.moveaxis(a, axis, -1)
+    shape = a.shape
+    n_split = max(np.rint(shape[-1]/thinning), 1)
+    a = jnp.array_split(a, n_split, axis=-1)
 
+    if moment is None:
+        fn = lambda x: x[...,-1]
+    else:
+        if isinstance(moment, int):
+            fn = lambda x: jnp.sum(x**moment, axis=-1)
+        else:
+            moment = jnp.asarray(moment)
+            fn = lambda x: jnp.sum(x[...,None]**moment, axis=-2)
+
+    a = tree.map(fn, a)
+    a = jnp.stack(a, axis=-1)
+    return jnp.moveaxis(a, -1, axis)
 
 
 
