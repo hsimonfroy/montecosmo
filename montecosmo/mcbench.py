@@ -168,7 +168,6 @@ class Chains(Samples):
     def __or__(self, other):
         new = super().__or__(other)
         if isinstance(other, Chains):
-            print("ho")
             new.labels |= other.labels
         return new
 
@@ -374,7 +373,7 @@ def thin(dic, thinning=1, moments=None, axis=0):
 
 def choice_cell(rng_key, a, n, axis):
     """
-    Chose n random coordinates from last axis, obtained by flatenning given axis. 
+    Chose n random coordinates from last axis, obtained by flatenning given axes. 
     Ensure reproducibilty independently of ungiven axes.
     """
     # Move given axes at the end

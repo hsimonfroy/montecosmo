@@ -534,20 +534,32 @@ class FieldLevelModel(Model):
     
     def thin_chains(self, chains, thinning=1, moment=None, batch_ndim=2):
         axis = max(batch_ndim-1, 0)
-        info = "n_evals"
-        if info in chains:
-            infos, rest = chains[[info], ['~'+info]]
-            fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
-            infos = tree.map(fn, infos)
+        name = "n_evals"
+        if name in chains:
+            infos, rest = chains[[name], ['~'+name]]
+            sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
+            infos = tree.map(sum_fn, infos)
         else:
             rest = chains
             infos = {}
 
-        fn = lambda x: thin_array(x, thinning, moment, axis=axis)
-        return tree.map(fn, rest) | infos
+        thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
+        return infos | tree.map(thin_fn, rest)
 
-    def choice_cells(self, chains, rng, n, batch_ndim=2):
-        pass
+    def choice_chains(self, chains, rng, n, batch_ndim=2):
+        if isinstance(rng, int):
+            rng = jr.key(rng)
+        choice_fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
+        choice_fn = nvmap(choice_fn, batch_ndim)
+
+        name = "init_mesh"
+        for k in [name, name+'_']:
+            if k in chains:
+                chains |= tree.map(choice_fn, chains[[k]])
+        return chains
+
+        
+
 
 
 

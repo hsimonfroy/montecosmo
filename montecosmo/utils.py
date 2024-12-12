@@ -281,6 +281,22 @@ def thin_array(a, thinning=1, moment:int|list=None, axis=0):
     a = jnp.stack(a, axis=-1)
     return jnp.moveaxis(a, -1, axis)
 
+# def choice_array(rng_key, a, n, axis):
+#     """
+#     Chose n random coordinates from last axis, obtained by flatenning given axes. 
+#     Ensure reproducibilty independently of ungiven axes.
+#     """
+#     # Move given axes at the end
+#     axis = jnp.atleast_1d(axis)
+#     dest = -1-jnp.arange(len(axis)) 
+#     a = jnp.moveaxis(a, axis, dest)
+
+#     # Remove axes to flatten from shape
+#     shape = list(a.shape)
+#     for ax in axis:
+#         shape.pop(ax) 
+
+#     return jr.choice(rng_key, a.reshape((*shape,-1)), shape=(n,), replace=False, axis=-1)
 
 
 # def get_noise_fn(t0, t1, noises, steps=False):
