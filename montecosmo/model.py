@@ -317,7 +317,7 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
         for g in ['cosmo', 'bias']:
-            dic = self._sample_group(self.groups[g], base=False) # sample               
+            dic = self._sample_gauss(self.groups[g], base=False) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k,v in dic.items()},) # register base params
         cosmo, bias = tup
@@ -435,11 +435,16 @@ class FieldLevelModel(Model):
 
 
 
-    def _sample_group(self, group, base=False):
+    def _sample_gauss(self, names:str|list, base=False):
         dic = {}
-        for name in group:
+        names = np.atleast_1d(names)
+        for name in names:
+            if name == 'init_mesh':
+                scale = jnp.ones(self.mesh_shape)
+            else:
+                scale = 1
             name = name if base else name+'_'
-            dic[name] = sample(name, dist.Normal(0, 1))
+            dic[name] = sample(name, dist.Normal(0, scale))
         return dic
 
     def _get_by_groups(self, params, groups, base=True):
@@ -528,7 +533,7 @@ class FieldLevelModel(Model):
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
 
-    def reparam_chains(self, chains, batch_ndim=2): # TODO: Merge with reparam
+    def reparam_chains(self, chains, batch_ndim=2):
         chains.data |= nvmap(self.reparam, batch_ndim)(chains.data)
         return chains
     

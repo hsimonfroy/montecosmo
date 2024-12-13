@@ -37,7 +37,6 @@ from jax import tree, tree_util
 # @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
 @dataclass
 class Samples(UserDict):
-    # TODO: is UserDict slower than dict?
     """
     Global slicing and indexing s[1:3,2]
     Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
@@ -53,6 +52,7 @@ class Samples(UserDict):
                 self.groups = samples.groups # inherit groups
         if self.groups is None:
             self.groups = {}
+        self.groups = self.groups.copy()
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
@@ -128,20 +128,54 @@ class Samples(UserDict):
     def tree_unflatten(cls, aux, data):
         return cls(*data, *aux)
     
+    
     def __or__(self, other):
-        if isinstance(other, UserDict):
-            data = {'data': self.data | other.data}
-            return type(self)(**asdict(self) | data)
-        if isinstance(other, dict):
-            data = {'data': self.data | other}
-            return type(self)(**asdict(self) | data)
-        return NotImplemented
-
-    def __ior__(self, other):
-        new = super().__ior__(other)
+        newdict = asdict(self)
         if isinstance(other, Samples):
-            new.groups |= other.groups
-        return self
+            otherdict = asdict(other)
+            for k in otherdict:
+                if k in newdict:
+                    newdict[k] = newdict[k] | otherdict[k]
+                else:
+                    return NotImplemented
+        elif isinstance(other, UserDict):
+            newdict |= {'data': self.data | other.data}
+        elif isinstance(other, dict):
+            newdict |= {'data': self.data | other}
+        else:
+            return NotImplemented
+        return type(self)(**newdict)
+    
+    def __ror__(self, other):
+        newdict = asdict(self)
+        if isinstance(other, Samples):
+            otherdict = asdict(other)
+            for k in otherdict:
+                if k in newdict:
+                    newdict[k] = otherdict[k] | newdict[k]
+                else:
+                    return NotImplemented
+        elif isinstance(other, UserDict):
+            newdict |= {'data': other.data | self.data}
+        elif isinstance(other, dict):
+            newdict |= {'data': other | self.data}
+        else:
+            return NotImplemented
+        return type(self)(**newdict)
+
+    def __ior__(self, other): 
+        # NOTE: inplace or, so dict |= UserDict remains a dict, contrary to dic | UsertDict
+        if isinstance(other, Samples):
+            otherdict = asdict(other)
+            selfdict = asdict(self)
+            for k in selfdict:
+                self.__setattr__(k, selfdict[k] | otherdict.get(k, {}) )
+            return self
+        else:
+            return super().__ior__(other)
+
+
+
 
 
 
@@ -160,22 +194,12 @@ class Chains(Samples):
                 self.labels = chains.labels
         if self.labels is None:
             self.labels = {}
+        
 
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
         return (self.data,), (self.groups, self.labels)
-    
-    def __or__(self, other):
-        new = super().__or__(other)
-        if isinstance(other, Chains):
-            new.labels |= other.labels
-        return new
 
-    def __ior__(self, other):
-        new = super().__ior__(other)
-        if isinstance(other, Chains):
-            new.labels |= other.labels
-        return self
 
     def to_getdist(self, label=None):
         samples, names, labels = [], [], []
@@ -224,6 +248,19 @@ class Chains(Samples):
                 del part  
 
         return samples
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
