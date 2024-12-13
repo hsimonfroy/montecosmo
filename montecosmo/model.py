@@ -564,7 +564,11 @@ class FieldLevelModel(Model):
         return chains
 
         
+    def init_model(self, cosmology, temp=1.):
 
+        means, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
+
+        return self.model
 
 
 

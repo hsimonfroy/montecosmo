@@ -424,10 +424,10 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_fd=True, lap_fd=
                 hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
 
-        init_force2 = pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd)
-        dq2 = (growth_factor_second(cosmo, a) * 3/7) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        init_force2 = (3/7) * pm_forces(positions, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd)
+        dq2 = growth_factor_second(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2
-        f2 = (a**2 * E * dGf2a(cosmo, a) * 3/7) * init_force2
+        f2 = (a**2 * E * dGf2a(cosmo, a)) * init_force2
 
         dq += dq2
         p  += p2
