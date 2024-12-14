@@ -21,7 +21,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology,
 from montecosmo.metrics import power_spectrum
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, r2chshape, nvmap, thin_array
+from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, thin_array
 from montecosmo.mcbench import Chains
 
 
@@ -405,7 +405,7 @@ class FieldLevelModel(Model):
 
 
 
-    def reparam(self, params:dict, inv=False, temp=1.):
+    def reparam(self, params:dict, fourier=True, inv=False, temp=1.):
         """
         Transform sample params into base params.
         """
@@ -417,7 +417,7 @@ class FieldLevelModel(Model):
         bias = samp2base(bias, self.latents, inv=inv, temp=temp)
 
         # Initial conditions
-        if init != {}:
+        if len(init) > 0:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
 
             if self.precond==0 or self.precond==1:
@@ -430,7 +430,11 @@ class FieldLevelModel(Model):
                 means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
                 guide = (means, stds)
 
+            if not fourier and inv:
+                init = tree.map(lambda x: jnp.fft.rfftn(x), init)
             init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=inv, temp=temp)
+            if not fourier and not inv:
+                init = tree.map(lambda x: jnp.fft.irfftn(x), init)
         return cosmo | bias | init
 
 
@@ -507,11 +511,11 @@ class FieldLevelModel(Model):
             return jnp.zeros(r2chshape(self.mesh_shape))
     
     @obs_meshk.setter
-    def obs_meshk(self, obs_mesh):
-        if jnp.isrealobj(obs_mesh):
-            self._obs_meshk = jnp.fft.rfftn(obs_mesh)
+    def obs_meshk(self, value):
+        if jnp.isrealobj(value):
+            self._obs_meshk = jnp.fft.rfftn(value)
         else:
-            self._obs_meshk = obs_mesh
+            self._obs_meshk = value
 
     @property
     def pmeshk_fiduc(self):
@@ -528,13 +532,18 @@ class FieldLevelModel(Model):
         self._pmeshk_fiduc = value
 
 
+
+
+    ##################
+    # Chains loading #
+    ##################
     def load_runs(self, path, start_run, end_run, transforms=None, batch_ndim=2) -> Chains:
         return Chains.load_runs(path, start_run, end_run, transforms, 
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
 
-    def reparam_chains(self, chains, batch_ndim=2):
-        chains.data |= nvmap(self.reparam, batch_ndim)(chains.data)
+    def reparam_chains(self, chains, fourier=False, batch_ndim=2):
+        chains.data |= nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     
     def thin_chains(self, chains, thinning=1, moment=None, batch_ndim=2):
@@ -551,7 +560,7 @@ class FieldLevelModel(Model):
         thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
         return infos | tree.map(thin_fn, rest)
 
-    def choice_chains(self, chains, rng, n, batch_ndim=2):
+    def choice_chains(self, chains, n, rng=42, batch_ndim=2):
         if isinstance(rng, int):
             rng = jr.key(rng)
         choice_fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
@@ -564,13 +573,23 @@ class FieldLevelModel(Model):
         return chains
 
         
-    def init_model(self, cosmology, temp=1.):
+    def init_model(self, rng, base=False, temp=1.):
+        # Fix cosmology and biases to prior location
+        cosmology = get_cosmology(**self.prior_loc)
+        b1 = self.prior_loc['b1']
 
-        means, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
+        # initial field given other latent and observation, assuming linear Gaussian model
+        means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+        means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, amp=True)
+        post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
 
-        return self.model
+        init_params = self.prior_loc | {'init_mesh': post_mesh}
+        if base:
+            return init_params
+        else:
+            return self.reparam(init_params, inv=True)
 
-
+    
 
 
     # def prior(self):

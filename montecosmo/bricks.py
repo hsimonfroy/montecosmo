@@ -36,7 +36,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
 
-def gausslin_posterior(obs_meshk, cosmo:Cosmology, a, box_shape, gxy_count):
+def gausslin_posterior(obs_meshk, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Gaussian linear model. All fields are in harmonic space.
@@ -46,8 +46,9 @@ def gausslin_posterior(obs_meshk, cosmo:Cosmology, a, box_shape, gxy_count):
     pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
 
     D1 = growth_factor(cosmo, jnp.atleast_1d(a))
-    stds = (gxy_count * D1**2 + pmeshk**-1)**-.5
-    means = stds**2 * gxy_count * D1 * obs_meshk
+    evolve = (1 + b1) * D1 # linear Eulerian bias = 1 + linear Lagrangian bias
+    stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
+    means = stds**2 * gxy_count * evolve * obs_meshk
     return means, stds, pmeshk
 
 
@@ -453,6 +454,9 @@ def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
     # Project velocity on line-of-sight
     dx_rsd = dx_rsd * los
     return dx_rsd
+
+
+
 
 
 def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):

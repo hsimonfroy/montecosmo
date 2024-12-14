@@ -41,6 +41,7 @@ class Samples(UserDict):
     Global slicing and indexing s[1:3,2]
     Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
     """
+    # see also https://github.com/cosmodesi/cosmoprimo/blob/33011906d323f56c32c77ba034a6679b02f16876/cosmoprimo/emulators/tools/samples.py#L43
     data: dict
     groups: dict = None # dict of list of key
 
@@ -73,7 +74,7 @@ class Samples(UserDict):
                 
             elif isinstance(key, list): # construct new instance
                 data = {'data': {k:self._get(k, default_fn) for k in self._parse_key(key)}}
-                return type(self)(**asdict(self) | data) 
+                return type(self)(**asdict(self) | data) # should we also pop incomplete groups?
             
             elif isinstance(key, tuple):
                 return tuple(self.__getitem__(k, default_fn) for k in self._parse_key(key))
@@ -194,6 +195,7 @@ class Chains(Samples):
                 self.labels = chains.labels
         if self.labels is None:
             self.labels = {}
+        self.labels = self.labels.copy()
         
 
     # NOTE: no need with register_dataclass JAX >=0.4.27
@@ -225,11 +227,12 @@ class Chains(Samples):
         if transforms is None:
             transforms = []
         transforms = np.atleast_1d(transforms)
+        conc_axis = max(batch_ndim-1, 0)
 
-        # @jit
+        @jit
         def transform(samples):
             for trans in transforms:
-                samples = trans(samples, batch_ndim=batch_ndim)
+                samples = trans(samples)
             return samples
 
         for i_run in range(start_run, end_run+1):
@@ -244,12 +247,24 @@ class Chains(Samples):
             if i_run == start_run:
                 samples = part
             else:
-                samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=max(batch_ndim-1, 0)), samples, part)
+                samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=conc_axis), samples, part)
                 del part  
 
         return samples
 
+    def plot(self, groups, batch_ndim=2):
+        n_conc = max(batch_ndim-1, 0)
+        def conc_fn(v):
+            for _ in range(n_conc):
+                v = jnp.concatenate(v, 0)
+            return v
 
+        for i_plt, g in enumerate(groups):
+            plt.subplot(1, len(groups), i_plt+1)
+            plt.title(g)
+            for k, v in self[[g]].items():
+                plt.plot(conc_fn(v), label='$'+self.labels[k]+'$')
+            plt.legend()
 
 
 
