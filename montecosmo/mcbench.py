@@ -28,7 +28,7 @@ from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, fields
 from collections import UserDict
 from jax import tree, tree_util
 
@@ -39,7 +39,9 @@ from jax import tree, tree_util
 class Samples(UserDict):
     """
     Global slicing and indexing s[1:3,2]
-    Querying with groups s['abc', 'c', 'd'], s[['abc','c'],['d']]
+    Querying with groups, e.g.
+    s['abc', 'c', 'd'], s['*~abc'], s['*','~c']
+    s[['abc','c'],['d']], s[['*~abc']], s[['*','~c']]
     """
     # see also https://github.com/cosmodesi/cosmoprimo/blob/33011906d323f56c32c77ba034a6679b02f16876/cosmoprimo/emulators/tools/samples.py#L43
     data: dict
@@ -47,13 +49,14 @@ class Samples(UserDict):
 
     def __post_init__(self):
         if isinstance(self.data, Samples):
-            samples = self.data
-            self.data = samples.data # avoid nested Samples
-            if self.groups is None:
-                self.groups = samples.groups # inherit groups
-        if self.groups is None:
-            self.groups = {}
-        self.groups = self.groups.copy()
+            otherdict = self.data.asdict()
+            self.data = self.data.data # avoid nested Samples
+        else:
+            otherdict = {}
+        selfdict = {field.name: (getattr(self, field.name) or {}).copy() for field in fields(self)} # handle None and shallow copy
+        for k in selfdict:
+            self.__setattr__(k, otherdict.get(k, {}) | selfdict[k]) # inherit attributes if not updated
+
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
@@ -63,28 +66,19 @@ class Samples(UserDict):
         # Querying with groups
         elif self._istreeof(key, str):
             if isinstance(key, str):
-                # if key in self.data: # check first in data to be consistent with dict
-                #     return self._get(key, default_fn)
-                # # elif key == '*':
-                # #     return tuple(self._get(k, default_fn) for k in self.data)
-                # elif key in self.groups:
-                #     group = self.groups[key]
-                #     if len(group) == 1: # handle length 1 group
-                #         return self._get(group[0], default_fn)
-                #     else:
-                #         return tuple(self._get(k, default_fn) for k in group)
-                # else:
-                #     raise KeyError(key)
                 key = self._parse_key([key])
-                print(key)
                 if len(key) == 1:
                     return self._get(key[0], default_fn)
                 else:
                     return tuple(self._get(k, default_fn) for k in key)
 
             elif isinstance(key, list): # construct new instance
-                data = {'data': {k:self._get(k, default_fn) for k in self._parse_key(key)}}
-                return type(self)(**asdict(self) | data) # TODO: should we also pop incomplete groups?
+                data = {}
+                for k in self._parse_key(key):
+                    v = self._get(k, default_fn)
+                    if v is not None:
+                        data[k] = v
+                return type(self)(**self.asdict() | {'data': data}) # TODO: should we also pop incomplete groups?
             
             elif isinstance(key, tuple):
                 key = self._parse_key(key)
@@ -93,36 +87,7 @@ class Samples(UserDict):
                 else:
                     return tuple(self.__getitem__(k, default_fn) for k in key)
     
-    # def _parse_key(self, key):
-    #     newkey = []
-    #     for k in key:
-    #         if isinstance(k, list):
-    #             newkey += [k] # handle list
-    #         elif isinstance(k, str):
-    #             if k.startswith('*~'): # everything but
-    #                 k = k[2:]
-    #                 if k in self.groups:
-    #                     # print("ini", k)
-    #                     newkey += list(self.data.keys() - set(self.groups[k]))
-    #                 else:
-    #                     newkey += list(self.data.keys() - {k})
-    #             elif k.startswith('~'): # except
-    #                 k = k[1:]
-    #                 if k in self.groups:
-    #                     for kk in self.groups[k]:
-    #                         newkey.remove(kk) if kk in newkey else None
-    #                 else:
-    #                     newkey.remove(k) if k in newkey else None
-    #             else:
-    #                 if k in self.groups:
-    #                     newkey += list(self.groups[k])
-    #                 else:
-    #                     newkey += [k] # handle str and list
-    #         else:
-    #             raise KeyError(k)
-    #     # print("ho", newkey)
-    #     return newkey
-    
+
     def _parse_key(self, key):
         newkey = []
         for k in key:
@@ -146,26 +111,8 @@ class Samples(UserDict):
                     newkey += list(g)
             else:
                 raise KeyError(k)
-        # print("ho", newkey)
         return newkey
     
-    # def _parse_key(self, key):
-    #     newkey = ()
-    #     for k in key:
-    #         if isinstance(k, str) and k.startswith('*~'): # everything but
-    #             k = k[2:]
-    #             if k in self.groups:
-    #                 # print("ini", k)
-    #                 newkey += tuple(self.data.keys() - set(self.groups[k]))
-    #             else:
-    #                 newkey += tuple(self.data.keys() - {k})
-    #         else:
-    #             if isinstance(k, str) and k in self.groups:
-    #                 newkey += tuple(self.groups[k])
-    #             else:
-    #                 newkey += (k,) # handle str and list
-    #     print("ho", newkey)
-    #     return newkey
     
     def _istreeof(self, obj, type):
         return tree.all(tree.map(lambda x: isinstance(x, type), obj))
@@ -181,6 +128,15 @@ class Samples(UserDict):
 
     def get(self, key, default=None, default_fn=None):
         return self.__getitem__(key, default_fn=(lambda k: default) if default_fn is None else default_fn)
+
+    def asdict(self):
+        # NOTE: dataclasses.asdict makes deepcopy, cf. https://github.com/python/cpython/issues/88071
+        # here, attributes are only shallow copied
+        return {field.name: getattr(self, field.name).copy() for field in fields(self)}
+
+    def __copy__(self): 
+        # UserDict copy() would not copy other attributes than data
+        return type(self)(**self.asdict())
 
     @property
     def shape(self):
@@ -209,9 +165,9 @@ class Samples(UserDict):
     
     
     def __or__(self, other):
-        newdict = asdict(self)
+        newdict = self.asdict()
         if isinstance(other, Samples):
-            otherdict = asdict(other)
+            otherdict = other.asdict()
             for k in otherdict:
                 if k in newdict:
                     newdict[k] = newdict[k] | otherdict[k]
@@ -226,9 +182,9 @@ class Samples(UserDict):
         return type(self)(**newdict)
     
     def __ror__(self, other):
-        newdict = asdict(self)
+        newdict = self.asdict()
         if isinstance(other, Samples):
-            otherdict = asdict(other)
+            otherdict = other.asdict()
             for k in otherdict:
                 if k in newdict:
                     newdict[k] = otherdict[k] | newdict[k]
@@ -245,8 +201,8 @@ class Samples(UserDict):
     def __ior__(self, other): 
         # NOTE: inplace or, so dict |= UserDict remains a dict, contrary to dic | UsertDict
         if isinstance(other, Samples):
-            otherdict = asdict(other)
-            selfdict = asdict(self)
+            otherdict = other.asdict()
+            selfdict = self.asdict()
             for k in selfdict:
                 self.__setattr__(k, selfdict[k] | otherdict.get(k, {}) )
             return self
@@ -254,12 +210,6 @@ class Samples(UserDict):
             return super().__ior__(other)
 
 
-    def __copy_(self): # UserDict copy() would not copy groups
-        print("opy")
-        # new = super().__copy__()
-        new = type(self)(self.data.copy(), groups=self.groups.copy())
-        # new.groups = self.groups.copy()
-        return new
 
 
 
@@ -274,8 +224,7 @@ class Samples(UserDict):
         groups can be variable name or group name (but in the first case, variable is stacked with only itself).
         """
         groups = np.atleast_1d(groups)
-        new = type(self)(**asdict(self)) # .copy() would not copy groups
-        new = self.copy() # .copy() would not copy groups
+        new = self.copy()
         for g in groups:
             new.data[g] = jnp.stack(self[g], axis=axis)
 
@@ -300,15 +249,15 @@ class Samples(UserDict):
 class Chains(Samples):
     labels: dict = None
 
-    def __post_init__(self):
-        super().__post_init__()
-        if isinstance(self.data, Chains):
-            chains = self.data
-            if self.labels is None:
-                self.labels = chains.labels
-        if self.labels is None:
-            self.labels = {}
-        self.labels = self.labels.copy()
+    # def __post_init__(self):
+    #     super().__post_init__()
+    #     if isinstance(self.data, Chains):
+    #         chains = self.data
+    #         if self.labels is None:
+    #             self.labels = chains.labels # inherit labels if not updated
+    #     if self.labels is None:
+    #         self.labels = {}
+    #     self.labels = self.labels.copy()
         
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
@@ -364,8 +313,7 @@ class Chains(Samples):
         choice_array = nvmap(choice_array, batch_ndim)
 
         for k in name:
-            if k in self or k in self.groups:
-                self |= tree.map(choice_array, self[[k]])
+            self |= tree.map(choice_array, self.get([k]))
         return self
     
     def thin(self, thinning=1, moment=None, batch_ndim=2):

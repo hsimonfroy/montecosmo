@@ -132,7 +132,7 @@ class Model():
         def single_prediction(rng, sample={}):
             # Optionally reparametrize base to sample params
             if frombase:
-                sample |= self.reparam(sample, inv=True) 
+                sample = self.reparam(sample, inv=True) 
                 # NOTE: deterministic sites have no effects with handlers.condition, but do with handlers.subsitute
 
             # Condition then block
@@ -193,7 +193,7 @@ class Model():
     def condition(self, data={}, frombase=False):
         # Optionally reparametrize base to sample params
         if frombase:
-            data |= self.reparam(data, inv=True)
+            data = self.reparam(data, inv=True)
         self.model = handlers.condition(self.model, data=data)
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
@@ -213,12 +213,6 @@ class Model():
     def partial(self, *args, **kwargs): # TODO: copy signature?
         self.model = partial(self.model, *args, **kwargs)
 
-    def copy(self):
-        return type(self)(**asdict(self))
-    
-    def deepcopy(self):
-        import copy
-        return copy.deepcopy(self)
 
 
     #################
@@ -410,13 +404,13 @@ class FieldLevelModel(Model):
     def reparam(self, params:dict, fourier=True, inv=False, temp=1.):
         """
         Transform sample params into base params.
-        Tunned for reparametrizing samples, so shall not be used in model.
         """
         # Extract full groups from params
         groups = ['cosmo','bias','init']
-        key = [[k if inv else k+'_'] for k in groups]
+        key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
+        query = Chains(params, self.groups | self.groups_).get(key)
+        cosmo_, bias, init, rest = (q.data for q in query) # TODO: make it handle Chains?
         # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
-        cosmo_, bias, init = Samples(params, self.groups)[key]
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
@@ -441,7 +435,7 @@ class FieldLevelModel(Model):
             init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=inv, temp=temp)
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
-        return cosmo | bias | init
+        return cosmo | bias | init | rest
 
 
 
@@ -457,19 +451,19 @@ class FieldLevelModel(Model):
             dic[name] = sample(name, dist.Normal(0, 1))
         return dic
 
-    def _get_by_groups(self, params, groups, base=True):
-        """
-        Given group names, return corresponding params dict.
-        """
-        tup = ()
-        for g in groups:
-            dic = {}
-            for k in self.groups[g]:
-                k = k if base else k+'_'
-                if k in params:
-                    dic[k] = params[k]        
-            tup += (dic,)
-        return tup
+    # def _get_by_groups(self, params, groups, base=True):
+    #     """
+    #     Given group names, return corresponding params dict.
+    #     """
+    #     tup = ()
+    #     for g in groups:
+    #         dic = {}
+    #         for k in self.groups[g]:
+    #             k = k if base else k+'_'
+    #             if k in params:
+    #                 dic[k] = params[k]        
+    #         tup += (dic,)
+    #     return tup
 
     def _prior_loc(self, base=True):
         """
@@ -549,7 +543,7 @@ class FieldLevelModel(Model):
 
 
     def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2):
-        chains.data |= nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
+        chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     
     # def thin_chains(self, chains:Chains, thinning=1, moment=None, batch_ndim=2) -> Chains:
