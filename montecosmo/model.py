@@ -119,7 +119,7 @@ class Model():
                 hide_fn = lambda site: False
         return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=False, frombase=False):
+    def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
         """
         Run model conditionned on samples.
         If samples is None, return a single prediction.
@@ -132,7 +132,8 @@ class Model():
         def single_prediction(rng, sample={}):
             # Optionally reparametrize base to sample params
             if frombase:
-                sample = self.reparam(sample, inv=True)
+                sample |= self.reparam(sample, inv=True) 
+                # NOTE: deterministic sites have no effects with handlers.condition, but do with handlers.subsitute
 
             # Condition then block
             model = handlers.condition(self.model, data=sample)
@@ -189,11 +190,11 @@ class Model():
     def seed(self, rng):
         self.model = handlers.seed(self.model, rng_seed=rng)
 
-    def condition(self, data=None, frombase=False):
+    def condition(self, data={}, frombase=False):
         # Optionally reparametrize base to sample params
         if frombase:
-            data = self.reparam(data, inv=True)
-        self.model = handlers.condition(self.model, data=data or {})
+            data |= self.reparam(data, inv=True)
+        self.model = handlers.condition(self.model, data=data)
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
         """
@@ -223,11 +224,11 @@ class Model():
     #################
     # Save and load #
     #################
-    def save(self, dir_path): # XXX: path or dir_path?
+    def save(self, dir_path): # with pickle because not array-like
         pdump(asdict(self), os.path.join(dir_path, "model.p"))
 
     @classmethod
-    def load(cls, dir_path): # XXX: path or dir_path?
+    def load(cls, dir_path):
         return cls(**pload(os.path.join(dir_path, "model.p")))
 
 
@@ -277,6 +278,7 @@ class FieldLevelModel(Model):
         self.groups = self._groups_config(base=True)
         self.groups_ = self._groups_config(base=False)
         self.prior_loc = self._prior_loc(base=True)
+        # TODO: add prior_loc_ for init chain? Can depends on precond guides
 
         self.mesh_shape = np.asarray(self.mesh_shape) # avoid int overflow
         self.box_shape = np.asarray(self.box_shape)
@@ -408,9 +410,13 @@ class FieldLevelModel(Model):
     def reparam(self, params:dict, fourier=True, inv=False, temp=1.):
         """
         Transform sample params into base params.
+        Tunned for reparametrizing samples, so shall not be used in model.
         """
         # Extract full groups from params
-        cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
+        groups = ['cosmo','bias','init']
+        key = [[k if inv else k+'_'] for k in groups]
+        # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
+        cosmo_, bias, init = Samples(params, self.groups)[key]
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
@@ -443,12 +449,12 @@ class FieldLevelModel(Model):
         dic = {}
         names = np.atleast_1d(names)
         for name in names:
-            if name == 'init_mesh':
-                scale = jnp.ones(self.mesh_shape)
-            else:
-                scale = 1
+            # if name == 'init_mesh':
+            #     scale = jnp.ones(self.mesh_shape)
+            # else:
+            #     scale = 1
             name = name if base else name+'_'
-            dic[name] = sample(name, dist.Normal(0, scale))
+            dic[name] = sample(name, dist.Normal(0, 1))
         return dic
 
     def _get_by_groups(self, params, groups, base=True):
@@ -542,35 +548,34 @@ class FieldLevelModel(Model):
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
 
-    def reparam_chains(self, chains, fourier=False, batch_ndim=2):
+    def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2):
         chains.data |= nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     
-    def thin_chains(self, chains, thinning=1, moment=None, batch_ndim=2):
-        axis = max(batch_ndim-1, 0)
-        name = "n_evals"
-        if name in chains:
-            infos, rest = chains[[name], ['~'+name]]
-            sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
-            infos = tree.map(sum_fn, infos)
-        else:
-            rest = chains
-            infos = {}
+    # def thin_chains(self, chains:Chains, thinning=1, moment=None, batch_ndim=2) -> Chains:
+    #     axis = max(batch_ndim-1, 0)
+    #     name = "n_evals"
+    #     if name in chains:
+    #         infos, rest = chains[[name], ['~'+name]]
+    #         sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
+    #         infos = tree.map(sum_fn, infos)
+    #     else:
+    #         rest = chains
+    #         infos = {}
 
-        thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
-        return infos | tree.map(thin_fn, rest)
+    #     thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
+    #     return infos | tree.map(thin_fn, rest)
 
-    def choice_chains(self, chains, n, rng=42, batch_ndim=2):
-        if isinstance(rng, int):
-            rng = jr.key(rng)
-        choice_fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
-        choice_fn = nvmap(choice_fn, batch_ndim)
+    # def choice_chains(self, chains:Chains, n, name=['init','init_'], rng=42, batch_ndim=2) -> Chains:
+    #     if isinstance(rng, int):
+    #         rng = jr.key(rng)
+    #     choice_array = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
+    #     choice_array = nvmap(choice_array, batch_ndim)
 
-        name = "init_mesh"
-        for k in [name, name+'_']:
-            if k in chains:
-                chains |= tree.map(choice_fn, chains[[k]])
-        return chains
+    #     for k in name:
+    #         if k in chains or k in chains.groups:
+    #             chains |= tree.map(choice_array, chains[[k]])
+    #     return chains
 
         
     def init_model(self, rng, base=False, temp=1.):

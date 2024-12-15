@@ -259,12 +259,14 @@ def r2chshape(shape):
 
 
 
-def thin_array(a, thinning=1, moment:int|list=None, axis=0):
+def thin_array(a, thinning=None, moment:int|list=None, axis=0):
     """
     If moment is array-like, moment dimension is added as a last dimension.
     """
     a = jnp.moveaxis(a, axis, -1)
     shape = a.shape
+    if thinning is None:
+        thinning = shape[-1]
     n_split = max(np.rint(shape[-1]/thinning), 1)
     a = jnp.array_split(a, n_split, axis=-1)
 
@@ -280,6 +282,24 @@ def thin_array(a, thinning=1, moment:int|list=None, axis=0):
     a = tree.map(fn, a)
     a = jnp.stack(a, axis=-1)
     return jnp.moveaxis(a, -1, axis)
+
+
+def cumfn_array(a, fn, n, *args, axis=0):
+    """
+    Compute function on cumulative slices along given axis, with results along the first dimension.
+    """
+    filt_ends = jnp.rint(jnp.arange(1,n+1) / n * a.shape[axis]).astype(int)
+    filt_fn = lambda end: fn(a[axis*(slice(None),) + (slice(None,end),)], *args)
+    out = ()
+    for end in filt_ends:
+        out += (filt_fn(end),)
+    return jnp.stack(out) # stack on first dim since fn can destroy some dims
+
+
+
+
+
+
 
 # def choice_array(rng_key, a, n, axis):
 #     """

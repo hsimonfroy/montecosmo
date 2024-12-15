@@ -17,7 +17,7 @@ from numpyro import diagnostics
 from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
-from montecosmo.utils import pdump, pload
+from montecosmo.utils import pdump, pload, nvmap, thin_array, cumfn_array
 from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
@@ -63,45 +63,115 @@ class Samples(UserDict):
         # Querying with groups
         elif self._istreeof(key, str):
             if isinstance(key, str):
-                if key in self.groups:
-                    group = self.groups[key]
-                    if len(group) == 1: # handle length 1 group
-                        return self._get(group[0], default_fn)
-                    else:
-                        return tuple(self._get(k, default_fn) for k in group)
+                # if key in self.data: # check first in data to be consistent with dict
+                #     return self._get(key, default_fn)
+                # # elif key == '*':
+                # #     return tuple(self._get(k, default_fn) for k in self.data)
+                # elif key in self.groups:
+                #     group = self.groups[key]
+                #     if len(group) == 1: # handle length 1 group
+                #         return self._get(group[0], default_fn)
+                #     else:
+                #         return tuple(self._get(k, default_fn) for k in group)
+                # else:
+                #     raise KeyError(key)
+                key = self._parse_key([key])
+                print(key)
+                if len(key) == 1:
+                    return self._get(key[0], default_fn)
                 else:
-                    return self._get(key, default_fn)
-                
+                    return tuple(self._get(k, default_fn) for k in key)
+
             elif isinstance(key, list): # construct new instance
                 data = {'data': {k:self._get(k, default_fn) for k in self._parse_key(key)}}
-                return type(self)(**asdict(self) | data) # should we also pop incomplete groups?
+                return type(self)(**asdict(self) | data) # TODO: should we also pop incomplete groups?
             
             elif isinstance(key, tuple):
-                return tuple(self.__getitem__(k, default_fn) for k in self._parse_key(key))
+                key = self._parse_key(key)
+                if len(key) == 1:
+                    return self.__getitem__(key[0], default_fn)
+                else:
+                    return tuple(self.__getitem__(k, default_fn) for k in key)
+    
+    # def _parse_key(self, key):
+    #     newkey = []
+    #     for k in key:
+    #         if isinstance(k, list):
+    #             newkey += [k] # handle list
+    #         elif isinstance(k, str):
+    #             if k.startswith('*~'): # everything but
+    #                 k = k[2:]
+    #                 if k in self.groups:
+    #                     # print("ini", k)
+    #                     newkey += list(self.data.keys() - set(self.groups[k]))
+    #                 else:
+    #                     newkey += list(self.data.keys() - {k})
+    #             elif k.startswith('~'): # except
+    #                 k = k[1:]
+    #                 if k in self.groups:
+    #                     for kk in self.groups[k]:
+    #                         newkey.remove(kk) if kk in newkey else None
+    #                 else:
+    #                     newkey.remove(k) if k in newkey else None
+    #             else:
+    #                 if k in self.groups:
+    #                     newkey += list(self.groups[k])
+    #                 else:
+    #                     newkey += [k] # handle str and list
+    #         else:
+    #             raise KeyError(k)
+    #     # print("ho", newkey)
+    #     return newkey
     
     def _parse_key(self, key):
-        newkey = ()
+        newkey = []
         for k in key:
-            if isinstance(k, str) and k.startswith('~'): # everything but
-                k = k[1:]
-                if k in self.groups:
-                    newkey += tuple(self.data.keys() - set(self.groups[k]))
+            if isinstance(k, list):
+                newkey += [k] # handle list
+            elif isinstance(k, str):
+                if k == '*': # all
+                    g = self.data.keys()
+                    newkey += list(g)
+                elif k.startswith('*~'): # all except
+                    k = k[2:]
+                    g = self.groups[k] if k in self.groups else [k]
+                    newkey += list(self.data.keys() - set(g))
+                elif k.startswith('~'): # except
+                    k = k[1:]
+                    g = self.groups[k] if k in self.groups else [k]
+                    for kk in g:
+                        newkey.remove(kk) if kk in newkey else None
                 else:
-                    newkey += tuple(self.data.keys() - {k})
+                    g = self.groups[k] if k in self.groups else [k]
+                    newkey += list(g)
             else:
-                if isinstance(k, str) and k in self.groups:
-                    newkey += tuple(self.groups[k])
-                else:
-                    newkey += (k,) # handle str and list
+                raise KeyError(k)
+        # print("ho", newkey)
         return newkey
+    
+    # def _parse_key(self, key):
+    #     newkey = ()
+    #     for k in key:
+    #         if isinstance(k, str) and k.startswith('*~'): # everything but
+    #             k = k[2:]
+    #             if k in self.groups:
+    #                 # print("ini", k)
+    #                 newkey += tuple(self.data.keys() - set(self.groups[k]))
+    #             else:
+    #                 newkey += tuple(self.data.keys() - {k})
+    #         else:
+    #             if isinstance(k, str) and k in self.groups:
+    #                 newkey += tuple(self.groups[k])
+    #             else:
+    #                 newkey += (k,) # handle str and list
+    #     print("ho", newkey)
+    #     return newkey
     
     def _istreeof(self, obj, type):
         return tree.all(tree.map(lambda x: isinstance(x, type), obj))
     
     def _get(self, key, default_fn=None):
-        """
-        Rewrite dict get method to raise KeyError by default.
-        """
+        # Rewrite dict get method to raise KeyError by default.
         if key in self.data:
             return self.data[key]
         elif default_fn is not None:
@@ -119,6 +189,14 @@ class Samples(UserDict):
     @property
     def ndim(self):
         return tree.map(jnp.ndim, self.data)
+    
+    @property
+    def dtype(self):
+        return tree.map(jnp.dtype, self.data)
+    
+    @property
+    def size(self):
+        return tree.map(jnp.size, self.data)
     
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
@@ -176,7 +254,42 @@ class Samples(UserDict):
             return super().__ior__(other)
 
 
+    def __copy_(self): # UserDict copy() would not copy groups
+        print("opy")
+        # new = super().__copy__()
+        new = type(self)(self.data.copy(), groups=self.groups.copy())
+        # new.groups = self.groups.copy()
+        return new
 
+
+
+    def flatten(self, axis=0):
+        pass
+
+    def concat(self, *others, axis=0):
+        pass
+
+    def stack(self, groups:str|list, delete=True, axis=0):
+        """
+        groups can be variable name or group name (but in the first case, variable is stacked with only itself).
+        """
+        groups = np.atleast_1d(groups)
+        new = type(self)(**asdict(self)) # .copy() would not copy groups
+        new = self.copy() # .copy() would not copy groups
+        for g in groups:
+            new.data[g] = jnp.stack(self[g], axis=axis)
+
+            # If a group, delete individual variables, then delete the group config
+            if delete and g in self.groups:
+                for k in self.groups[g]:
+
+                    # Remove variable from group then check if not in other groups
+                    new.groups[g].remove(k)
+                    if k not in tree.leaves(new.groups):
+                        new.data.pop(k)
+                new.groups.pop(g)
+
+        return new
 
 
 
@@ -197,23 +310,11 @@ class Chains(Samples):
             self.labels = {}
         self.labels = self.labels.copy()
         
-
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
         return (self.data,), (self.groups, self.labels)
 
 
-    def to_getdist(self, label=None):
-        samples, names, labels = [], [], []
-        for k, v in self.data.items():
-            samples.append(v.reshape(-1))
-            names.append(k)
-            labels.append(self.labels.get(k, None))
-        return MCSamples(samples=samples, names=names, labels=labels, label=label)
-    
-
-    def print_summary(self, group_by_chain=True):
-        diagnostics.print_summary(self.data, group_by_chain=group_by_chain)
 
     @classmethod
     def load_runs(cls, path, start_run, end_run, transforms=None, groups=None, labels=None, batch_ndim=2):
@@ -237,7 +338,8 @@ class Chains(Samples):
 
         for i_run in range(start_run, end_run+1):
             # Load
-            part = cls(pload(path+f"_{i_run}.p"), groups=groups, labels=labels)
+            part = dict(jnp.load(path+f"_{i_run}.npz")) # better than pickle for dict of array-like
+            part = cls(part, groups=groups, labels=labels)
             part = transform(part)
 
             # Init or append samples
@@ -252,7 +354,68 @@ class Chains(Samples):
 
         return samples
 
-    def plot(self, groups, batch_ndim=2):
+    ##############
+    # Transforms #
+    ##############
+    def choice(self, n, name=['init','init_'], rng=42, batch_ndim=2):
+        if isinstance(rng, int):
+            rng = jr.key(rng)
+        choice_array = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
+        choice_array = nvmap(choice_array, batch_ndim)
+
+        for k in name:
+            if k in self or k in self.groups:
+                self |= tree.map(choice_array, self[[k]])
+        return self
+    
+    def thin(self, thinning=1, moment=None, batch_ndim=2):
+        axis = max(batch_ndim-1, 0)
+        name = "n_evals"
+        if name in self:
+            infos, rest = self[[name], ['*~'+name]]
+            sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
+            infos = tree.map(sum_fn, infos)
+        else:
+            rest = self
+            infos = {}
+
+        thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
+        return infos | tree.map(thin_fn, rest)
+
+    def cumfn(self, fn, n, *args, batch_ndim=2):
+        axis = max(batch_ndim-1, 0)
+        name = "n_evals"
+        if name in self:
+            infos, rest = self[[name], ['~'+name]]
+            sum_fn = lambda x: cumfn_array(x, jnp.sum, n, axis=axis)
+            infos = tree.map(sum_fn, infos)
+        else:
+            rest = self
+            infos = {}
+
+        thin_fn = lambda x: cumfn_array(x, fn, n, *args, axis=axis)
+        return infos | tree.map(thin_fn, rest)
+    
+
+    ############
+    # Plotting #
+    ############
+    def to_getdist(self, label=None):
+        samples, names, labels = [], [], []
+        for k, v in self.data.items():
+            samples.append(v.reshape(-1))
+            names.append(k)
+            labels.append(self.labels.get(k, None))
+        return MCSamples(samples=samples, names=names, labels=labels, label=label)
+    
+    def print_summary(self, group_by_chain=True):
+        diagnostics.print_summary(self.data, group_by_chain=group_by_chain)
+
+    def plot(self, groups:str|list, batch_ndim=2):
+        """
+        groups can be variable name or group name
+        """
+        groups = np.atleast_1d(groups)
         n_conc = max(batch_ndim-1, 0)
         def conc_fn(v):
             for _ in range(n_conc):
@@ -265,17 +428,6 @@ class Chains(Samples):
             for k, v in self[[g]].items():
                 plt.plot(conc_fn(v), label='$'+self.labels[k]+'$')
             plt.legend()
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -912,8 +1064,7 @@ def save_run(mcmc:MCMC, i_run:int, path:str, names:list=None,
         samples |= extra
         del extra
 
-    pdump(samples, path+f"_{i_run}.p")
-    # jnp.savez(save_path+f"_{i_run}.npz", **samples) # better for dict of array-likes
+    jnp.savez(path+f"_{i_run}.npz", **samples) # better than pickle for dict of array-like
     del samples
 
     # Save or overwrite last state
