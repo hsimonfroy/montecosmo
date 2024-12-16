@@ -271,6 +271,10 @@ class Chains(Samples):
         Runs are concatenated along last batch dimension.
         """
         print(f"Loading: {os.path.basename(path)}, from run {start_run} to run {end_run} (included)")
+        for i_run in range(start_run, end_run + 1):
+            if not os.path.exists(path + f"_{i_run}.npz"):
+                raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
+            
         if transforms is None:
             transforms = []
         transforms = np.atleast_1d(transforms)
@@ -282,7 +286,7 @@ class Chains(Samples):
                 samples = trans(samples)
             return samples
 
-        for i_run in range(start_run, end_run+1):
+        for i_run in range(start_run, end_run + 1):
             # Load
             part = dict(jnp.load(path+f"_{i_run}.npz")) # better than pickle for dict of array-like
             part = cls(part, groups=groups, labels=labels)

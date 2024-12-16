@@ -27,12 +27,12 @@ from montecosmo.mcbench import sample_and_save
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
+# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
 
 
 # ## Config and fiduc
 
-# In[14]:
+# In[2]:
 
 
 def get_save_dir(**kwargs):
@@ -42,6 +42,34 @@ def get_save_dir(**kwargs):
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
     dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
     return dir
+
+def from_id(id):
+    args = ParseSlurmId(id)
+    config = {
+          'mesh_shape':3 * (args.mesh_length,),
+          'box_shape':3 * (args.box_length if args.box_length is not None else 5 * args.mesh_length,), 
+          'a_lpt':args.a_obs if args.lpt_order > 0 else args.a_lpt,
+          'a_obs':args.a_obs,
+          'lpt_order':1 if args.lpt_order==1 else 2, # 2lpt + pm for 0
+          'precond':args.precond,
+          'obs':args.obs
+          }
+    save_dir = get_save_dir(**config)
+    model = FieldLevelModel(**default_config | config)
+    
+    mcmc_config = {
+        'sampler':"NUTS",
+        'target_accept_prob':args.target_accept_prob,
+        'n_samples':64,
+        'max_tree_depth':10,
+        'n_runs':10,
+        'n_chains':8
+    }
+    save_path = save_dir 
+    save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
+    save_path += f"_mt{mcmc_config['max_tree_depth']:d}_ta{mcmc_config['target_accept_prob']}"
+
+    return model, mcmc_config, save_dir, save_path
 
 class ParseSlurmId():
     def __init__(self, id):
@@ -65,45 +93,29 @@ class ParseSlurmId():
                 setattr(self, k, v[0])
 
 
-# In[ ]:
+# In[3]:
 
 
-task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-# task_id = 0
-args = ParseSlurmId(task_id)
+# task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
+task_id = 1120
+model, mcmc_config, save_dir, save_path = from_id(task_id)
 
-config = {
-          'mesh_shape':3 * (args.mesh_length,),
-          'box_shape':3 * (args.box_length if args.box_length is not None else 5 * args.mesh_length,), 
-          'a_lpt':args.a_obs if args.lpt_order > 0 else args.a_lpt,
-          'a_obs':args.a_obs,
-          'lpt_order':1 if args.lpt_order==1 else 2, # 2lpt + pm for 0
-          'precond':args.precond,
-          'obs':args.obs
-          }
-target_accept_prob = args.target_accept_prob
-save_dir = get_save_dir(**config)
-
-sampler = "NUTS"
-n_samples, max_tree_depth, n_runs, n_chains = 64, 10, 10, 8
-save_path = save_dir + f"s{sampler}_nc{n_chains:d}_ns{n_samples:d}_mt{max_tree_depth:d}_ta{target_accept_prob}"
-
-os.makedirs(save_dir, exist_ok=True)
-import sys
-tempstdout = sys.stdout
-tempstderr = sys.stderr
-sys.stdout = open(save_path+'.out', 'a')
-sys.stderr = open(save_path+'.out', 'a')
+# os.makedirs(save_dir, exist_ok=True)
+# import sys
+# tempstdout = sys.stdout
+# tempstderr = sys.stderr
+# sys.stdout = open(save_path+'.out', 'a')
+# sys.stderr = open(save_path+'.out', 'a')
 # sys.stdout = tempstdout
 # sys.stderr = tempstderr
 
 
-# In[15]:
+# In[ ]:
 
 
-model = FieldLevelModel(**default_config | config)
 print(model)
-# model.render()
+print(mcmc_config)
+model.render()
 
 if not os.path.exists(save_dir+"truth.p"):
     # Predict and save fiducial
@@ -137,12 +149,18 @@ model.block()
 # In[ ]:
 
 
-def get_mcmc(model, name="NUTS"):
+def get_mcmc(model, config):
+    n_samples = config['n_samples']
+    n_chains = config['n_chains']
+    max_tree_depth = config['max_tree_depth']
+    target_accept_prob = config['target_accept_prob']
+    name = config['sampler']
+    
     if name == "NUTS":
         kernel = infer.NUTS(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-            step_size=1e-3, 
+            step_size=1e-4, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,)
         
@@ -150,7 +168,7 @@ def get_mcmc(model, name="NUTS"):
         kernel = infer.HMC(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
-            step_size=1e-3, 
+            step_size=1e-4, 
             # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
             trajectory_length= 1023 * 1e-3 / 4, 
             target_accept_prob=target_accept_prob,)
@@ -183,25 +201,29 @@ if continue_run:
     model.reset()
     model.condition({'obs': truth['obs']})
     model.block()
-    mcmc = get_mcmc(model.model, name=sampler)
+    mcmc = get_mcmc(model.model, mcmc_config)
 
     last_state = pload(save_path + "_last_state.p")
     mcmc.num_warmup = 0
     mcmc.post_warmup_state = last_state
-    init_params_ = last_state.z
+    init_params_ = None
 else:
     model.reset()
     model.condition({'obs': truth['obs']} | model.prior_loc, frombase=True)
     model.block()
-    mcmc = get_mcmc(model.model, name=sampler)
+    mcmc = get_mcmc(model.model, mcmc_config)
     
-    init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), n_chains))
+    print("Init params")
+    init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), mcmc_config['n_chains']))
+    init_params_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
     mcmc = sample_and_save(mcmc, 0, save_path+'_init', extra_fields=['num_steps'], init_params=init_params_)
+    
+    print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, "\nss:", mcmc.last_state.adapt_state.step_size)
     init_params_ = mcmc.last_state.z
 
 
 # In[ ]:
 
 
-mcmc_runned = sample_and_save(mcmc, n_runs, save_path, extra_fields=['num_steps'], init_params=init_params_)
+mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
 

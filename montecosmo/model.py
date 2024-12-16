@@ -152,11 +152,6 @@ class Model():
             if isinstance(samples, int):
                 samples = (samples,)
             rng = jr.split(rng, samples)
-            # Nest vmaps
-            # pred_fn = single_prediction
-            # for _ in range(len(samples)):
-            #     pred_fn = vmap(pred_fn)
-            # return pred_fn(rng)
             return nvmap(single_prediction, len(samples))(rng)
         
         elif isinstance(samples, dict):
@@ -164,10 +159,6 @@ class Model():
             # so take the first item shape
             shape = jnp.shape(samples[next(iter(samples))])[:batch_ndim]
             rng = jr.split(rng, shape)
-            # # Nest vmaps
-            # pred_fn = single_prediction
-            # for _ in range(len(shape)):
-            #     pred_fn = vmap(pred_fn)
             return nvmap(single_prediction, len(shape))(rng, samples)
     
 
@@ -524,8 +515,9 @@ class FieldLevelModel(Model):
         else:
             print("No fiducial spectral power mesh stored. Will use location of cosmology prior as fiducial.")
             # NOTE: Alternatively, could also use the spectral power mesh of observed mesh
-            self._pmeshk_fiduc = lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
-            return self._pmeshk_fiduc
+            return lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
+            # self._pmeshk_fiduc = lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
+            # return self._pmeshk_fiduc # Leak
     
     @pmeshk_fiduc.setter
     def pmeshk_fiduc(self, value):
@@ -546,6 +538,26 @@ class FieldLevelModel(Model):
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     
+
+    def init_model(self, rng, base=False, temp=1.):
+        # Fix cosmology and biases to prior location
+        cosmology = get_cosmology(**self.prior_loc)
+        b1 = self.prior_loc['b1']
+
+        # initial field given other latent and observation, assuming linear Gaussian model
+        means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+        means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, amp=True)
+        post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
+
+        init_params = self.prior_loc | {'init_mesh': post_mesh}
+        if base:
+            return init_params
+        else:
+            return self.reparam(init_params, inv=True)
+
+    
+
+
     # def thin_chains(self, chains:Chains, thinning=1, moment=None, batch_ndim=2) -> Chains:
     #     axis = max(batch_ndim-1, 0)
     #     name = "n_evals"
@@ -570,25 +582,6 @@ class FieldLevelModel(Model):
     #         if k in chains or k in chains.groups:
     #             chains |= tree.map(choice_array, chains[[k]])
     #     return chains
-
-        
-    def init_model(self, rng, base=False, temp=1.):
-        # Fix cosmology and biases to prior location
-        cosmology = get_cosmology(**self.prior_loc)
-        b1 = self.prior_loc['b1']
-
-        # initial field given other latent and observation, assuming linear Gaussian model
-        means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
-        means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, amp=True)
-        post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
-
-        init_params = self.prior_loc | {'init_mesh': post_mesh}
-        if base:
-            return init_params
-        else:
-            return self.reparam(init_params, inv=True)
-
-    
 
 
     # def prior(self):
