@@ -4,7 +4,7 @@
 # # Model Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[3]:
+# In[ ]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -43,44 +43,6 @@ def get_save_dir(**kwargs):
     dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
     return dir
 
-# config = {
-#           'mesh_shape':3 * (64,),
-#           'box_shape':3 * (320.,),
-#           'a_lpt':0.1,
-#           'a_obs':0.5,
-#           'lpt_order':1,
-#           'precond':1,
-#           'obs':'mesh'
-#           }
-# target_accept_prob = 0.65
-# save_dir = get_save_dir(**config)
-
-# sampler = "NUTS"
-# n_samples, max_tree_depth, n_runs, n_chains = 64, 10, 10, 8
-# save_path = save_dir + f"s{sampler}_nc{n_chains:d}_ns{n_samples:d}_mt{max_tree_depth:d}_ta{target_accept_prob}"
-
-
-# In[ ]:
-
-
-# import argparse
-# def create_parser():
-#     parser = argparse.ArgumentParser(description='Parse configuration parameters.')
-#     parser.add_argument('-m', '--mesh_length', type=int, help='Mesh length')
-#     parser.add_argument('-b', '--box_length', type=float, help='Box length', default=None)
-#     parser.add_argument('-al', '--a_lpt', type=float, help='a lpt', default=0.1)
-#     parser.add_argument('-ao', '--a_obs', type=float, help='a obs', default=0.5)
-#     parser.add_argument('-lo', '--lpt_order', type=int, help='lpt order')
-#     parser.add_argument('-pc', '--precond', type=int, help='preconditioning')
-#     parser.add_argument('-o', '--obs', type=str, help='observable type', default='mesh')
-
-#     parser.add_argument('-ta', '--target_accept_prob', type=float, help='target rate', default=0.65)
-#     # parser.add_argument('-sd', '--save_dir', type=str, help='save directory')
-#     return parser
-
-# parser = create_parser()
-# args = parser.parse_args()
-
 class ParseSlurmId():
     def __init__(self, id):
         self.id = str(id)
@@ -102,7 +64,12 @@ class ParseSlurmId():
             else:
                 setattr(self, k, v[0])
 
-task_id = os.environ('SLURM_ARRAY_TASK_ID')
+
+# In[ ]:
+
+
+task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
+# task_id = 0
 args = ParseSlurmId(task_id)
 
 config = {
