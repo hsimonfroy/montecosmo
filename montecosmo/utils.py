@@ -262,6 +262,7 @@ def r2chshape(shape):
 def thin_array(a, thinning=None, moment:int|list=None, axis=0):
     """
     If moment is array-like, moment dimension is added as a last dimension.
+    If thinning is None, return last values.
     """
     a = jnp.moveaxis(a, axis, -1)
     shape = a.shape

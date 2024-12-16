@@ -405,11 +405,11 @@ class FieldLevelModel(Model):
         """
         Transform sample params into base params.
         """
-        # Extract full groups from params
+        # Extract groups from params
         groups = ['cosmo','bias','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
-        query = Chains(params, self.groups | self.groups_).get(key)
-        cosmo_, bias, init, rest = (q.data for q in query) # TODO: make it handle Chains?
+        params = Chains(params, self.groups | self.groups_).get(key)
+        cosmo_, bias, init, rest = (q.data for q in params) # TODO: make it handle Chains?
         # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
 
         # Cosmology and Biases
@@ -534,15 +534,15 @@ class FieldLevelModel(Model):
 
 
 
-    ##################
-    # Chains loading #
-    ##################
+    ########################
+    # Chains init and load #
+    ########################
     def load_runs(self, path, start_run, end_run, transforms=None, batch_ndim=2) -> Chains:
         return Chains.load_runs(path, start_run, end_run, transforms, 
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
-
     def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2):
+        chains = chains.copy()
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     

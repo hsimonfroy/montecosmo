@@ -94,20 +94,17 @@ class Samples(UserDict):
             if isinstance(k, list):
                 newkey += [k] # handle list
             elif isinstance(k, str):
-                if k == '*': # all
-                    g = self.data.keys()
-                    newkey += list(g)
-                elif k.startswith('*~'): # all except
+                if k.startswith('*~'): # all except
                     k = k[2:]
-                    g = self.groups[k] if k in self.groups else [k]
+                    g = self.groups[k] if k in self.groups else self.data.keys() if k=='*' else [k]
                     newkey += list(self.data.keys() - set(g))
                 elif k.startswith('~'): # except
                     k = k[1:]
-                    g = self.groups[k] if k in self.groups else [k]
+                    g = self.groups[k] if k in self.groups else self.data.keys() if k=='*' else [k]
                     for kk in g:
                         newkey.remove(kk) if kk in newkey else None
                 else:
-                    g = self.groups[k] if k in self.groups else [k]
+                    g = self.groups[k] if k in self.groups else self.data.keys() if k=='*' else [k]
                     newkey += list(g)
             else:
                 raise KeyError(k)
@@ -316,7 +313,7 @@ class Chains(Samples):
             self |= tree.map(choice_array, self.get([k]))
         return self
     
-    def thin(self, thinning=1, moment=None, batch_ndim=2):
+    def thin(self, thinning=None, moment=None, batch_ndim=2):
         axis = max(batch_ndim-1, 0)
         name = "n_evals"
         if name in self:
