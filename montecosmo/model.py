@@ -22,7 +22,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology,
 from montecosmo.metrics import power_spectrum
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, thin_array
+from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap
 from montecosmo.mcbench import Chains
 
 
@@ -561,30 +561,6 @@ class FieldLevelModel(Model):
     
 
 
-    # def thin_chains(self, chains:Chains, thinning=1, moment=None, batch_ndim=2) -> Chains:
-    #     axis = max(batch_ndim-1, 0)
-    #     name = "n_evals"
-    #     if name in chains:
-    #         infos, rest = chains[[name], ['~'+name]]
-    #         sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
-    #         infos = tree.map(sum_fn, infos)
-    #     else:
-    #         rest = chains
-    #         infos = {}
-
-    #     thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
-    #     return infos | tree.map(thin_fn, rest)
-
-    # def choice_chains(self, chains:Chains, n, name=['init','init_'], rng=42, batch_ndim=2) -> Chains:
-    #     if isinstance(rng, int):
-    #         rng = jr.key(rng)
-    #     choice_array = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
-    #     choice_array = nvmap(choice_array, batch_ndim)
-
-    #     for k in name:
-    #         if k in chains or k in chains.groups:
-    #             chains |= tree.map(choice_array, chains[[k]])
-    #     return chains
 
 
     # def prior(self):

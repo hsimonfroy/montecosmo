@@ -13,11 +13,11 @@ from jax import numpy as jnp, random as jr, jit, vmap, grad
 from jax.tree_util import tree_map
 
 from numpyro.infer import MCMC
-from numpyro import diagnostics
+from numpyro.diagnostics import print_summary
 from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
-from montecosmo.utils import pdump, pload, nvmap, thin_array, cumfn_array
+from montecosmo.utils import pdump, pload, nvmap
 from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
 
 
@@ -208,8 +208,9 @@ class Samples(UserDict):
             return super().__ior__(other)
 
 
-
-
+    ##############
+    # Transforms #
+    ##############
 
     def flatten(self, axis=0):
         pass
@@ -217,30 +218,27 @@ class Samples(UserDict):
     def concat(self, *others, axis=0):
         return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
-    def stackby(self, groups:str|list=None, delete=True, axis=-1):
+    def stackby(self, groups:str|list=None, remove=True, axis=-1):
         """
-        groups can be variable name or group name (but in the first case, variable is stacked with only itself).
+        groups can be variable name or group name.
         """
         if groups is None:
             groups = self.groups
         elif isinstance(groups, str):
-            groups = np.atleast_1d(groups)
+            groups = [groups]
 
         new = self.copy()
         for g in groups:
             if g not in self: # if g a variable do noting
-                new.data[g] = jnp.stack(self[g], axis=axis)
+                if len(self.groups[g]) == 1:
+                    new.data[g] = self[g]
+                else:
+                    new.data[g] = jnp.stack(self[g], axis=axis)
 
-                # If a group, delete individual variables, then delete the group config
-                if delete:
-                    new.groups[g] = self.groups[g].copy()
+                # Remove individual variables
+                if remove:
                     for k in self.groups[g]:
-
-                        # Remove variable from group then check if not in other groups
-                        new.groups[g].remove(k)
-                        if k not in tree.leaves(new.groups) and k not in groups:
-                            new.data.pop(k)
-                    new.groups.pop(g)
+                        new.data.pop(k)
         return new
 
 
@@ -255,7 +253,6 @@ class Chains(Samples):
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
         return (self.data,), (self.groups, self.labels)
-
 
 
     @classmethod
@@ -295,7 +292,6 @@ class Chains(Samples):
             if i_run == start:
                 samples = part
             else:
-                # samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=conc_axis), samples, part)
                 samples = samples.concat(part, axis=conc_axis)
                 del part  
 
@@ -304,74 +300,23 @@ class Chains(Samples):
     ##############
     # Transforms #
     ##############
-    def choice(self, n, name=['init','init_'], rng=42, batch_ndim=2):
-        if isinstance(rng, int):
-            rng = jr.key(rng)
-        choice_array = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
-        choice_array = nvmap(choice_array, batch_ndim)
-
-        for k in name:
-            self |= tree.map(choice_array, self.get([k]))
-        return self
-    
-    # def thin(self, thinning=None, moment=None, axis=1):
-    #     name = "n_evals"
-    #     if name in self:
-    #         infos, rest = self[[name], ['*~'+name]]
-    #         sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
-    #         infos = tree.map(sum_fn, infos)
-    #     else:
-    #         rest = self
-    #         infos = {}
-
-    #     thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
-    #     return infos | tree.map(thin_fn, rest)
-
-    # def cumfn(self, fn, n, *args, axis=1):
-    #     name = "n_evals"
-    #     if name in self:
-    #         infos, rest = self[[name], ['*~'+name]]
-    #         sum_fn = lambda x: cumfn_array(x, jnp.sum, n, axis=axis)
-    #         infos = tree.map(sum_fn, infos)
-    #     else:
-    #         rest = self
-    #         infos = {}
-
-    #     thin_fn = lambda x: cumfn_array(x, fn, n, *args, axis=axis)
-    #     return infos | tree.map(thin_fn, rest)
-
-
-
-    # def cumfn_array(a, fn, n, *args, axis=0):
-    #     """
-    #     Compute function on cumulative slices along given axis, with results along the first dimension.
-    #     """
-    #     filt_ends = jnp.rint(jnp.arange(1,n+1) / n * a.shape[axis]).astype(int)
-    #     filt_fn = lambda end: fn(a[axis*(slice(None),) + (slice(None,end),)], *args)
-    #     out = ()
-    #     for end in filt_ends:
-    #         out += (filt_fn(end),)
-    #     return jnp.stack(out) # stack on first dim since fn can destroy some dims
-    
-
-
-
-
     def splitrans(self, transform, n, axis=1):
         """
         Apply transform on n splits along given axis.
+        Stack n values along first axis.
         """
         assert n <= jnp.shape(self[next(iter(self))])[axis], "n should be less (<=) than the length of given axis."
         out = tree.map(lambda x: jnp.array_split(x, n, axis), self)
         out = transform(out)
         
         for k in out:
-            out[k] = jnp.stack(out[k], axis=axis)
+            out[k] = jnp.stack(out[k])
         return out
 
     def cumtrans(self, transform, n, axis=1):
         """
-        Apply transform on cumulative slices along given axis.
+        Apply transform on n cumulative slices along given axis.
+        Stack n values along first axis.
         """
         length = jnp.shape(self[next(iter(self))])[axis]
         ends = jnp.rint(jnp.arange(1,n+1) / n * length).astype(int)
@@ -383,12 +328,20 @@ class Chains(Samples):
                 out[k].append(part[k])
 
         for k in self:
-            out[k] = jnp.stack(out[k], axis=axis)
+            out[k] = jnp.stack(out[k])
         return out
-
-
     
-    def thin(self, thinning=None, moment=None, axis=1):
+    def choice(self, n, name=['init','init_'], rng=42, batch_ndim=2):
+        if isinstance(rng, int):
+            rng = jr.key(rng)
+        fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
+        fn = nvmap(fn, batch_ndim)
+
+        for k in name:
+            self |= tree.map(fn, self.get([k]))
+        return self
+
+    def thin(self, thinning=None, moment=None, axis:int=1):
         # All item shapes should match on given axis so take the first item shape
         length = jnp.shape(self[next(iter(self))])[axis]
         if thinning is None:
@@ -400,14 +353,15 @@ class Chains(Samples):
             fn = lambda c: Chains.last(c, axis=axis)
         else:
             fn = lambda c: Chains.moment(c, m=moment, axis=axis)
-        return self.splitrans(fn, n_split, axis=axis)
+        out = self.splitrans(fn, n_split, axis=axis)
+        return tree.map(lambda x: jnp.moveaxis(x, 0, axis), out)
 
 
     ############
     def metric(self, fn, *others, axis=None):
         """
-        Tree map chains but treat n_evals item separately by summing it.
-        self and others should have matching keys, except possibly n_evals.
+        Tree map chains but treat 'n_evals' item separately by summing it along axis.
+        `self` and `others` should have matching keys, except possibly 'n_evals'.
         """
         name = "n_evals"  
         if name in self:
@@ -419,11 +373,10 @@ class Chains(Samples):
 
         return infos | tree.map(fn, rest, *others)
     
-    
     def last(self, axis=1):
         return self.metric(lambda x: jnp.take(x, -1, axis), axis=axis)
     
-    def moment(self, m, axis=1):
+    def moment(self, m:int|list, axis=1):
         if isinstance(m, int):
             fn = lambda x: jnp.sum(x**m, axis)
         else:
@@ -433,6 +386,15 @@ class Chains(Samples):
 
     def multi_ess(self, axis=None):
         return self.metric(lambda x: multi_ess(x, axis=axis))
+    
+    def evalperess(self, axis=None):
+        ess = self.multi_ess(axis=axis)
+        name = "n_evals" 
+        infos, rest = ess[[name], ['*~'+name]]
+        return infos | tree.map(lambda x: infos[name] / x, rest)
+
+    def mse(self, true):
+        return self.metric(lambda x, y: jnp.mean((x-y)**2, axis=-1), true)
     
 
 
@@ -448,7 +410,7 @@ class Chains(Samples):
         return MCSamples(samples=samples, names=names, labels=labels, label=label)
     
     def print_summary(self, group_by_chain=True):
-        diagnostics.print_summary(self.data, group_by_chain=group_by_chain)
+        print_summary(self.data, group_by_chain=group_by_chain)
 
     def plot(self, groups:str|list, batch_ndim=2):
         """
@@ -465,7 +427,8 @@ class Chains(Samples):
             plt.subplot(1, len(groups), i_plt+1)
             plt.title(g)
             for k, v in self[[g]].items():
-                plt.plot(conc_fn(v), label='$'+self.labels[k]+'$')
+                label = self.labels.get(k)
+                plt.plot(conc_fn(v), label=k if label is None else '$'+label+'$')
             plt.legend()
 
 

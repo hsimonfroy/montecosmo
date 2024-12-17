@@ -244,6 +244,7 @@ c1 = plt.get_cmap('Dark2').colors
 c2 = plt.get_cmap('Set2').colors
 
 SetDark2 = ListedColormap(alternate(c2, c1))
+DarkSet2 = ListedColormap(alternate(c1, c2))
 
 
 
@@ -287,7 +288,7 @@ def set_plotting_options(usetex=False, font_size=10):
     # mpl.rcParams.update(mpl.rcParamsDefault)
 
 
-def theme_switch(dark=False, usetex=False, font_size=10, cmap='SetDark2'):
+def theme(dark=False, usetex=False, font_size=10, cmap='SetDark2'):
     """
     Set Matplotlib theme and return an adequate color switching function.
     """
@@ -301,7 +302,7 @@ def theme_switch(dark=False, usetex=False, font_size=10, cmap='SetDark2'):
     elif cmap == 'SetDark2':
         cmap = SetDark2
     else:
-        cmap = plt.get_cmap(cmap)
+        cmap = plt.get_cmap(cmap) # cmap can be plt.get_cmap('viridis', 10) for instance
     plt.rcParams['axes.prop_cycle'] = plt.cycler(color=cmap.colors)
 
     rc('animation', html='html5') # handle Matplotlib animations
