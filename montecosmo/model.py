@@ -7,7 +7,8 @@ from pprint import pformat
 import os
 
 import numpyro.distributions as dist
-from numpyro import sample, deterministic, param, handlers, render_model
+from numpyro import sample, deterministic, render_model
+from numpyro.handlers import seed, condition, block, trace
 from numpyro.infer.util import log_density
 import numpy as np
 
@@ -117,7 +118,7 @@ class Model():
                 hide_fn = lambda site: site['type'] == 'deterministic' and site['name'] not in base_name
             else:
                 hide_fn = lambda site: False
-        return handlers.block(model, hide_fn=hide_fn)
+        return block(model, hide_fn=hide_fn)
 
     def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
         """
@@ -136,13 +137,13 @@ class Model():
                 # NOTE: deterministic sites have no effects with handlers.condition, but do with handlers.subsitute
 
             # Condition then block
-            model = handlers.condition(self.model, data=sample)
+            model = condition(self.model, data=sample)
             if hide_samp:
-                model = handlers.block(model, hide=sample.keys())
+                model = block(model, hide=sample.keys())
             model = self._block_det(model, hide_base=hide_base, hide_det=hide_det)
 
             # Trace and return values
-            tr = handlers.trace(handlers.seed(model, rng_seed=rng)).get_trace()
+            tr = trace(seed(model, rng_seed=rng)).get_trace()
             return {k: v['value'] for k, v in tr.items()}
 
         if samples is None:
@@ -176,16 +177,16 @@ class Model():
         return grad(self.logp)(params) # force = - grad potential = grad logp
     
     def trace(self, rng):
-        return handlers.trace(handlers.seed(self.model, rng_seed=rng)).get_trace()
+        return trace(seed(self.model, rng_seed=rng)).get_trace()
     
     def seed(self, rng):
-        self.model = handlers.seed(self.model, rng_seed=rng)
+        self.model = seed(self.model, rng_seed=rng)
 
     def condition(self, data={}, frombase=False):
         # Optionally reparametrize base to sample params
         if frombase:
             data = self.reparam(data, inv=True)
-        self.model = handlers.condition(self.model, data=data)
+        self.model = condition(self.model, data=data)
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
         """
@@ -196,7 +197,7 @@ class Model():
         if all(x is None for x in (hide_fn, hide, expose_types, expose)):
             self.model = self._block_det(self.model, hide_base=hide_base, hide_det=hide_det)
         else:
-            self.model = handlers.block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
+            self.model = block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
 
     def render(self, render_dist=False, render_params=False):
         display(render_model(self.model, render_distributions=render_dist, render_params=render_params))
@@ -504,9 +505,11 @@ class FieldLevelModel(Model):
     @obs_meshk.setter
     def obs_meshk(self, value):
         if jnp.isrealobj(value):
-            self._obs_meshk = jnp.fft.rfftn(value)
+            # self._obs_meshk = jnp.fft.rfftn(value)
+            self._obs_meshk = np.array(jnp.fft.rfftn(value))
         else:
-            self._obs_meshk = value
+            # self._obs_meshk = value
+            self._obs_meshk = np.array(value) # NOTE: to test constant folding
 
     @property
     def pmeshk_fiduc(self):
@@ -529,8 +532,8 @@ class FieldLevelModel(Model):
     ########################
     # Chains init and load #
     ########################
-    def load_runs(self, path, start_run, end_run, transforms=None, batch_ndim=2) -> Chains:
-        return Chains.load_runs(path, start_run, end_run, transforms, 
+    def load_runs(self, path:str, start:int, end:int, transforms=None, batch_ndim=2) -> Chains:
+        return Chains.load_runs(path, start, end, transforms, 
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
     def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2):

@@ -442,18 +442,24 @@ def hdr(x, proba=.95):
 #################
 # Chain metrics #
 #################
-def geomean(x, axis=None):
-    return jnp.exp( jnp.log(x).mean(axis=axis) )
+
 
 def grmean(x, axis=None):
     """cf. https://arxiv.org/pdf/1812.09384"""
     return (1 + geomean(x**2 - 1, axis=axis) )**.5
 
-def multi_ess(x, axis=None):
-    return geomean(effective_sample_size(x), axis=axis)
-
 def multi_gr(x, axis=None):
     return grmean(gelman_rubin(x), axis=axis)
+
+
+def geomean(x, axis=None):
+    return jnp.exp(jnp.mean(jnp.log(x), axis=axis))
+
+def harmean(x, axis=None):
+    return 1/jnp.mean(1/x, axis=axis)
+
+def multi_ess(x, axis=None):
+    return harmean(effective_sample_size(x), axis=axis)
 
 
 

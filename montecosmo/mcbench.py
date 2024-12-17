@@ -96,15 +96,16 @@ class Samples(UserDict):
             elif isinstance(k, str):
                 if k.startswith('*~'): # all except
                     k = k[2:]
-                    g = self.groups[k] if k in self.groups else self.data.keys() if k=='*' else [k]
+                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups[k]
+                    # NOTE: parse self first for compatibility with dict, update, etc.
                     newkey += list(self.data.keys() - set(g))
                 elif k.startswith('~'): # except
                     k = k[1:]
-                    g = self.groups[k] if k in self.groups else self.data.keys() if k=='*' else [k]
+                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups[k]
                     for kk in g:
                         newkey.remove(kk) if kk in newkey else None
                 else:
-                    g = self.groups[k] if k in self.groups else self.data.keys() if k=='*' else [k]
+                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups[k]
                     newkey += list(g)
             else:
                 raise KeyError(k)
@@ -214,27 +215,32 @@ class Samples(UserDict):
         pass
 
     def concat(self, *others, axis=0):
-        pass
+        return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
-    def stack(self, groups:str|list, delete=True, axis=0):
+    def stackby(self, groups:str|list=None, delete=True, axis=-1):
         """
         groups can be variable name or group name (but in the first case, variable is stacked with only itself).
         """
-        groups = np.atleast_1d(groups)
+        if groups is None:
+            groups = self.groups
+        elif isinstance(groups, str):
+            groups = np.atleast_1d(groups)
+
         new = self.copy()
         for g in groups:
-            new.data[g] = jnp.stack(self[g], axis=axis)
+            if g not in self: # if g a variable do noting
+                new.data[g] = jnp.stack(self[g], axis=axis)
 
-            # If a group, delete individual variables, then delete the group config
-            if delete and g in self.groups:
-                for k in self.groups[g]:
+                # If a group, delete individual variables, then delete the group config
+                if delete:
+                    new.groups[g] = self.groups[g].copy()
+                    for k in self.groups[g]:
 
-                    # Remove variable from group then check if not in other groups
-                    new.groups[g].remove(k)
-                    if k not in tree.leaves(new.groups):
-                        new.data.pop(k)
-                new.groups.pop(g)
-
+                        # Remove variable from group then check if not in other groups
+                        new.groups[g].remove(k)
+                        if k not in tree.leaves(new.groups) and k not in groups:
+                            new.data.pop(k)
+                    new.groups.pop(g)
         return new
 
 
@@ -245,16 +251,6 @@ class Samples(UserDict):
 @dataclass
 class Chains(Samples):
     labels: dict = None
-
-    # def __post_init__(self):
-    #     super().__post_init__()
-    #     if isinstance(self.data, Chains):
-    #         chains = self.data
-    #         if self.labels is None:
-    #             self.labels = chains.labels # inherit labels if not updated
-    #     if self.labels is None:
-    #         self.labels = {}
-    #     self.labels = self.labels.copy()
         
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
@@ -263,15 +259,15 @@ class Chains(Samples):
 
 
     @classmethod
-    def load_runs(cls, path, start_run, end_run, transforms=None, groups=None, labels=None, batch_ndim=2):
+    def load_runs(cls, path:str, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2):
         """
         Load and append runs (or extra fields) saved in different files with same name except index.
 
-        Both runs `start_run` and `end_run` are included.
+        Both runs `start` and `end` are included.
         Runs are concatenated along last batch dimension.
         """
-        print(f"Loading: {os.path.basename(path)}, from run {start_run} to run {end_run} (included)")
-        for i_run in range(start_run, end_run + 1):
+        print(f"Loading: {os.path.basename(path)}, from run {start} to run {end} (included)")
+        for i_run in range(start, end + 1):
             if not os.path.exists(path + f"_{i_run}.npz"):
                 raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
             
@@ -286,7 +282,7 @@ class Chains(Samples):
                 samples = trans(samples)
             return samples
 
-        for i_run in range(start_run, end_run + 1):
+        for i_run in range(start, end + 1):
             # Load
             part = dict(jnp.load(path+f"_{i_run}.npz")) # better than pickle for dict of array-like
             part = cls(part, groups=groups, labels=labels)
@@ -296,10 +292,11 @@ class Chains(Samples):
             if batch_ndim == 0:
                 part = tree.map(lambda x: x[None], part)
 
-            if i_run == start_run:
+            if i_run == start:
                 samples = part
             else:
-                samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=conc_axis), samples, part)
+                # samples = tree.map(lambda x,y: jnp.concatenate((x, y), axis=conc_axis), samples, part)
+                samples = samples.concat(part, axis=conc_axis)
                 del part  
 
         return samples
@@ -317,34 +314,127 @@ class Chains(Samples):
             self |= tree.map(choice_array, self.get([k]))
         return self
     
-    def thin(self, thinning=None, moment=None, batch_ndim=2):
-        axis = max(batch_ndim-1, 0)
-        name = "n_evals"
+    # def thin(self, thinning=None, moment=None, axis=1):
+    #     name = "n_evals"
+    #     if name in self:
+    #         infos, rest = self[[name], ['*~'+name]]
+    #         sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
+    #         infos = tree.map(sum_fn, infos)
+    #     else:
+    #         rest = self
+    #         infos = {}
+
+    #     thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
+    #     return infos | tree.map(thin_fn, rest)
+
+    # def cumfn(self, fn, n, *args, axis=1):
+    #     name = "n_evals"
+    #     if name in self:
+    #         infos, rest = self[[name], ['*~'+name]]
+    #         sum_fn = lambda x: cumfn_array(x, jnp.sum, n, axis=axis)
+    #         infos = tree.map(sum_fn, infos)
+    #     else:
+    #         rest = self
+    #         infos = {}
+
+    #     thin_fn = lambda x: cumfn_array(x, fn, n, *args, axis=axis)
+    #     return infos | tree.map(thin_fn, rest)
+
+
+
+    # def cumfn_array(a, fn, n, *args, axis=0):
+    #     """
+    #     Compute function on cumulative slices along given axis, with results along the first dimension.
+    #     """
+    #     filt_ends = jnp.rint(jnp.arange(1,n+1) / n * a.shape[axis]).astype(int)
+    #     filt_fn = lambda end: fn(a[axis*(slice(None),) + (slice(None,end),)], *args)
+    #     out = ()
+    #     for end in filt_ends:
+    #         out += (filt_fn(end),)
+    #     return jnp.stack(out) # stack on first dim since fn can destroy some dims
+    
+
+
+
+
+    def splitrans(self, transform, n, axis=1):
+        """
+        Apply transform on n splits along given axis.
+        """
+        assert n <= jnp.shape(self[next(iter(self))])[axis], "n should be less (<=) than the length of given axis."
+        out = tree.map(lambda x: jnp.array_split(x, n, axis), self)
+        out = transform(out)
+        
+        for k in out:
+            out[k] = jnp.stack(out[k], axis=axis)
+        return out
+
+    def cumtrans(self, transform, n, axis=1):
+        """
+        Apply transform on cumulative slices along given axis.
+        """
+        length = jnp.shape(self[next(iter(self))])[axis]
+        ends = jnp.rint(jnp.arange(1,n+1) / n * length).astype(int)
+        out = tree.map(lambda x: [], self)
+        for end in ends:
+            part = tree.map(lambda x: x[axis*(slice(None),) + (slice(None,end),)], self)
+            part = transform(part)
+            for k in self:
+                out[k].append(part[k])
+
+        for k in self:
+            out[k] = jnp.stack(out[k], axis=axis)
+        return out
+
+
+    
+    def thin(self, thinning=None, moment=None, axis=1):
+        # All item shapes should match on given axis so take the first item shape
+        length = jnp.shape(self[next(iter(self))])[axis]
+        if thinning is None:
+            n_split = 1
+        else:
+            n_split = max(np.rint(length / thinning), 1)
+        
+        if moment is None:
+            fn = lambda c: Chains.last(c, axis=axis)
+        else:
+            fn = lambda c: Chains.moment(c, m=moment, axis=axis)
+        return self.splitrans(fn, n_split, axis=axis)
+
+
+    ############
+    def metric(self, fn, *others, axis=None):
+        """
+        Tree map chains but treat n_evals item separately by summing it.
+        self and others should have matching keys, except possibly n_evals.
+        """
+        name = "n_evals"  
         if name in self:
             infos, rest = self[[name], ['*~'+name]]
-            sum_fn = lambda x: thin_array(x, thinning, moment=1, axis=axis)
-            infos = tree.map(sum_fn, infos)
+            infos = tree.map(lambda x: jnp.sum(x, axis), infos)
         else:
             rest = self
             infos = {}
 
-        thin_fn = lambda x: thin_array(x, thinning, moment, axis=axis)
-        return infos | tree.map(thin_fn, rest)
-
-    def cumfn(self, fn, n, *args, batch_ndim=2):
-        axis = max(batch_ndim-1, 0)
-        name = "n_evals"
-        if name in self:
-            infos, rest = self[[name], ['~'+name]]
-            sum_fn = lambda x: cumfn_array(x, jnp.sum, n, axis=axis)
-            infos = tree.map(sum_fn, infos)
-        else:
-            rest = self
-            infos = {}
-
-        thin_fn = lambda x: cumfn_array(x, fn, n, *args, axis=axis)
-        return infos | tree.map(thin_fn, rest)
+        return infos | tree.map(fn, rest, *others)
     
+    
+    def last(self, axis=1):
+        return self.metric(lambda x: jnp.take(x, -1, axis), axis=axis)
+    
+    def moment(self, m, axis=1):
+        if isinstance(m, int):
+            fn = lambda x: jnp.sum(x**m, axis)
+        else:
+            m = jnp.asarray(m)
+            fn = lambda x: jnp.sum(x[...,None]**m, axis)
+        return self.metric(fn, axis=axis)
+
+    def multi_ess(self, axis=None):
+        return self.metric(lambda x: multi_ess(x, axis=axis))
+    
+
 
     ############
     # Plotting #
@@ -377,6 +467,27 @@ class Chains(Samples):
             for k, v in self[[g]].items():
                 plt.plot(conc_fn(v), label='$'+self.labels[k]+'$')
             plt.legend()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -994,16 +1105,12 @@ def transform_ess(traj):
 
 # TODO: can select var_names directly in numpyro run api
 
-def save_run(mcmc:MCMC, i_run:int, path:str, names:list=None, 
-             extra_fields:list=None, group_by_chain:bool=True):
+def save_run(mcmc:MCMC, i_run:int, path:str, extra_fields:list=None, group_by_chain:bool=True):
     """
     Save one run of MCMC sampling, with extra fields and last state.
-    If `var_names` is None, save all the variables.
     """
     # Save samples (and extra fields)
     samples = mcmc.get_samples(group_by_chain)
-    if names is not None:
-        samples = {key: samples[key] for key in names}
 
     if extra_fields is not None:
         extra = mcmc.get_extra_fields(group_by_chain)
@@ -1020,37 +1127,42 @@ def save_run(mcmc:MCMC, i_run:int, path:str, names:list=None,
     pdump(mcmc.last_state, path+f"_last_state.p") 
 
 
-def sample_and_save(mcmc:MCMC, n_runs:int, path:str, names:list=None, 
-                    extra_fields:list=[], rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
+def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=(),
+                    rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
-    Do `mcmc.num_warmup` warmup steps, followed by `n_runs` times `mcmc.num_samples` sampling steps.
-    If `var_names` is None, save all the variables.
+    If `mcmc.num_warmup >= 1 and mcmc.post_warmup_state is not None`, first step is a warmup step.
+    So to continue a run, simply do before:
+    ```
+    mcmc.num_warmup = 0
+    mcmc.post_warmup_state = last_state
+    ```
     """
     if isinstance(rng, int):
         rng = jr.key(rng)
 
     # Warmup sampling
-    if mcmc.num_warmup>=1:
-        print(f"run {0}/{n_runs} (warmup)")
+    if mcmc.num_warmup >= 1:
+        print(f"run {start}/{end} (warmup)")
 
         # Warmup
         mcmc.warmup(rng, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
-        save_run(mcmc, 0, path, names, extra_fields, group_by_chain)
+        save_run(mcmc, start, path, extra_fields, group_by_chain)
 
         # Handling rng key and destroy init_params
         rng_run = mcmc.post_warmup_state.rng_key
         init_params = None
+        start += 1
     else:
         rng_run = rng
 
     # Run sampling
-    for i_run in range(1, n_runs+1):
-        print(f"run {i_run}/{n_runs}")
+    for i_run in range(start, end+1):
+        print(f"run {start}/{end}")
             
         # Run
         mcmc.run(rng_run, extra_fields=extra_fields, init_params=init_params)
-        save_run(mcmc, i_run, path, names, extra_fields)
+        save_run(mcmc, i_run, path, extra_fields)
 
         # Init next run at last state
         mcmc.post_warmup_state = mcmc.last_state
