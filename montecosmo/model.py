@@ -323,7 +323,7 @@ class FieldLevelModel(Model):
             init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(guide, amp=True)))
 
         elif self.precond==3:
-            means, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
+            means, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
             init[name_] = sample(name_, dist.Normal(cgh2rg(-means / stds), cgh2rg(pmeshk**.5 / stds, amp=True)))
             guide = (means, stds)
 
@@ -419,7 +419,7 @@ class FieldLevelModel(Model):
                 guide = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
 
             elif self.precond==3:
-                means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, self.a_obs, self.box_shape, self.gxy_count)
+                means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
                 guide = (means, stds)
 
             if not fourier and inv:

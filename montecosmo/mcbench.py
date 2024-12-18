@@ -1094,7 +1094,7 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
                     rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
-    If `mcmc.num_warmup >= 1 and mcmc.post_warmup_state is not None`, first step is a warmup step.
+    If `mcmc.num_warmup >= 1`, first step is a warmup step.
     So to continue a run, simply do before:
     ```
     mcmc.num_warmup = 0
@@ -1121,7 +1121,7 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
 
     # Run sampling
     for i_run in range(start, end+1):
-        print(f"run {start}/{end}")
+        print(f"run {i_run}/{end}")
             
         # Run
         mcmc.run(rng_run, extra_fields=extra_fields, init_params=init_params)
