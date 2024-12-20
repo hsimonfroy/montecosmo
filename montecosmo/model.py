@@ -349,7 +349,7 @@ class FieldLevelModel(Model):
         particles = jnp.stack([q + dq, p])
 
         # PM displacement from a_lpt to a_obs
-        particles = nbody2(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
+        particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
         particles = deterministic('pm_part', particles)[-1]
 
         # RSD displacement at a_obs
