@@ -18,8 +18,8 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jaxpm.painting import cic_paint
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
                                gausslin_posterior, lin_power_mesh, 
-                               lpt, nbody, lagrangian_weights, rsd) 
-from montecosmo.metrics import power_spectrum
+                               lpt, nbody, nbody2, lagrangian_weights, rsd) 
+from montecosmo.metrics import power_spectrum, pktranscoh
 from montecosmo.utils import pdump, pload
 
 from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap
@@ -30,7 +30,7 @@ from montecosmo.mcbench import Chains
 default_config={
             # Mesh and box parameters
             'mesh_shape':3 * (64,), # int
-            'box_shape':3 * (640.,), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+            'box_shape':3 * (320.,), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # LSS formation
             'a_lpt':0.1, 
             'a_obs':0.5,
@@ -158,7 +158,7 @@ class Model():
         elif isinstance(samples, dict):
             # All item shapes should match on the first batch_ndim dimensions,
             # so take the first item shape
-            shape = jnp.shape(samples[next(iter(samples))])[:batch_ndim]
+            shape = jnp.shape(next(iter(samples.values())))[:batch_ndim]
             rng = jr.split(rng, shape)
             return nvmap(single_prediction, len(shape))(rng, samples)
     
@@ -261,8 +261,9 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         assert(self.a_lpt <= self.a_obs), "a_lpt must be less than (<=) a_obs"
-        self.groups = self._groups_config(base=True)
-        self.groups_ = self._groups_config(base=False)
+        self.groups = self._groups(base=True)
+        self.groups_ = self._groups(base=False)
+        self.labels = self._labels()
         self.prior_loc = self._prior_loc(base=True)
         # TODO: add prior_loc_ for init chain? Can depends on precond guides
 
@@ -348,7 +349,7 @@ class FieldLevelModel(Model):
         particles = jnp.stack([q + dq, p])
 
         # PM displacement from a_lpt to a_obs
-        particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
+        particles = nbody2(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
         particles = deterministic('pm_part', particles)[-1]
 
         # RSD displacement at a_obs
@@ -401,12 +402,12 @@ class FieldLevelModel(Model):
         groups = ['cosmo','bias','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
         params = Chains(params, self.groups | self.groups_).get(key)
-        cosmo_, bias, init, rest = (q.data for q in params) # TODO: make it handle Chains?
+        cosmo_, bias_, init, rest = (q.data for q in params) # TODO: make it handle Chains?
         # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
-        bias = samp2base(bias, self.latents, inv=inv, temp=temp)
+        bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
 
         # Initial conditions
         if len(init) > 0:
@@ -419,7 +420,8 @@ class FieldLevelModel(Model):
                 guide = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
 
             elif self.precond==3:
-                means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+                b1 = bias_['b1'] if inv else bias['b1']
+                means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
                 guide = (means, stds)
 
             if not fourier and inv:
@@ -427,9 +429,11 @@ class FieldLevelModel(Model):
             init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=inv, temp=temp)
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
-        return cosmo | bias | init | rest
+        return rest | cosmo | bias | init # possibly update rest
 
-
+    ###########
+    # Getters #
+    ###########
 
     def _sample_gauss(self, names:str|list, base=False):
         dic = {}
@@ -457,20 +461,9 @@ class FieldLevelModel(Model):
     #         tup += (dic,)
     #     return tup
 
-    def _prior_loc(self, base=True):
+    def _groups(self, base=True):
         """
-        Return location values of the latents config.
-        """
-        locs = {}
-        for name, val in self.latents.items():
-            loc = val.get('loc')
-            if loc is not None:
-                locs[name] = loc if base else jnp.zeros_like(loc)
-        return locs
-    
-    def _groups_config(self, base=True):
-        """
-        Return groups config from latents config.
+        Return groups from latents config.
         """
         groups = {}
         for name, val in self.latents.items():
@@ -481,18 +474,27 @@ class FieldLevelModel(Model):
             groups[group].append(name if base else name+'_')
         return groups
 
-    @property
-    def labels(self):
+    def _labels(self):
+        """
+        Return labels from latents config
+        """
         labs = {}
         for name, val in self.latents.items():
             lab = val['label']
             labs[name] = lab
             labs[name+'_'] = "\\tilde"+lab
         return labs
-
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), multipoles=0, los=[0.,0.,1.]):
-        return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                              comp=comp, kedges=kedges, multipoles=multipoles, los=los)
+    
+    def _prior_loc(self, base=True):
+        """
+        Return location values from latents config.
+        """
+        locs = {}
+        for name, val in self.latents.items():
+            loc = val.get('loc')
+            if loc is not None:
+                locs[name] = loc if base else jnp.zeros_like(loc)
+        return locs
     
     @property
     def obs_meshk(self):
@@ -526,7 +528,15 @@ class FieldLevelModel(Model):
     def pmeshk_fiduc(self, value):
         self._pmeshk_fiduc = value
 
+    ###########
+    # Metrics #
+    ###########
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), multipoles=0, los=[0.,0.,1.]):
+        return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
+                            kedges=kedges, comp=comp, multipoles=multipoles, los=los)
 
+    def pktranscoh(self, mesh0, mesh1, kedges:int | float | list=None):
+        return pktranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges)
 
 
     ########################
@@ -541,7 +551,6 @@ class FieldLevelModel(Model):
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     
-
     def init_model(self, rng, base=False, temp=1.):
         # Fix cosmology and biases to prior location
         cosmology = get_cosmology(**self.prior_loc)

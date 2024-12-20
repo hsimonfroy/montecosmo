@@ -208,7 +208,6 @@ def plot_coh(ks, coh, *args, log=False, **kwargs):
 def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, **kwargs):
     plt.subplot(131)
     plot_pk(ks, pk1, *args, log=log, **kwargs)
-    plt.legend()
 
     plt.subplot(132)
     plot_trans(ks, trans, *args, log=log, **kwargs)

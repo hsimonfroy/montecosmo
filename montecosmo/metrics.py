@@ -173,7 +173,7 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         mmk = mesh.real**2 + mesh.imag**2
     else:
         mesh2 = jnp.fft.fftn(mesh2, norm='ortho')
-        if mesh[1]:
+        if comp[1]:
             kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
             kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
                 for m, kshape in zip(mesh_shape, kshapes)] # cell units
@@ -443,15 +443,6 @@ def hdr(x, proba=.95):
 # Chain metrics #
 #################
 
-
-def grmean(x, axis=None):
-    """cf. https://arxiv.org/pdf/1812.09384"""
-    return (1 + geomean(x**2 - 1, axis=axis) )**.5
-
-def multi_gr(x, axis=None):
-    return grmean(gelman_rubin(x), axis=axis)
-
-
 def geomean(x, axis=None):
     return jnp.exp(jnp.mean(jnp.log(x), axis=axis))
 
@@ -460,6 +451,15 @@ def harmean(x, axis=None):
 
 def multi_ess(x, axis=None):
     return harmean(effective_sample_size(x), axis=axis)
+
+def multi_gr(x, axis=None):
+    """
+    In the order of (1+nc/MESS)^(1/2), with nc the number of chains.
+    cf. https://arxiv.org/pdf/1812.09384 and MultiESS := HarMean(ESS)
+    """
+    return jnp.mean(gelman_rubin(x)**2, axis=axis)**.5
+
+
 
 
 

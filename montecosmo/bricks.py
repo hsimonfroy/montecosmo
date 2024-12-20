@@ -1,11 +1,7 @@
 from functools import partial
 import numpy as np
 
-import numpyro
-import numpyro.distributions as dist
-from numpyro import sample, deterministic
-
-from jax import numpy as jnp, debug
+from jax import numpy as jnp, debug, tree
 import jax_cosmo as jc
 from jax_cosmo import Cosmology
 from jaxpm.kernels import fftk
@@ -13,7 +9,7 @@ from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
 
-from diffrax import diffeqsolve, ODETerm, SaveAt, PIDController, Euler, Heun, Dopri5, Tsit5
+from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PIDController, ConstantStepSize
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape
 
 
@@ -39,7 +35,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
 def gausslin_posterior(obs_meshk, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
-    by assuming Gaussian linear model. All fields are in harmonic space.
+    by assuming Gaussian linear model. All fields are in fourier space.
     """
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(obs_meshk.shape)
@@ -107,11 +103,11 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                     mesh = jnp.fft.rfftn(mesh) # ~ G(0, I)
 
                 elif precond==1:
-                    # Sample in harmonic space
+                    # Sample in fourier space
                     mesh = rg2cgh(mesh) # ~ G(0, I)
 
                 elif precond==2:
-                    # Sample in harmonic space with
+                    # Sample in fourier space with
                     # partial (and static) posterior preconditioning assuming Gaussian linear model and fiducial cosmology
                     # as done in [Bayer+2023](http://arxiv.org/abs/2307.09504)
                     mesh = rg2cgh(mesh) # ~ G(0, I + n * P_fid(a_obs))
@@ -122,7 +118,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                 mesh *= pmeshk**.5 # ~ G(0, P)
 
             elif precond==3:
-                # Sample in harmonic space with
+                # Sample in fourier space with
                 # complete (and dynamic) posterior preconditioning assuming Gaussian linear model
                 means, stds = guide # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
                 mesh = rg2cgh(mesh) # ~ G( -mu * sigma^-1, sigma^-2 * P) 
@@ -242,6 +238,44 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
         # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
         return particles
 
+
+from montecosmo.nbody import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
+def nbody2(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-2,
+           grad_fd=True, lap_fd=False):
+    
+    solver = EfficientLeapFrog(initial_t0=a_lpt, final_t1=a_obs, cosmo=cosmo)
+    stepsize_controller = ConstantStepSize()
+    terms = tree.map(
+        LeapFrogODETerm,
+        symplectic_ode(mesh_shape, paint_absolute_pos=False),
+    )
+    cosmo._workspace = {}
+    args = cosmo
+
+    if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
+        saveat = SaveAt(t1=True)
+    elif isinstance(snapshots, int): 
+        saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, snapshots))   
+    else: 
+        saveat = SaveAt(ts=jnp.asarray(snapshots))   
+
+    sol = diffeqsolve(
+            terms,
+            solver=solver,
+            t0=a_lpt,
+            t1=a_obs,
+            dt0=0.1,
+            y0=(particles[0], particles[1]),
+            args=args,
+            stepsize_controller=stepsize_controller,
+            saveat=saveat,
+            max_steps=10,
+            # progress_meter=TqdmProgressMeter(refresh_steps=2),
+            # adjoint=BacksolveAdjoint(solver=solver),
+        )
+
+    particles = sol.ys
+    return particles
 
 
 

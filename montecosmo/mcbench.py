@@ -32,7 +32,6 @@ from dataclasses import dataclass, fields
 from collections import UserDict
 from jax import tree, tree_util
 
-
 @tree_util.register_pytree_node_class
 # @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
 @dataclass
@@ -47,6 +46,7 @@ class Samples(UserDict):
     data: dict
     groups: dict = None # dict of list of key
 
+    NoneOrEmpty = object() # a sentinel to return empty dict if key is not found
     def __post_init__(self):
         if isinstance(self.data, Samples):
             otherdict = self.data.asdict()
@@ -73,12 +73,11 @@ class Samples(UserDict):
                     return tuple(self._get(k, default_fn) for k in key)
 
             elif isinstance(key, list): # construct new instance
-                data = {}
-                for k in self._parse_key(key):
-                    v = self._get(k, default_fn)
-                    if v is not None:
-                        data[k] = v
-                return type(self)(**self.asdict() | {'data': data}) # TODO: should we also pop incomplete groups?
+                if default_fn is self.NoneOrEmpty:
+                    data = {k: self.data[k] for k in self._parse_key(key) if k in self.data}
+                else:
+                    data = {k: self._get(k, default_fn) for k in self._parse_key(key)}
+                return type(self)(**self.asdict() | {'data': data})
             
             elif isinstance(key, tuple):
                 key = self._parse_key(key)
@@ -119,13 +118,22 @@ class Samples(UserDict):
         # Rewrite dict get method to raise KeyError by default.
         if key in self.data:
             return self.data[key]
-        elif default_fn is not None:
-            return default_fn(key)
-        else:
+        elif default_fn is None:
             raise KeyError(key)
+        elif default_fn is self.NoneOrEmpty:
+            # NOTE: NoneOrEmpty is a sentinel that behaves as lambda k: None 
+            # except when ask for subdict where it will return empty dict for keys not found.
+            return None
+        else:
+            return default_fn(key)
 
-    def get(self, key, default=None, default_fn=None):
-        return self.__getitem__(key, default_fn=(lambda k: default) if default_fn is None else default_fn)
+    def get(self, key, default_fn=NoneOrEmpty):
+        """
+        If key is not found, get will by default return None when asked for value,
+        and empty dict when asked for subdict. To get subdict with None value, use `default_fn=lambda k:None`.
+        """
+        return self.__getitem__(key, default_fn)
+     
 
     def asdict(self):
         # NOTE: dataclasses.asdict makes deepcopy, cf. https://github.com/python/cpython/issues/88071
@@ -133,7 +141,7 @@ class Samples(UserDict):
         return {field.name: getattr(self, field.name).copy() for field in fields(self)}
 
     def __copy__(self): 
-        # UserDict copy() would not copy other attributes than data
+        # NOTE: UserDict copy() would not copy other attributes than data
         return type(self)(**self.asdict())
 
     @property
@@ -220,6 +228,7 @@ class Samples(UserDict):
 
     def stackby(self, groups:str|list=None, remove=True, axis=-1):
         """
+        Stack variables by groups, optionally removing individual variables.
         groups can be variable name or group name.
         """
         if groups is None:
@@ -229,7 +238,7 @@ class Samples(UserDict):
 
         new = self.copy()
         for g in groups:
-            if g not in self: # if g a variable do noting
+            if g not in self: # if g is a variable do noting
                 if len(self.groups[g]) == 1:
                     new.data[g] = self[g]
                 else:
@@ -343,7 +352,7 @@ class Chains(Samples):
 
     def thin(self, thinning=None, moment=None, axis:int=1):
         # All item shapes should match on given axis so take the first item shape
-        length = jnp.shape(self[next(iter(self))])[axis]
+        length = jnp.shape(next(iter(self.values())))[axis]
         if thinning is None:
             n_split = 1
         else:
