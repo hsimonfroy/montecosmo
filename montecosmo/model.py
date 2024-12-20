@@ -324,9 +324,9 @@ class FieldLevelModel(Model):
             init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(guide, amp=True)))
 
         elif self.precond==3:
-            means, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(cgh2rg(-means / stds), cgh2rg(pmeshk**.5 / stds, amp=True)))
-            guide = (means, stds)
+            _, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(0, cgh2rg(pmeshk**.5 / stds, amp=True)))
+            guide = (0, stds)
 
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k,v in init.items()} # register base params
@@ -421,8 +421,8 @@ class FieldLevelModel(Model):
 
             elif self.precond==3:
                 b1 = bias_['b1'] if inv else bias['b1']
-                means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
-                guide = (means, stds)
+                _, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+                guide = (0, stds)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)

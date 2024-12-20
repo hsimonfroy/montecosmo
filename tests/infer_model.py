@@ -16,9 +16,9 @@ from functools import partial
 from getdist import plots
 from numpyro import infer
 
-# %matplotlib inline
-# %load_ext autoreload
-# %autoreload 2
+# get_ipython().run_line_magic('matplotlib', 'inline')
+# get_ipython().run_line_magic('load_ext', 'autoreload')
+# get_ipython().run_line_magic('autoreload', '2')
 
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload
@@ -27,7 +27,7 @@ from montecosmo.mcbench import sample_and_save
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
+# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
 
 
 # ## Config and fiduc
@@ -96,26 +96,25 @@ class ParseSlurmId():
 # In[3]:
 
 
-# task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-task_id = 1120
+################## TO SET #######################
+task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
+# task_id = 1120
+print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
-
 # os.makedirs(save_dir, exist_ok=True)
+
 # import sys
-# tempstdout = sys.stdout
-# tempstderr = sys.stderr
-# sys.stdout = open(save_path+'.out', 'a')
-# sys.stderr = open(save_path+'.out', 'a')
-# sys.stdout = tempstdout
-# sys.stderr = tempstderr
+# tempstdout, tempstderr = sys.stdout, sys.stderr
+# sys.stdout = sys.stderr = open(save_path+'.out', 'a')
+# sys.stdout, sys.stderr = tempstdout, tempstderr
 
 
-# In[ ]:
+# In[5]:
 
 
 print(model)
 print(mcmc_config)
-model.render()
+# model.render()
 
 if not os.path.exists(save_dir+"truth.p"):
     # Predict and save fiducial
@@ -127,7 +126,7 @@ if not os.path.exists(save_dir+"truth.p"):
             'bn2': 0.}
 
     model.reset()
-    truth = model.predict(samples=truth, hide_base=False, frombase=True)
+    truth = model.predict(samples=truth, hide_base=False, hide_samp=False, frombase=True)
     
     print(f"Saving model and truth at {save_dir}")
     model.save(save_dir)    
@@ -140,7 +139,6 @@ model.condition({'obs': truth['obs']})
 model.obs_meshk = truth['obs']
 model.block()
 # model.render()
-
 
 # ## Run
 
@@ -160,7 +158,7 @@ def get_mcmc(model, config):
         kernel = infer.NUTS(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-            step_size=1e-4, 
+            step_size=1e-5, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,)
         
@@ -168,7 +166,7 @@ def get_mcmc(model, config):
         kernel = infer.HMC(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
-            step_size=1e-4, 
+            step_size=1e-5, 
             # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
             trajectory_length= 1023 * 1e-3 / 4, 
             target_accept_prob=target_accept_prob,)
@@ -215,15 +213,33 @@ else:
     
     print("Init params")
     init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), mcmc_config['n_chains']))
-    init_params_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
-    mcmc = sample_and_save(mcmc, 0, save_path+'_init', extra_fields=['num_steps'], init_params=init_params_)
+    init_mesh_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
+    mcmc = sample_and_save(mcmc, save_path+'_init', 0, 0, extra_fields=['num_steps'], init_params=init_mesh_)
     
     print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, "\nss:", mcmc.last_state.adapt_state.step_size)
-    init_params_ = mcmc.last_state.z
+    init_params_ |= mcmc.last_state.z
+    print(init_params_.keys())
+
+    model.reset()
+    model.condition({'obs': truth['obs']})
+    model.block()
+    mcmc = get_mcmc(model.model, mcmc_config)
 
 
 # In[ ]:
 
 
-mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
+mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
+
+
+# In[ ]:
+
+
+# model.reset()
+# model.condition({'obs': truth['obs']})
+# model.block()
+# mcmc = get_mcmc(model.model, mcmc_config)
+# init_params_ = {k+'_': jnp.broadcast_to(truth[k+'_'], (mcmc_config['n_chains'], *jnp.shape(truth[k+'_']))) for k in ['Omega_m','sigma8','b1','b2','bs2','bn2','init_mesh']}
+
+# mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
 
