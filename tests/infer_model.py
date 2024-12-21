@@ -4,7 +4,7 @@
 # # Model Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[ ]:
+# In[1]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -76,7 +76,7 @@ class ParseSlurmId():
         self.id = str(id)
 
         dic = {}
-        dic['mesh_length'] = [32,64,128]
+        dic['mesh_length'] = [2,4,8,16,32,64,128]
         dic['lpt_order'] = [0,1,2]
         dic['precond'] = [0,1,2,3]
         dic['target_accept_prob'] = [0.65, 0.8]
@@ -101,16 +101,15 @@ task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
 # task_id = 1120
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
-# os.makedirs(save_dir, exist_ok=True)
+os.makedirs(save_dir, exist_ok=True)
 
-# import sys
-# tempstdout, tempstderr = sys.stdout, sys.stderr
-# sys.stdout = sys.stderr = open(save_path+'.out', 'a')
-# sys.stdout, sys.stderr = tempstdout, tempstderr
+import sys
+tempstdout, tempstderr = sys.stdout, sys.stderr
+sys.stdout = sys.stderr = open(save_path+'.out', 'a')
+sys.stdout, sys.stderr = tempstdout, tempstderr
 
 
-# In[5]:
-
+# In[ ]:
 
 print(model)
 print(mcmc_config)
@@ -139,6 +138,9 @@ model.condition({'obs': truth['obs']})
 model.obs_meshk = truth['obs']
 model.block()
 # model.render()
+
+
+
 
 # ## Run
 
