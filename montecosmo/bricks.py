@@ -20,7 +20,7 @@ def lin_power_interp(cosmo:Cosmology, a=1., n_interp=256):
     """
     k = jnp.logspace(-4, 1, n_interp)
     pk = jc.power.linear_matter_power(cosmo, k, a=a)
-    pk_fn = lambda x: jc.scipy.interpolate.interp(x.reshape(-1), k, pk).reshape(x.shape)
+    pk_fn = lambda x: jnp.interp(x.reshape(-1), k, pk).reshape(x.shape)
     return pk_fn
 
 def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
@@ -240,7 +240,7 @@ def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, 
 
 
 from montecosmo.nbody import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
-def nbody2(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-2,
+def nbody2(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, n_steps=5,
            grad_fd=True, lap_fd=False):
     
     solver = EfficientLeapFrog(initial_t0=a_lpt, final_t1=a_obs, cosmo=cosmo)
@@ -264,8 +264,8 @@ def nbody2(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None,
             solver=solver,
             t0=a_lpt,
             t1=a_obs,
-            dt0=0.1,
-            y0=(particles[0], particles[1]),
+            dt0=(a_obs - a_lpt) / n_steps,
+            y0=(*particles,),
             args=args,
             stepsize_controller=stepsize_controller,
             saveat=saveat,

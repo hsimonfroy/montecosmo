@@ -120,7 +120,8 @@ def symplectic_ode(mesh_shape, paint_absolute_pos=True, halo_size=0, sharding=No
 
 
 class LeapFrogODETerm(ODETerm):
-    def contr(self, t0: RealScalarLike, t1: RealScalarLike, blo: int, **kwargs:dict) -> RealScalarLike:
+    def contr(self, t0: RealScalarLike, t1: RealScalarLike, **kwargs) -> RealScalarLike:
+
         action = kwargs.get("action", "D")  # Action type: 'D' for Drift, 'K' for Kick
         cosmo = kwargs.get("cosmo", None)
         t0t1 = (t0 * t1) ** 0.5  # Geometric mean of t0 and t1
@@ -210,8 +211,6 @@ class EfficientLeapFrog(AbstractSolver):
         term_1, _ = terms
         y0_1, y0_2 = y0
 
-        print(terms, term_1)
-        print(term_1.contr.__annotations__)
         # Compute forces (kick update)
         control = term_1.contr(t0, t1, action="FK", cosmo=self.cosmo)
         y1_2 = (y0_2**ω + term_1.vf_prod(t0, y0_1, args, control) ** ω).ω

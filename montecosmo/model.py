@@ -346,7 +346,7 @@ class FieldLevelModel(Model):
         # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
         cosmology._workspace = {}  # HACK: temporary fix
         dq, p, f = lpt(cosmology, **init, positions=q, a=self.a_lpt, order=self.lpt_order)
-        particles = jnp.stack([q + dq, p])
+        particles = jnp.stack([q + dq, p]) # TODO: make tuple
 
         # PM displacement from a_lpt to a_obs
         particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
