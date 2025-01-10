@@ -4,7 +4,6 @@ import numpy as np
 from jax import numpy as jnp, debug, tree
 import jax_cosmo as jc
 from jax_cosmo import Cosmology
-from jaxpm.kernels import fftk
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
 from jaxpm.pm import pm_forces
@@ -13,14 +12,29 @@ from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PI
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape
 
 
+def rfftk(shape):
+    """
+    Return wavevectors in cell units for rfftn.
+    """
+    kx = np.fft.fftfreq(shape[0]) * 2 * np.pi
+    ky = np.fft.fftfreq(shape[1]) * 2 * np.pi
+    kz = np.fft.rfftfreq(shape[2]) * 2 * np.pi
 
-def lin_power_interp(cosmo:Cosmology, a=1., n_interp=256):
+    kx = kx.reshape([-1, 1, 1])
+    ky = ky.reshape([1, -1, 1])
+    kz = kz.reshape([1, 1, -1])
+
+    return kx, ky, kz
+
+def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """
     k = jnp.logspace(-4, 1, n_interp)
-    pk = jc.power.linear_matter_power(cosmo, k, a=a)
-    pk_fn = lambda x: jnp.interp(x.reshape(-1), k, pk).reshape(x.shape)
+    logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
+    # Interpolate in log-log space with logspaced k values
+    # tested against other choices + correctly handles k==0
+    pk_fn = lambda x: jnp.exp(jnp.interp(jnp.log(x.reshape(-1)), jnp.log(k), logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
     return pk_fn
 
 def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
@@ -28,7 +42,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     Return linear matter power spectrum field.
     """
     pk_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
-    kvec = fftk(mesh_shape)
+    kvec = rfftk(mesh_shape)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
 
@@ -177,7 +191,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     # delta = jnp.fft.irfftn(delta_k)
 
     mesh_shape = delta.shape
-    kvec = fftk(mesh_shape)
+    kvec = rfftk(mesh_shape)
     kk_box = sum((ki  * (m / l))**2 
             for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
 
@@ -283,7 +297,7 @@ def nbody2(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None,
 # from jaxpm.pm import pm_forces
 import jax_cosmo as jc
 from jaxpm.growth import growth_factor, growth_rate, dGfa, growth_factor_second, growth_rate_second, dGf2a
-from jaxpm.kernels import fftk, longrange_kernel
+from jaxpm.kernels import longrange_kernel, cic_compensation
 from jaxpm.painting import cic_paint, cic_read
 
 # Planck 2015 paper XIII Table 4 final column (best fit)
@@ -416,8 +430,9 @@ def pm_forces(positions, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_sp
         delta_k = mesh
 
     # Computes gravitational potential
-    kvec = fftk(mesh_shape)
+    kvec = rfftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
+    # pot_k *= cic_compensation(kvec)
     # Computes gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), positions) 
                       for i in range(3)], axis=-1)
@@ -442,7 +457,7 @@ def lpt(cosmo:Cosmology, init_mesh, positions, a, order=1, grad_fd=True, lap_fd=
     f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
-        kvec = fftk(mesh_shape)
+        kvec = rfftk(mesh_shape)
         pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
 
         delta2 = 0
@@ -493,13 +508,14 @@ def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
 
 
 
+from numpyro import sample, distributions as dist
 def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
     b = sample('b', dist.Normal(2, 0.25))
     a = jnp.atleast_1d(a)
     los = jnp.asarray(los)
     los = los / np.linalg.norm(los)
 
-    kvec = fftk(mesh_shape)
+    kvec = rfftk(mesh_shape)
     kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
 
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))

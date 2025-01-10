@@ -7,30 +7,45 @@ from matplotlib import animation, rc
 from matplotlib.colors import to_rgba_array
 from matplotlib.colors import ListedColormap
 
+from montecosmo.bdec import credint
+
 
 ###########
 # General #
 ###########
 # TODO: needs to return surf/p3d to add colorbar?
 # TODO: create another function to plot 3d scatter
-def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, surf=False, **kwargs):
+def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
     """
     Plot bivariate function fn, that should be vectorized first.
-    e.g.:
-        plt.subplot(121, projection="3d")
-        plot_bivar(my_pdf, surf=True)
+    type can be 'mesh', 'contour', 'contourf', 'surf'.
+
+    Example
+    --------
+    ```
+    # pdf = lambda x, y: np.exp( -(x**2 + y**2) / 2) / (2 * np.pi)
+    pdf = lambda x: np.exp( -(x**2).sum(-1) / 2) / (2 * np.pi)
+    plt.subplot(121, projection="3d")
+    plot_bivar(pdf, type='surf')
+    ```
     """
     if isinstance(box, (int, float)):
         box = [[-box, box], [-box, box]]
 
     xs, ys = np.linspace(*box[0], n), np.linspace(*box[1], n)
     xx, yy = np.meshgrid(xs, ys)
-    zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
+    # zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
+    zz = fn(np.stack((xx, yy), -1))
 
-    if surf:
-        plt.gca().plot_surface(xx, yy, zz, **kwargs)
-    else:
-        plt.pcolormesh(xx, yy, zz, **kwargs)
+    if type=='surf':
+        out = plt.gca().plot_surface(xx, yy, zz, **kwargs)
+    elif type=='mesh':
+        out = plt.pcolormesh(xx, yy, zz, **kwargs)
+    elif type=='contour':
+        out = plt.contour(xx, yy, zz, **kwargs)
+    elif type=='contourf':
+        out = plt.contourf(xx, yy, zz, **kwargs)
+    return out
 
 
 #############
@@ -172,7 +187,7 @@ def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[flo
 ##################
 # Power Spectrum #
 ##################
-def plot_pk(ks, pk, *args, i_ell=None, log=False, **kwargs):
+def plot_pk(ks, pk, *args, i_ell=None, log=False, fill=False, **kwargs):
     if i_ell is None:
         sub = ""
     else:
@@ -181,39 +196,68 @@ def plot_pk(ks, pk, *args, i_ell=None, log=False, **kwargs):
         pk = pk[i_ell]
 
     if log:
-        plt.loglog(ks, pk, *args, **kwargs)
+        if fill:
+            scis = credint(pk, fill, axis=0)
+            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            plt.xscale('log'), plt.yscale('log')
+        else:
+            plt.loglog(ks, pk, *args, **kwargs)
         plt.ylabel("$P"+sub+"(k)$ [Mpc/$h$]$^3$")
     else:
-        plt.plot(ks, ks * pk, *args, **kwargs)
+        if fill:
+            scis = credint(pk, fill, axis=0)
+            plt.fill_between(ks[0], *(ks[0] * scis.T), *args, alpha=(1-fill)**.5, **kwargs)
+        else:
+            plt.plot(ks, ks * pk, *args, **kwargs)
         plt.ylabel("$k P"+sub+"(k)$ [Mpc/$h$]$^2$")
     plt.xlabel("$k$ [$h$/Mpc]")
 
 
-def plot_trans(ks, trans, *args, log=False, **kwargs):
+def plot_trans(ks, trans, *args, log=False, fill=False, **kwargs):
     if log:
-        plt.loglog(ks, trans, *args, **kwargs)
+        if fill:
+            scis = credint(trans, fill, axis=0)
+            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            plt.xscale('log'), plt.yscale('log')
+        else:
+            plt.loglog(ks, trans, *args, **kwargs)
     else:
-        plt.semilogy(ks, trans, *args, **kwargs)
+        if fill:
+            scis = credint(trans, fill, axis=0)
+            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            plt.yscale('log')
+        else:
+            plt.semilogy(ks, trans, *args, **kwargs)
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
 
 
-def plot_coh(ks, coh, *args, log=False, **kwargs):
+def plot_coh(ks, coh, *args, log=False, fill=False, **kwargs):
     if log:
-        plt.loglog(ks, coh, *args, **kwargs)
+        if fill:
+            scis = credint(coh, fill, axis=0)
+            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            plt.xscale('log'), plt.yscale('log')
+        else:
+            plt.loglog(ks, coh, *args, **kwargs)
     else:
-        plt.semilogy(ks, coh, *args, **kwargs)
+        if fill:
+            scis = credint(coh, fill, axis=0)
+            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            plt.yscale('log')
+        else:
+            plt.semilogy(ks, coh, *args, **kwargs)
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
 
 
-def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, **kwargs):
+def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, fill=False, **kwargs):
     plt.subplot(131)
-    plot_pk(ks, pk1, *args, log=log, **kwargs)
+    plot_pk(ks, pk1, *args, log=log, fill=fill, **kwargs)
 
     plt.subplot(132)
-    plot_trans(ks, trans, *args, log=log, **kwargs)
+    plot_trans(ks, trans, *args, log=log, fill=fill, **kwargs)
 
     plt.subplot(133)
-    plot_coh(ks, coh, *args, log=log, **kwargs)
+    plot_coh(ks, coh, *args, log=log, fill=fill, **kwargs)
 
 
 

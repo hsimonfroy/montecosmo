@@ -18,7 +18,7 @@ from getdist import MCSamples
 # from getdist.gaussian_mixtures import GaussianND
 
 from montecosmo.utils import pdump, pload, nvmap
-from montecosmo.metrics import hdi, qbi, multi_ess, multi_gr
+from montecosmo.metrics import multi_ess, multi_gr
 
 
 

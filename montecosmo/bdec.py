@@ -25,7 +25,7 @@ def cumulative_trapezoid(
     initial: ArrayLike | None = None,) -> ArrayLike:
     """
     Cumulatively integrate y(x) using the composite trapezoidal rule.
-    See scipy.integrate.cumulative_trapezoid and quadax implemntations.
+    See scipy.integrate.cumulative_trapezoid and quadax implementations.
 
     Parameters
     ----------
@@ -103,11 +103,11 @@ def quantile(x, p, axis=0, weights=None, ord=1):
     """
     Quantile function handling weights. 
     Can compute both sample quantile and density quantile, 
-    by performing density integration then interpolate the computed cdf.
+    by performing density integration then interpolating the computed cdf.
 
     If `ord==1`, perform 1st order cdf interpolation, obtained by 0th order cumulative sum.
     0th order rectangle integration or higher order integration can be biased when 
-    integration step does not tend to zero, i.e. samples `x` do not cover the range. 
+    integration step does not tend to zero, i.e. samples `x` do not cover the support. 
 
     If `ord==2`, perform 2nd order cdf interpolation, obtained by 1st order trapezoid integration.
     """
@@ -155,16 +155,40 @@ def quantile(x, p, axis=0, weights=None, ord=1):
         discr = jnp.maximum(w_low**2 + 2 * alphas * delta_p, 0) # to handle numerical errors and boundaries
         q_p = q_low + jnp.where(alphas == 0, safe_div(delta_p, w_low), safe_div(-w_low + discr**.5, alphas))
     else:
-        raise ValueError("Only order 1 and 2 implemented.")
+        raise NotImplementedError("Only order 1 and 2 implemented.")
     q_p = jnp.clip(q_p, q_low, q_high) # to not extrapolate
     return q_p.reshape(*p_shape, *out_shape)
+
+def argmedian(a, axis=-1):
+    """
+    Return the indices corresponding to median values along the given axis. 
+    If axis length is even, return the highest of the two possible indices.
+
+    Paramters
+    ---------
+    a : np.ndarray
+        Array to compute median indices from.
+    axis : int or None, optional
+        Axis along which to compute median indices. 
+        The default is -1 (the last axis). If None, the flattened array is used.
+
+    Similarly to argmax and argmin, to return values from multidimensional array,
+    one must do:
+    ```
+    index_array = argmedian(x, axis)
+    val = np.take_along_axis(x, np.expand_dims(index_array, axis=axis), axis=axis).squeeze(axis=axis)
+    assert val == np.median(x, axis=axis) # if x.shape[axis] is odd
+    ```
+    """
+    k = a.shape[axis] // 2
+    return np.argpartition(a, k, axis).take(k, axis)
 
 
 
 ####################
 # Credible Regions #
 ####################
-def ci(x, p=.95, axis=0, weights=None, type='small', ord=1):
+def credint(x, p=.95, axis=0, weights=None, type='small', ord=1):
     """
     Compute the p-Credible Interval (CI),
     i.e. the interval of proba `p` which is
@@ -175,7 +199,10 @@ def ci(x, p=.95, axis=0, weights=None, type='small', ord=1):
     * the Highest if `type=='high'` (HCI)
     """
     if type == 'small':
-        return sci(x, p, axis, weights, ord)
+        if weights is None:
+            return sci_noweights(x, p, axis)
+        else:
+            return sci(x, p, axis, weights, ord)
     else:
         return qbci(x, p, axis, weights, type, ord)
 
@@ -207,10 +234,10 @@ def qbci(x, p=.95, axis=0, weights=None, type='med', ord=1):
     return jnp.stack([q_low, q_high], -1)
 
 
-def qbcr(x, p=.95, weights=None, type='med', norm_ord='inf'):
+def qbcr(x, p=.95, weights=None, type='med', norm='inf'):
     """
     Compute the p-Quantile-Based Credible Region (QBCR), 
-    i.e. the `ord`-norm spherical region of proba `p`, where its center on dimension `i` is
+    i.e. the `norm`-norm spherical region of proba `p`, where its center on dimension `i` is
 
     * the Lowest if `type[i]=='low'` (LCR)
     * the Median if `type[i]=='med'` (MCR)
@@ -218,7 +245,7 @@ def qbcr(x, p=.95, weights=None, type='med', norm_ord='inf'):
 
     `x` is assumed to be of shape (*n_batch, n_samples, n_dim), and `type` is broadcasted to shape (n_dim,).
     
-    Return both the region center and radius (in `norm_ord`-norm). Center is of shape (*n_batch, n_dim,), and radius is of shape (*n_p, *n_batch,).
+    Return both the region center and radius (in `norm`-norm). Center is of shape (*n_batch, n_dim,), and radius is of shape (*n_p, *n_batch,).
     """
     x = jnp.atleast_2d(x)
     type = np.broadcast_to(type, x.shape[-1])
@@ -230,7 +257,7 @@ def qbcr(x, p=.95, weights=None, type='med', norm_ord='inf'):
         ]
     center = jnp.select(conds, quants)
 
-    dists = jnp.linalg.norm(x - center[...,None,:], ord=norm_ord, axis=-1)
+    dists = jnp.linalg.norm(x - center[...,None,:], ord=norm, axis=-1)
     # radius = jnp.quantile(dists, p, -1)
     radius = quantile(dists, p, -1, weights)
     return center, radius
@@ -262,7 +289,7 @@ def sci_noweights(x, p:float=.95, axis=0):
 
 def sci(x, p=.95, axis=0, weights=None, ord=1):
     """
-    Compute the Smallest Credible Interval (SCI) / Highest Density Interval (HDI),
+    Compute the p-Smallest Credible Interval (SCI) / p-Highest Density Interval (HDI),
     i.e. the smallest interval of proba `p`.
     """
     p = jnp.asarray(p)
@@ -280,7 +307,14 @@ def sci(x, p=.95, axis=0, weights=None, ord=1):
     argsort = jnp.argsort(x, 0)
     x_sort = jnp.take_along_axis(x, argsort, 0)
     w_sort = jnp.take_along_axis(w, argsort, 0)
-    cdf = jnp.cumsum(w_sort, 0)
+
+    if ord == 1:
+        cdf = jnp.cumsum(w_sort, 0)
+    elif ord == 2:
+        cdf = cumulative_trapezoid(w_sort, x_sort, axis=0, initial=0)
+        w_sort = safe_div(w_sort, cdf[-1]) # the integral is no longer sum of weights so they must be renormalized
+    else:
+        raise NotImplementedError("Only order 1 and 2 implemented.")
     cdf = safe_div(cdf, cdf[-1])
 
     # Find all the possible low quantiles

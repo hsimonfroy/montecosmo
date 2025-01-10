@@ -2,7 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
-from jaxpm.kernels import fftk, cic_compensation
+from jaxpm.kernels import cic_compensation
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 from functools import partial
 # from blackjax.diagnostics import effective_sample_size

@@ -196,7 +196,7 @@ def id_cgh(shape, part="real", norm="backward"):
                 else:
                     weights[i,j,k] *= 2**.5
     
-    return id, weights
+    return tuple(id), weights
 
 
 
@@ -214,10 +214,10 @@ def rg2cgh(mesh, amp:bool=False, norm="backward"):
     id_real, w_real = id_cgh(shape, part="real", norm=norm)
     id_imag, w_imag = id_cgh(shape, part="imag", norm=norm)
     if not amp:
-        return mesh[*id_real] * w_real + 1j * mesh[*id_imag] * w_imag
+        return mesh[id_real] * w_real + 1j * mesh[id_imag] * w_imag
     else:
         # Average wavevector real and imaginary power and return amplitude
-        return ((mesh[*id_real]**2 + mesh[*id_imag]**2) / 2)**.5
+        return ((mesh[id_real]**2 + mesh[id_imag]**2) / 2)**.5
 
 
 
@@ -236,13 +236,13 @@ def cgh2rg(meshk, amp:bool=False, norm="backward"):
     
     mesh = jnp.zeros(shape)
     if not amp:
-        mesh = mesh.at[*id_imag].set(meshk.imag / w_imag)
-        mesh = mesh.at[*id_real].set(meshk.real / w_real)
+        mesh = mesh.at[id_imag].set(meshk.imag / w_imag)
+        mesh = mesh.at[id_real].set(meshk.real / w_real)
         # NOTE: real after imag to get rid of infs
     else:
         # Give same amplitude to wavevector real and imaginary part
-        mesh = mesh.at[*id_imag].set(meshk.real)
-        mesh = mesh.at[*id_real].set(meshk.real)
+        mesh = mesh.at[id_imag].set(meshk.real)
+        mesh = mesh.at[id_real].set(meshk.real)
     return mesh
 
 
