@@ -25,27 +25,18 @@ def rfftk(shape):
 
     return kx, ky, kz
 
+
 def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """
-    # k = jnp.logspace(-4, 1, n_interp)
-    # logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
-    # # Interpolate in log-log space with logspaced k values
-    # # tested against other choices, and correctly handles k==0
-    # pk_fn = lambda x: jnp.exp(jnp.interp(jnp.log(x.reshape(-1)), jnp.log(k), logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
-    # return pk_fn
-
-    # k = jnp.logspace(-4, 1, n_interp)
-    # logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
-    # # Interpolate in semilogy space with logspaced k values, correctly handles k==0
-    # pk_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), k, logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
-    # return pk_fn
-
     k = jnp.logspace(-4, 1, n_interp)
-    pk = jc.power.linear_matter_power(cosmo, k, a=a)
-    pk_fn = lambda x: jnp.interp(x.reshape(-1), k, pk, left=0., right=0.).reshape(x.shape)
+    logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
+    # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
+    # as interpolation in loglog space can produce nan gradients
+    pk_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), k, logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
     return pk_fn
+
 
 def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     """
@@ -55,6 +46,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     kvec = rfftk(mesh_shape)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+
 
 def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     """
@@ -81,6 +73,7 @@ def get_cosmology(**cosmo) -> Cosmology:
     """
     return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
                     sigma8 = cosmo['sigma8'])
+
 
 def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     """
@@ -109,6 +102,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
 
         out[out_name] = push(value)
     return out
+
 
 def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False, 
                    guide=None, inv=False, temp=1.) -> dict:
@@ -170,7 +164,6 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
 
             elif precond==3:          
                 means, stds = guide # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
-
                 mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
                 mesh = cgh2rg(mesh)
 

@@ -308,7 +308,7 @@ class FieldLevelModel(Model):
         for g in ['cosmo', 'bias']:
             dic = self._sample_gauss(self.groups[g], base=False) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
-            tup += ({k: deterministic(k, v) for k,v in dic.items()},) # register base params
+            tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
         cosmo, bias = tup
         cosmology = get_cosmology(**cosmo)        
 
@@ -329,11 +329,13 @@ class FieldLevelModel(Model):
             # guide = (0, stds)
         
             means, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(cgh2rg(means), cgh2rg(safe_div(pmeshk**.5, stds), amp=True)))
+            loc, scale = safe_div(-means, stds), jnp.where((pmeshk==0) | (stds==0), 1., pmeshk**.5 / stds)
+            init[name_] = sample(name_, dist.Normal(cgh2rg(loc), cgh2rg(scale, amp=True)))
+            # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
             guide = (means, stds)
 
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
-        init = {k: deterministic(k, v) for k,v in init.items()} # register base params
+        init = {k: deterministic(k, v) for k, v in init.items()} # register base params
         return cosmology, bias, init
 
 

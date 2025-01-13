@@ -176,7 +176,7 @@ def id_cgh(shape, part="real", norm="backward"):
     else:
         assert norm=="ortho", "norm must be either 'backward', 'forward', or 'ortho'."
 
-    id = np.zeros((3,*kshape), dtype=int)
+    id = np.zeros((3, *kshape), dtype=int)
     xyz = np.indices(shape)
 
     if part == "imag":
