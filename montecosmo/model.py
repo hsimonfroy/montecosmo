@@ -22,7 +22,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology,
 from montecosmo.metrics import power_spectrum, pktranscoh
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap
+from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div
 from montecosmo.mcbench import Chains
 
 
@@ -324,9 +324,13 @@ class FieldLevelModel(Model):
             init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(guide, amp=True)))
 
         elif self.precond==3:
-            _, stds, pmeshk = gausslin_posterior(self.obs_meshk, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(0, cgh2rg(pmeshk**.5 / stds, amp=True)))
-            guide = (0, stds)
+            # _, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            # init[name_] = sample(name_, dist.Normal(0, cgh2rg(safe_div(pmeshk**.5, stds), amp=True)))
+            # guide = (0, stds)
+        
+            means, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(cgh2rg(means), cgh2rg(safe_div(pmeshk**.5, stds), amp=True)))
+            guide = (means, stds)
 
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k,v in init.items()} # register base params
@@ -421,8 +425,11 @@ class FieldLevelModel(Model):
 
             elif self.precond==3:
                 b1 = bias_['b1'] if inv else bias['b1']
-                _, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
-                guide = (0, stds)
+                # _, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+                # guide = (0., stds)
+
+                means, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+                guide = (means, stds)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
@@ -497,21 +504,21 @@ class FieldLevelModel(Model):
         return locs
     
     @property
-    def obs_meshk(self):
-        if hasattr(self, "_obs_meshk"):
-            return self._obs_meshk
+    def delta_obs(self):
+        if hasattr(self, "_delta_obs"):
+            return self._delta_obs
         else:
             print("No observed mesh stored. Default to zero mesh.")
             return jnp.zeros(r2chshape(self.mesh_shape))
     
-    @obs_meshk.setter
-    def obs_meshk(self, value):
+    @delta_obs.setter
+    def delta_obs(self, value):
         if jnp.isrealobj(value):
-            # self._obs_meshk = jnp.fft.rfftn(value)
-            self._obs_meshk = np.array(jnp.fft.rfftn(value))
+            # self._delta_obs = jnp.fft.rfftn(value)
+            self._delta_obs = np.array(jnp.fft.rfftn(value))
         else:
-            # self._obs_meshk = value
-            self._obs_meshk = np.array(value) # NOTE: to test constant folding
+            # self._delta_obs = value
+            self._delta_obs = np.array(value) # NOTE: to test constant folding
 
     @property
     def pmeshk_fiduc(self):
@@ -557,7 +564,7 @@ class FieldLevelModel(Model):
         b1 = self.prior_loc['b1']
 
         # initial field given other latent and observation, assuming linear Gaussian model
-        means, stds, _ = gausslin_posterior(self.obs_meshk, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+        means, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
         means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, amp=True)
         post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
 

@@ -1,15 +1,14 @@
 from functools import partial
 import numpy as np
 
-from jax import numpy as jnp, debug, tree
+from jax import numpy as jnp, tree, debug
 import jax_cosmo as jc
 from jax_cosmo import Cosmology
 from jaxpm.painting import cic_read
 from jaxpm.growth import growth_factor, growth_rate
-from jaxpm.pm import pm_forces
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PIDController, ConstantStepSize
-from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape
+from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
 
 
 def rfftk(shape):
@@ -30,11 +29,22 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """
+    # k = jnp.logspace(-4, 1, n_interp)
+    # logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
+    # # Interpolate in log-log space with logspaced k values
+    # # tested against other choices, and correctly handles k==0
+    # pk_fn = lambda x: jnp.exp(jnp.interp(jnp.log(x.reshape(-1)), jnp.log(k), logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    # return pk_fn
+
+    # k = jnp.logspace(-4, 1, n_interp)
+    # logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
+    # # Interpolate in semilogy space with logspaced k values, correctly handles k==0
+    # pk_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), k, logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    # return pk_fn
+
     k = jnp.logspace(-4, 1, n_interp)
-    logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
-    # Interpolate in log-log space with logspaced k values
-    # tested against other choices + correctly handles k==0
-    pk_fn = lambda x: jnp.exp(jnp.interp(jnp.log(x.reshape(-1)), jnp.log(k), logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    pk = jc.power.linear_matter_power(cosmo, k, a=a)
+    pk_fn = lambda x: jnp.interp(x.reshape(-1), k, pk, left=0., right=0.).reshape(x.shape)
     return pk_fn
 
 def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
@@ -46,19 +56,21 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
 
-def gausslin_posterior(obs_meshk, cosmo:Cosmology, b1, a, box_shape, gxy_count):
+def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Gaussian linear model. All fields are in fourier space.
     """
     # Compute linear matter power spectrum
-    mesh_shape = ch2rshape(obs_meshk.shape)
+    mesh_shape = ch2rshape(delta_obs.shape)
     pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
 
     D1 = growth_factor(cosmo, jnp.atleast_1d(a))
     evolve = (1 + b1) * D1 # linear Eulerian bias = 1 + linear Lagrangian bias
-    stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
-    means = stds**2 * gxy_count * evolve * obs_meshk
+
+    stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
+    # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
+    means = stds**2 * gxy_count * evolve * delta_obs
     return means, stds, pmeshk
 
 
@@ -144,7 +156,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
             if precond in [0, 1, 2]:
 
                 pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
-                mesh /= pmeshk**.5 # ~ G(0, I)
+                mesh = safe_div(mesh, pmeshk**.5) # ~ G(0, I)
 
                 if precond==0:
                     mesh = jnp.fft.irfftn(mesh)
@@ -158,7 +170,8 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
 
             elif precond==3:          
                 means, stds = guide # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
-                mesh = (mesh - means) / stds # ~ G( -mu * sigma^-1, sigma^-2 * P) 
+
+                mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
                 mesh = cgh2rg(mesh)
 
         return {out_name:mesh}
@@ -196,7 +209,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
             for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
 
     # Init weights
-    weights = 1
+    weights = 1.
     
     # Apply b1, punctual term
     delta_part = cic_read(delta, pos)
@@ -432,7 +445,11 @@ def pm_forces(positions, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_sp
     # Computes gravitational potential
     kvec = rfftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
-    # pot_k *= cic_compensation(kvec)
+
+    # If painted field, double deconvolution to account for both painting and reading 
+    if mesh is None:
+        pot_k *= cic_compensation(kvec)**2
+
     # Computes gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), positions) 
                       for i in range(3)], axis=-1)

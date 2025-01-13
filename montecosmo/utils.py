@@ -63,6 +63,16 @@ def nvmap(fun, n):
     return fun
 
 
+def safe_div(x, y):
+    """
+    Safe division, where division by zero is zero.
+    Uses the "double-where" trick for safe gradient, 
+    see https://github.com/jax-ml/jax/issues/5039
+    """
+    y_nozeros = jnp.where(y==0, 1, y)
+    return jnp.where(y==0, 0, x / y_nozeros)
+
+
 
 
 
@@ -192,7 +202,7 @@ def id_cgh(shape, part="real", norm="backward"):
             for i in [0,hx]: # two points per edges
                 id[...,i,j,k] = xyz[...,i,j,k]
                 if part == "imag":
-                    weights[i,j,k] *= 0
+                    weights[i,j,k] *= 0.
                 else:
                     weights[i,j,k] *= 2**.5
     
@@ -236,9 +246,9 @@ def cgh2rg(meshk, amp:bool=False, norm="backward"):
     
     mesh = jnp.zeros(shape)
     if not amp:
-        mesh = mesh.at[id_imag].set(meshk.imag / w_imag)
+        mesh = mesh.at[id_imag].set(safe_div(meshk.imag, w_imag)) # w_imag can be zero, which is not safe for gradients
         mesh = mesh.at[id_real].set(meshk.real / w_real)
-        # NOTE: real after imag to get rid of infs
+        # NOTE: real after imag to overwrite the 2^3=8 points
     else:
         # Give same amplitude to wavevector real and imaginary part
         mesh = mesh.at[id_imag].set(meshk.real)
