@@ -276,7 +276,7 @@ def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
 
 import math
 def wigner3j_square(ellout, ellin, prefactor=True):
-    r"""
+    """
     Return the coefficients corresponding to the product of two Legendre polynomials, corresponding to :math:`C_{\ell \ell^{\prime} L}`
     of e.g. eq. 2.2 of https://arxiv.org/pdf/2106.06324.pdf, with :math:`\ell` corresponding to ``ellout`` and :math:`\ell^{\prime}` to ``ellin``.
 
@@ -353,7 +353,7 @@ def wigner3j_square(ellout, ellin, prefactor=True):
 
 
 #################
-# Chain metrics #
+# Chain Metrics #
 #################
 
 def geomean(x, axis=None):
