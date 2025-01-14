@@ -1,36 +1,23 @@
 
 import os
-from functools import wraps, partial
-from itertools import product, cycle
-from typing import Iterable, Callable
+from itertools import product
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
-from matplotlib.colors import to_rgba_array
-from jax import numpy as jnp, random as jr, jit, vmap, grad
-from jax.tree_util import tree_map
+from jax import numpy as jnp, random as jr, jit
 
 from numpyro.infer import MCMC
 from numpyro.diagnostics import print_summary
 from getdist import MCSamples
-# from getdist.gaussian_mixtures import GaussianND
 
 from montecosmo.utils import pdump, pload, nvmap
 from montecosmo.metrics import multi_ess, multi_gr
 
-
-
-
-
-
-
-
-
 from dataclasses import dataclass, fields
 from collections import UserDict
 from jax import tree, tree_util
+
+
 
 @tree_util.register_pytree_node_class
 # @partial(tree_util.register_dataclass, data_fields=['data'], meta_fields=['groups']) # JAX >=0.4.27
@@ -245,6 +232,11 @@ class Samples(UserDict):
                     for k in self.groups[g]:
                         new.data.pop(k)
         return new
+
+
+
+
+
 
 
 
@@ -518,16 +510,6 @@ class Chains(Samples):
                 label = self.labels.get(k)
                 plt.plot(conc_fn(v), label=k if label is None else '$'+label+'$')
             plt.legend()
-
-
-
-
-
-
-
-
-
-
 
 
 

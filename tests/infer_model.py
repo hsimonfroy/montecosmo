@@ -32,7 +32,7 @@ from montecosmo.mcbench import sample_and_save
 
 # ## Config and fiduc
 
-# In[2]:
+# In[7]:
 
 
 def get_save_dir(**kwargs):
@@ -67,7 +67,7 @@ def from_id(id):
     }
     save_path = save_dir 
     save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
-    save_path += f"_mt{mcmc_config['max_tree_depth']:d}_ta{mcmc_config['target_accept_prob']}"
+    save_path += f"_mt{mcmc_config['max_tree_depth']:d}_ta{mcmc_config['target_accept_prob']}_ss5"
 
     return model, mcmc_config, save_dir, save_path
 
@@ -76,7 +76,7 @@ class ParseSlurmId():
         self.id = str(id)
 
         dic = {}
-        dic['mesh_length'] = [2,4,8,16,32,64,128]
+        dic['mesh_length'] = [8,16,32,64,128]
         dic['lpt_order'] = [0,1,2]
         dic['precond'] = [0,1,2,3]
         dic['target_accept_prob'] = [0.65, 0.8]
@@ -93,23 +93,23 @@ class ParseSlurmId():
                 setattr(self, k, v[0])
 
 
-# In[3]:
+# In[8]:
 
 
 ################## TO SET #######################
 task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-# task_id = 1120
+# task_id = 1130
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
-os.makedirs(save_dir, exist_ok=True)
 
 import sys
 tempstdout, tempstderr = sys.stdout, sys.stderr
 sys.stdout = sys.stderr = open(save_path+'.out', 'a')
-sys.stdout, sys.stderr = tempstdout, tempstderr
+os.makedirs(save_dir, exist_ok=True)
 
 
-# In[ ]:
+# In[9]:
+
 
 print(model)
 print(mcmc_config)
@@ -135,18 +135,16 @@ else:
     truth = pload(save_dir+"truth.p")
 
 model.condition({'obs': truth['obs']})
-model.obs_meshk = truth['obs']
+model.delta_obs = truth['obs'] - 1
 model.block()
 # model.render()
-
-
 
 
 # ## Run
 
 # ### NUTS, HMC
 
-# In[ ]:
+# In[7]:
 
 
 def get_mcmc(model, config):
@@ -170,7 +168,7 @@ def get_mcmc(model, config):
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
             step_size=1e-5, 
             # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
-            trajectory_length= 1023 * 1e-3 / 4, 
+            trajectory_length=1023 * 1e-3 / 4, 
             target_accept_prob=target_accept_prob,)
 
     mcmc = infer.MCMC(
@@ -193,7 +191,7 @@ def get_mcmc(model, config):
 # init_params_ = init_model.predict(samples=n_chains)
 
 
-# In[ ]:
+# In[8]:
 
 
 continue_run = False
@@ -228,7 +226,7 @@ else:
     mcmc = get_mcmc(model.model, mcmc_config)
 
 
-# In[ ]:
+# In[9]:
 
 
 mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
