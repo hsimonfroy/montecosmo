@@ -105,7 +105,7 @@ def _initialize_pk(mesh_shape, box_shape, kedges, los):
 
     if kedges is None or isinstance(kedges, (int, float)):
         if kedges is None:
-            dk = 2*np.pi / np.min(box_shape) * 2 # twice the minimum wavenumber
+            dk = 2*np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
         if isinstance(kedges, int):
             dk = kmax / kedges # final number of bins will be kedges-1
         elif isinstance(kedges, float):
@@ -372,30 +372,3 @@ def multi_gr(x, axis=None):
     """
     return jnp.mean(gelman_rubin(x)**2, axis=axis)**.5
 
-
-
-
-
-
-sqrerr_moments_fn = lambda m, m_true: (m.mean(axis=(0,1))-m_true)**2
-def sqrerr_moments(moments, moments_true):
-    # Get mean and std from runs and chains
-    m1_hat, m2_hat = moments.mean(axis=(0,1))
-    m1, m2 = moments_true
-    std_hat, std = (m2_hat - m1_hat**2)**.5, (m2 - m1**2)**.5 # Huygens formula
-    # Compute normalized errors
-    err_loc, err_scale = (m1_hat - m1) / std, (std_hat - std) / (std / 2**.5) # asymptotically N(0, 1/n_eff)
-    mse_loc, mse_scale = (err_loc**2).mean(), (err_scale**2).mean() # asymptotically 1/n_eff * chi^2(d)/d
-    return jnp.stack([mse_loc, mse_scale])
-
-def sqrerr_moments2(moments, moments_true):
-    # Get mean and std from runs
-    n_chains = moments.shape[1]
-    m_hat = moments.mean(axis=(0))
-    m1_hat, m2_hat = m_hat[:,0], m_hat[:,1]
-    m1, m2 = moments_true
-    std_hat, std = (m2_hat - m1_hat**2)**.5, (m2 - m1**2)**.5 # Huygens formula
-    # Compute normalized errors
-    err_loc, err_scale = (m1_hat - m1) / std, (std_hat - std) / (std / 2**.5) # asymptotically N(0, n_chain/n_eff)
-    mse_loc, mse_scale = (err_loc**2).mean(), (err_scale**2).mean() # asymptotically n_chain/n_eff * chi^2(d*n_chain)/(d*n_chain) 
-    return jnp.stack([mse_loc, mse_scale]) / n_chains # asymptotically 1/n_eff * chi^2(d*n_chain)/(d*n_chain) 

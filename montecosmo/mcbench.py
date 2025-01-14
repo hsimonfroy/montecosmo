@@ -95,16 +95,16 @@ class Samples(UserDict):
             elif isinstance(k, str):
                 if k.startswith('*~'): # all except
                     k = k[2:]
-                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups[k]
+                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups.get(k, [k])
                     # NOTE: parse self first for compatibility with dict, update, etc.
                     newkey += list(self.data.keys() - set(g))
                 elif k.startswith('~'): # except
                     k = k[1:]
-                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups[k]
+                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups.get(k, [k])
                     for kk in g:
                         newkey.remove(kk) if kk in newkey else None
                 else:
-                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups[k]
+                    g = [k] if k in self else self.data.keys() if k=='*' else self.groups.get(k, [k])
                     newkey += list(g)
             else:
                 raise KeyError(k)
@@ -219,10 +219,6 @@ class Samples(UserDict):
     ##############
     # Transforms #
     ##############
-
-    def flatten(self, axis=0):
-        pass
-
     def concat(self, *others, axis=0):
         return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
@@ -364,6 +360,50 @@ class Chains(Samples):
             fn = lambda c: Chains.moment(c, m=moment, axis=axis)
         out = self.splitrans(fn, n_split, axis=axis)
         return tree.map(lambda x: jnp.moveaxis(x, 0, axis), out)
+    
+    def flatten(self, batch_ndim=2):
+        """
+        Flatten all non-batch dimensions.
+        Update groups and labels accordingly.
+        """
+        # Flatten data
+        data = {}
+        labels = {}
+        substitute = {}
+
+        for k, v in self.data.items():
+            shape = jnp.shape(v)[batch_ndim:]
+            if len(shape) == 0:
+                # Get data and labels
+                data[k] = v
+                if k in self.labels:
+                    labels[k] = self.labels[k]
+            else:
+                substitute[k] = []
+                for ids in product(*map(range, shape)):
+                    sufx = "[{}]".format(",".join(map(str, ids)))
+                    slices = batch_ndim * (slice(None),)
+                    for id in ids:
+                        slices += (id,)
+                    
+                    # Update data and labels
+                    data[k + sufx] = v[slices]
+                    if k in self.labels:
+                        labels[k + sufx] = self.labels[k] + sufx
+
+                    # Register substitution to update groups
+                    substitute[k].append(k + sufx)
+        
+        # Update groups
+        groups = {}
+        for g, gl in self.groups.items():
+            groups[g] = [] # make a new list to not overwrite shallow copied groups
+            for k in gl:
+                if k in substitute:
+                    groups[g] += substitute[k]
+                else:
+                    groups[g].append(k)
+        return Chains(data, groups=groups, labels=labels)
 
 
     ############
@@ -372,38 +412,78 @@ class Chains(Samples):
         Tree map chains but treat 'n_evals' item separately by summing it along axis.
         `self` and `others` should have matching keys, except possibly 'n_evals'.
         """
-        name = "n_evals"  
-        if name in self:
-            infos, rest = self[[name], ['*~'+name]]
-            infos = tree.map(lambda x: jnp.sum(x, axis), infos)
-        else:
-            rest = self
-            infos = {}
+        name = "n_evals"
+        infos, rest = self.get(([name], ['*~'+name]))
+        infos = tree.map(lambda x: jnp.sum(x, axis), infos)
 
-        return infos | tree.map(fn, rest, *others)
+        others_new = ()
+        for other in others:
+            others_new += (other[['*~'+name]],)
+
+        return infos | tree.map(fn, rest, *others_new)
     
     def last(self, axis=1):
         return self.metric(lambda x: jnp.take(x, -1, axis), axis=axis)
     
-    def moment(self, m:int|list, axis=1):
+
+    def moment(self, m:int|list=(0,1,2), axis=1):
         if isinstance(m, int):
             fn = lambda x: jnp.sum(x**m, axis)
         else:
             m = jnp.asarray(m)
             fn = lambda x: jnp.sum(x[...,None]**m, axis)
         return self.metric(fn, axis=axis)
+    
+    def center_moment(self, axis=-1):
+        def center(moments, axis):
+            moments = jnp.moveaxis(moments, axis, 0)
+            count = moments[0]
+            mean = moments[1] / count
+            std = (moments[2] / count - mean**2)**.5
+            return jnp.stack((mean, std), axis)
+        
+        return self.metric(lambda x: center(x, axis), axis=())
+    
+    def cmoment(self, axis=1):
+        fn = lambda x: jnp.stack((x.mean(axis), x.std(axis)), -1)
+        return self.metric(fn, axis=axis)
+
+    # def mse(self, truth, axis=0):
+    #     return self.metric(lambda x, y: jnp.mean((x-y)**2, axis), truth)
+    
+    def mse_cmoment(self, true_cmom, axis=None):
+        cmom = self.cmoment(axis=1)
+        true_cmom = Chains(true_cmom, self.groups, self.labels) # cast into Chains
+
+        def mse_mom(est, true, axis):
+            n_chains = est.shape[0]
+            est = jnp.moveaxis(est, -1, 0)
+            true = jnp.moveaxis(true, -1, 0)
+            sqrerr_mean = ((est[0] - true[0]) / true[1])**2 / n_chains
+            sqrerr_std = 2 * ((est[1] - true[1]) / true[1])**2 / n_chains
+            # NOTE: such square errors are asymptotically N(0, 1 / n_eff)^2 = chi^2(1) / n_eff
+            return jnp.stack((sqrerr_mean.mean(axis), sqrerr_std.mean(axis)))
+            # NOTE: asymptotically chi^2(n_c * n_d) / (n_c * n_d * n_eff)
+
+        return cmom.metric(lambda x, y: mse_mom(x, y, axis), true_cmom)
+
+    def eval_times_mse(self, truth, axis=None):
+        mse_mom = self.mse_cmoment(truth, axis=axis)
+        name = "n_evals" 
+        infos, rest = mse_mom[[name], ['*~'+name]]
+        return infos | tree.map(lambda x: infos[name] * x, rest)
+
 
     def multi_ess(self, axis=None):
         return self.metric(lambda x: multi_ess(x, axis=axis))
     
-    def evalperess(self, axis=None):
+    def eval_per_ess(self, axis=None):
         ess = self.multi_ess(axis=axis)
         name = "n_evals" 
         infos, rest = ess[[name], ['*~'+name]]
         return infos | tree.map(lambda x: infos[name] / x, rest)
 
-    def mse(self, true):
-        return self.metric(lambda x, y: jnp.mean((x-y)**2, axis=-1), true)
+
     
 
 

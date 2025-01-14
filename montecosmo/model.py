@@ -271,7 +271,7 @@ class FieldLevelModel(Model):
         self.box_shape = np.asarray(self.box_shape)
         self.cell_shape = self.box_shape / self.mesh_shape
 
-        self.dk = 2*np.pi / np.min(self.box_shape) 
+        self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
         # 2*pi factors because of Fourier transform definition
         self.gxy_count = self.gxy_density * (self.box_shape / self.mesh_shape).prod()
@@ -282,7 +282,7 @@ class FieldLevelModel(Model):
         out += pformat(asdict(self), width=1)
         out += "\n\n# INFOS\n"
         out += f"cell_shape:     {list(self.cell_shape)} Mpc/h\n"
-        out += f"dk:             {self.dk:.5f} h/Mpc\n"
+        out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
         out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n"
         return out
