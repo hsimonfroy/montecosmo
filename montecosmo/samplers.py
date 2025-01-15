@@ -19,7 +19,7 @@ def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
     # avoid modifying argument state as JAX functions should be pure
     state = state.copy()
     infos = {}
-    infos['num_steps'] = 0
+    infos['n_evals'] = 0
     params = {}
     positions = {}
 
@@ -43,10 +43,10 @@ def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
         (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
 
         # register only relevant infos
-        num_steps = info.info.num_integration_steps
+        n_evals = info.info.num_integration_steps
         infos['infos_'+k] = {"acceptance_rate": info.info.acceptance_rate, 
-                                "num_integration_steps": num_steps}
-        infos['num_steps'] += num_steps
+                                "num_integration_steps": n_evals}
+        infos['n_evals'] += n_evals
         # positions[k] = info.state.position
         positions |= info.state.position
     
@@ -88,7 +88,7 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, paramete
     # avoid modifying argument state as JAX functions should be pure
     state = state.copy()
     infos = {}
-    infos['num_steps'] = 0
+    infos['n_evals'] = 0
 
     for k in state.keys():
         # logdensity of component k conditioned on all other components in state
@@ -114,10 +114,10 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, paramete
         )
 
         # register only relevant infos
-        num_steps = info.num_integration_steps
+        n_evals = info.num_integration_steps
         infos['infos_'+k] = {"acceptance_rate": info.acceptance_rate, 
-                                "num_integration_steps": num_steps}
-        infos['num_steps'] += num_steps
+                                "num_integration_steps": n_evals}
+        infos['n_evals'] += n_evals
     
     return state, infos
     
@@ -151,9 +151,9 @@ def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init_f
 
 
 
-def HMCGibbs_init(logdensity, kernel="hmc"):
+def NUTSwG_init(logdensity, kernel="NUTS"):
 
-    if kernel == "hmc":
+    if kernel == "HMC":
         ker_api = blackjax.hmc
         parameters = {
             "mesh_": {
@@ -167,7 +167,7 @@ def HMCGibbs_init(logdensity, kernel="hmc"):
                 # "step_size": 3*1e-3
             }
         }
-    elif kernel == "nuts":
+    elif kernel == "NUTS":
         ker_api = blackjax.nuts
         parameters = {
             "mesh_": {
@@ -216,7 +216,7 @@ def get_init_state(init_pos, logdensity, init_fn):
     return init_state
 
 
-def HMCGibbs_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples, warmup=True):
+def NUTSwG_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples, warmup=False):
     if warmup:
         (last_state, parameters), (samples, infos) = mwg_warmup(rng_key, init_state, logdensity, init_fn, parameters, n_samples)
         return (last_state, parameters), samples, infos
@@ -233,8 +233,8 @@ def HMCGibbs_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, 
         return last_state, samples, infos
 
 
-def get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=0):
-    return partial(HMCGibbs_run, 
+def get_NUTSwG_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=False):
+    return partial(NUTSwG_run, 
                    logdensity=logdensity, 
                    step_fn=step_fn, 
                    init_fn=init_fn, 

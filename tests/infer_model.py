@@ -4,7 +4,7 @@
 # # Model Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[1]:
+# In[ ]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -16,9 +16,9 @@ from functools import partial
 from getdist import plots
 from numpyro import infer
 
-# get_ipython().run_line_magic('matplotlib', 'inline')
-# get_ipython().run_line_magic('load_ext', 'autoreload')
-# get_ipython().run_line_magic('autoreload', '2')
+get_ipython().run_line_magic('matplotlib', 'inline')
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
 
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload
@@ -27,7 +27,7 @@ from montecosmo.mcbench import sample_and_save
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
+get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
 
 
 # ## Config and fiduc
@@ -36,8 +36,9 @@ from montecosmo.mcbench import sample_and_save
 
 
 def get_save_dir(**kwargs):
-    # dir = os.path.expanduser("~/scratch/pickles/")
-    dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
+    dir = os.path.expanduser("~/scratch/pickles/")
+    # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
+    # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
     dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
@@ -47,7 +48,7 @@ def from_id(id):
     args = ParseSlurmId(id)
     config = {
           'mesh_shape':3 * (args.mesh_length,),
-          'box_shape':3 * (args.box_length if args.box_length is not None else 5 * args.mesh_length,), 
+          'box_shape':3 * (args.box_length if args.box_length is not None else 5. * args.mesh_length,), 
           'a_lpt':args.a_obs if args.lpt_order > 0 else args.a_lpt,
           'a_obs':args.a_obs,
           'lpt_order':1 if args.lpt_order==1 else 2, # 2lpt + pm for 0
@@ -58,8 +59,8 @@ def from_id(id):
     model = FieldLevelModel(**default_config | config)
     
     mcmc_config = {
-        'sampler':"NUTS",
-        'target_accept_prob':args.target_accept_prob,
+        'sampler':args.sampler,
+        'target_accept_prob':0.65,
         'n_samples':64,
         'max_tree_depth':10,
         'n_runs':10,
@@ -79,7 +80,7 @@ class ParseSlurmId():
         dic['mesh_length'] = [8,16,32,64,128]
         dic['lpt_order'] = [0,1,2]
         dic['precond'] = [0,1,2,3]
-        dic['target_accept_prob'] = [0.65, 0.8]
+        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
 
         dic['box_length'] = [None]
         dic['a_lpt'] = [0.1]
@@ -97,14 +98,14 @@ class ParseSlurmId():
 
 
 ################## TO SET #######################
-task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-# task_id = 1130
+# task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
+task_id = 1130
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 
-import sys
-tempstdout, tempstderr = sys.stdout, sys.stderr
-sys.stdout = sys.stderr = open(save_path+'.out', 'a')
+# import sys
+# tempstdout, tempstderr = sys.stdout, sys.stderr
+# sys.stdout = sys.stderr = open(save_path+'.out', 'a')
 os.makedirs(save_dir, exist_ok=True)
 
 
@@ -242,4 +243,35 @@ mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_f
 # init_params_ = {k+'_': jnp.broadcast_to(truth[k+'_'], (mcmc_config['n_chains'], *jnp.shape(truth[k+'_']))) for k in ['Omega_m','sigma8','b1','b2','bs2','bn2','init_mesh']}
 
 # mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
+
+
+# In[ ]:
+
+
+model.logpdf
+logdensity = logp_fn
+n_samples, n_runs, n_chains = 256, 20, 8
+save_path = save_dir + f"NUTSGibbs_ns{n_samples:d}_x_nc{n_chains}"
+
+step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
+warmup_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=True)))
+key = jr.key(42)
+# last_state = jit(vmap(init_state_fn))(init_params_)
+last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
+
+
+(last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), n_chains), last_state)
+print(parameters,'\n=======\n')
+pdump(samples | infos, save_path+f"_{0}.p")
+pdump(last_state, save_path+f"_laststate.p")
+
+run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
+i_shift = 0
+for i_run in range(i_shift+1, i_shift+n_runs+1):
+    print(f"run {i_run}/{n_runs}")
+    key, run_key = jr.split(key, 2)
+    # last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
+    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state, parameters=parameters)
+    pdump(samples | infos, save_path+f"_{i_run}.p")
+    pdump(last_state, save_path+f"_laststate.p")
 

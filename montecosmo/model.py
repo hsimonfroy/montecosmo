@@ -167,14 +167,14 @@ class Model():
     ############
     # Wrappers #
     ############
-    def logp(self, params):
+    def logpdf(self, params):
         return log_density(self.model, (), {}, params)[0]
 
     def potential(self, params):
-        return - self.logp(params)
+        return - self.logpdf(params)
     
     def force(self, params):
-        return grad(self.logp)(params) # force = - grad potential = grad logp
+        return grad(self.logpdf)(params) # force = - grad potential = grad logpdf
     
     def trace(self, rng):
         return trace(seed(self.model, rng_seed=rng)).get_trace()

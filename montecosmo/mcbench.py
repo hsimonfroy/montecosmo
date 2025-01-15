@@ -263,7 +263,10 @@ class Chains(Samples):
         print(f"Loading: {os.path.basename(path)}, from run {start} to run {end} (included)")
         for i_run in range(start, end + 1):
             if not os.path.exists(path + f"_{i_run}.npz"):
-                raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
+                # raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
+                print(f"File {path}_{i_run}.npz does not exist, stopping at run {i_run-1}")
+                end = i_run - 1
+                break
             
         if transforms is None:
             transforms = []
