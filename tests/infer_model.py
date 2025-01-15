@@ -4,7 +4,7 @@
 # # Model Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[ ]:
+# In[1]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -35,71 +35,10 @@ get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer
 # In[7]:
 
 
-def get_save_dir(**kwargs):
-    dir = os.path.expanduser("~/scratch/pickles/")
-    # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
-    # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
-
-    dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
-    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
-    return dir
-
-def from_id(id):
-    args = ParseSlurmId(id)
-    config = {
-          'mesh_shape':3 * (args.mesh_length,),
-          'box_shape':3 * (args.box_length if args.box_length is not None else 5. * args.mesh_length,), 
-          'a_lpt':args.a_obs if args.lpt_order > 0 else args.a_lpt,
-          'a_obs':args.a_obs,
-          'lpt_order':1 if args.lpt_order==1 else 2, # 2lpt + pm for 0
-          'precond':args.precond,
-          'obs':args.obs
-          }
-    save_dir = get_save_dir(**config)
-    model = FieldLevelModel(**default_config | config)
-    
-    mcmc_config = {
-        'sampler':args.sampler,
-        'target_accept_prob':0.65,
-        'n_samples':64,
-        'max_tree_depth':10,
-        'n_runs':10,
-        'n_chains':8
-    }
-    save_path = save_dir 
-    save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
-    save_path += f"_mt{mcmc_config['max_tree_depth']:d}_ta{mcmc_config['target_accept_prob']}_ss5"
-
-    return model, mcmc_config, save_dir, save_path
-
-class ParseSlurmId():
-    def __init__(self, id):
-        self.id = str(id)
-
-        dic = {}
-        dic['mesh_length'] = [8,16,32,64,128]
-        dic['lpt_order'] = [0,1,2]
-        dic['precond'] = [0,1,2,3]
-        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
-
-        dic['box_length'] = [None]
-        dic['a_lpt'] = [0.1]
-        dic['a_obs'] = [0.5]
-        dic['obs'] = ['mesh']
-        
-        for i, (k, v) in enumerate(dic.items()):
-            if i < len(self.id):
-                setattr(self, k, v[int(self.id[i])])
-            else:
-                setattr(self, k, v[0])
-
-
-# In[8]:
-
-
 ################## TO SET #######################
+from montecosmo.script import from_id
 # task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-task_id = 1130
+task_id = 1132
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 
@@ -109,7 +48,7 @@ model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
 
 
-# In[9]:
+# In[8]:
 
 
 print(model)
@@ -145,7 +84,7 @@ model.block()
 
 # ### NUTS, HMC
 
-# In[7]:
+# In[9]:
 
 
 def get_mcmc(model, config):
@@ -159,7 +98,7 @@ def get_mcmc(model, config):
         kernel = infer.NUTS(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-            step_size=1e-5, 
+            step_size=1e-4, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,)
         
@@ -167,7 +106,7 @@ def get_mcmc(model, config):
         kernel = infer.HMC(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
-            step_size=1e-5, 
+            step_size=1e-4, 
             # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
             trajectory_length=1023 * 1e-3 / 4, 
             target_accept_prob=target_accept_prob,)
@@ -192,7 +131,7 @@ def get_mcmc(model, config):
 # init_params_ = init_model.predict(samples=n_chains)
 
 
-# In[8]:
+# In[10]:
 
 
 continue_run = False
@@ -210,10 +149,19 @@ else:
     model.reset()
     model.condition({'obs': truth['obs']} | model.prior_loc, frombase=True)
     model.block()
-    mcmc = get_mcmc(model.model, mcmc_config)
+
+    nuts_config = {
+        'sampler':'NUTS',
+        'target_accept_prob':0.65,
+        'n_samples':64,
+        'max_tree_depth':10,
+        'n_runs':10,
+        'n_chains':8
+    }
+    mcmc = get_mcmc(model.model, nuts_config)
     
     print("Init params")
-    init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), mcmc_config['n_chains']))
+    init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), nuts_config['n_chains']))
     init_mesh_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
     mcmc = sample_and_save(mcmc, save_path+'_init', 0, 0, extra_fields=['num_steps'], init_params=init_mesh_)
     
@@ -245,33 +193,130 @@ mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_f
 # mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
 
 
+# In[11]:
+
+
+save_path
+
+
 # In[ ]:
 
 
-model.logpdf
-logdensity = logp_fn
-n_samples, n_runs, n_chains = 256, 20, 8
-save_path = save_dir + f"NUTSGibbs_ns{n_samples:d}_x_nc{n_chains}"
+from montecosmo.samplers import NUTSwG_init, get_NUTSwG_run
 
-step_fn, init_fn, parameters, init_state_fn = HMCGibbs_init(logdensity, "nuts")
-warmup_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=True)))
+step_fn, init_fn, parameters, init_state_fn = NUTSwG_init(model.logpdf)
+warmup_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, parameters, mcmc_config['n_samples'], warmup=True)))
 key = jr.key(42)
-# last_state = jit(vmap(init_state_fn))(init_params_)
-last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
+last_state = jit(vmap(init_state_fn))(init_params_)
+# last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
 
 
-(last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), n_chains), last_state)
+(last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), last_state)
 print(parameters,'\n=======\n')
-pdump(samples | infos, save_path+f"_{0}.p")
-pdump(last_state, save_path+f"_laststate.p")
+jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
+pdump(last_state, save_path+f"_last_state.p")
 
-run_fn = jit(vmap(get_HMCGibbs_run(logdensity, step_fn, init_fn, parameters, n_samples)))
-i_shift = 0
-for i_run in range(i_shift+1, i_shift+n_runs+1):
-    print(f"run {i_run}/{n_runs}")
+run_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, parameters, mcmc_config['n_samples'])))
+start = 1
+end = start + mcmc_config['n_runs']-1
+for i_run in range(start, end+1):
+    print(f"run {i_run}/{end}")
     key, run_key = jr.split(key, 2)
-    # last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
-    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state, parameters=parameters)
-    pdump(samples | infos, save_path+f"_{i_run}.p")
-    pdump(last_state, save_path+f"_laststate.p")
+    # last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state)
+    last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state, parameters=parameters)
+    jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
+    pdump(last_state, save_path+f"_last_state.p")
+
+
+# In[ ]:
+
+
+infos
+
+
+# In[ ]:
+
+
+from montecosmo.mcbench import Chains
+from montecosmo.plot import SetDark2
+groups = ['cosmo','bias','init']
+
+tids = [1130]
+labels = 3*['NUTS']
+
+metrics = []
+gdsamps = []
+
+for tid, lab in zip(tids, labels):
+    model, mcmc_config, save_dir, save_path = from_id(tid)
+
+
+    # Load truth
+    print(f"Loading truth from {save_dir}")
+    truth = pload(save_dir+"truth.p")
+    model.delta_obs = truth['obs'] - 1
+
+    # Load chains
+    transforms = [
+                lambda x: x[['*~diverging']],
+                partial(Chains.thin, thinning=1), 
+                model.reparam_chains, 
+                partial(Chains.choice, n=10)]
+    chains = model.load_runs(save_path, 0,10, transforms=transforms, batch_ndim=2)
+    print(chains.shape)
+
+    # Load last state
+    last_state = pload(save_path + "_last_state.p")
+    print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
+
+    # Plot chains
+    plt.figure(figsize=(12,4))
+    chains.plot(['cosmo', 'bias','init'])
+    plt.savefig(save_dir+f'chains_{tid}.png')
+    chains.print_summary()
+
+    # Compute metrics
+    cumess = chains.stackby(groups).cumtrans(Chains.eval_per_ess, 30)
+    metrics.append(cumess)
+
+    # Prepare KDE
+    gdsamp = chains[['cosmo','bias']].to_getdist(lab)
+    gdsamps.append(gdsamp)
+
+
+
+# Plot KDE
+gdplt = plots.get_subplot_plotter(width_inch=5)
+gdplt.triangle_plot(roots=gdsamps,
+                title_limit=1,
+                filled=True, 
+                markers=truth,)
+plt.savefig(save_dir+'triangle.png')
+
+
+# Plot metrics
+def plot_fn():
+    plt.figure(figsize=(12, 4))
+    methods = ['Truc']
+    i_start = 0
+    styles = ['-', ':', '--']
+    for i_m, (metric, meth) in enumerate(zip(metrics, methods)):
+        for i_g, (st, g) in enumerate(zip(styles, groups)):
+            plt.semilogy(metric['n_evals'][i_start:], metric[g][i_start:], st, c=SetDark2(i_m), label=g)
+
+    from matplotlib.lines import Line2D; from matplotlib.patches import Patch
+    handles = []
+    for i_m, method in enumerate(methods):
+        handles.append(Patch(color=SetDark2(i_m), label=method))
+    for i_g, g in enumerate(groups):
+        handles.append(Line2D([], [], color='grey', linestyle=styles[i_g], label=g))
+
+    plt.legend(handles=handles)
+
+plot_fn()
+plt.xlabel("$N_{\\textrm{eval}}$")
+# plt.ylabel("$N_{\\textrm{eval}}\\;/\\;\\textrm{ESS}$")
+plt.ylabel("$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$")
+plt.savefig(save_dir+'cumess.png')
+raise
 

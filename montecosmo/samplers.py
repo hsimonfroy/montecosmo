@@ -157,13 +157,17 @@ def NUTSwG_init(logdensity, kernel="NUTS"):
         ker_api = blackjax.hmc
         parameters = {
             "mesh_": {
-                # "inverse_mass_matrix": jnp.ones(64**3),
+                'target_acceptance_rate': 0.65,
+                'initial_step_size': 1e-4,
                 "num_integration_steps": 256,
+                # "inverse_mass_matrix": jnp.ones(64**3),
                 # "step_size": 3*1e-3
             },
             "rest_": {
-                # "inverse_mass_matrix": jnp.ones(6),
+                'target_acceptance_rate': 0.65,
+                'initial_step_size': 1e-4,
                 "num_integration_steps": 64,
+                # "inverse_mass_matrix": jnp.ones(6),
                 # "step_size": 3*1e-3
             }
         }
@@ -171,10 +175,16 @@ def NUTSwG_init(logdensity, kernel="NUTS"):
         ker_api = blackjax.nuts
         parameters = {
             "mesh_": {
+                'target_acceptance_rate': 0.65,
+                'initial_step_size': 1e-4,
+                # 'max_num_doublings':10,
                 # "inverse_mass_matrix": jnp.ones(64**3),
                 # "step_size": 3*1e-3
             },
             "rest_": {
+                'target_acceptance_rate': 0.65,
+                'initial_step_size': 1e-4,
+                # 'max_num_doublings':10,
                 # "inverse_mass_matrix": jnp.ones(6),
                 # "step_size": 3*1e-3
             }
