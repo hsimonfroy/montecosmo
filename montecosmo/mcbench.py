@@ -499,19 +499,20 @@ class Chains(Samples):
         """
         groups can be variable name or group name
         """
-        groups = np.atleast_1d(groups)
+        groups = list(np.atleast_1d(groups))
         n_conc = max(batch_ndim-1, 0)
         def conc_fn(v):
             for _ in range(n_conc):
-                v = jnp.concatenate(v, 0)
+                v = jnp.concatenate(v)
             return v
+        conc = tree.map(conc_fn, self[groups])
 
         for i_plt, g in enumerate(groups):
             plt.subplot(1, len(groups), i_plt+1)
             plt.title(g)
-            for k, v in self[[g]].items():
-                label = self.labels.get(k)
-                plt.plot(conc_fn(v), label=k if label is None else '$'+label+'$')
+            for k, v in conc[[g]].items():
+                label = conc.labels.get(k)
+                plt.plot(v, label=k if label is None else '$'+label+'$')
             plt.legend()
 
 

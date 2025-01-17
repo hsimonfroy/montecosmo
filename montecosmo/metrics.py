@@ -223,7 +223,7 @@ def pktranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None):
     ks, pk01 = pk_fn(mesh0, mesh1)  
     ks, pk0 = pk_fn(mesh0)
     ks, pk1 = pk_fn(mesh1)
-    return ks, pk0, pk1, (pk1 / pk0)**.5, pk01 / (pk0 * pk1)**.5
+    return ks, pk1, (pk1 / pk0)**.5, pk01 / (pk0 * pk1)**.5
     
 
 

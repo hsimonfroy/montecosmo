@@ -334,6 +334,12 @@ class FieldLevelModel(Model):
             # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
             guide = (means, stds)
 
+            # _, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            # scale = jnp.where((pmeshk==0) | (stds==0), 1., pmeshk**.5 / stds)
+            # init[name_] = sample(name_, dist.Normal(0., cgh2rg(scale, amp=True)))
+            # # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
+            # guide = (0., stds)
+
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
         return cosmology, bias, init

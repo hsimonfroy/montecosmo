@@ -108,7 +108,7 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
 
     # xx, yy = np.indices(mesh_shape[:2]) * (box_shape/mesh_shape)[:2,None,None]
     xs, ys = np.linspace(0, box_shape[0], mesh_shape[0]), np.linspace(0, box_shape[1], mesh_shape[1])
-    xx, yy = np.meshgrid(xs, ys)
+    xx, yy = np.meshgrid(xs, ys, indexing='ij')
     quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, cmap=cmap)
     plt.gca().set_aspect(1)
     return quad

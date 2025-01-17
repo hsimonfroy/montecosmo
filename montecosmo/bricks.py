@@ -236,7 +236,8 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-2,
+# def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-2,
+def nbody(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-1,
            grad_fd=True, lap_fd=False):
     if a_lpt == a_obs:
         return particles[None]
