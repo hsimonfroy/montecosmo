@@ -22,6 +22,7 @@ dependencies:
     - diffrax==0.5.0
     - flax
     - optax
+    - blackjax
     - jax-resnet
     - tensorflow-probability
     # - tensorflow-datasets

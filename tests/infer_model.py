@@ -16,9 +16,9 @@ from functools import partial
 from getdist import plots
 from numpyro import infer
 
-get_ipython().run_line_magic('matplotlib', 'inline')
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
+# get_ipython().run_line_magic('matplotlib', 'inline')
+# get_ipython().run_line_magic('load_ext', 'autoreload')
+# get_ipython().run_line_magic('autoreload', '2')
 
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload
@@ -27,28 +27,29 @@ from montecosmo.mcbench import sample_and_save
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
+# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
 
 
 # ## Config and fiduc
 
-# In[7]:
+# In[2]:
 
 
 ################## TO SET #######################
 from montecosmo.script import from_id
-# task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-task_id = 1132
+task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
+# task_id = 3032
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
-
-# import sys
-# tempstdout, tempstderr = sys.stdout, sys.stderr
-# sys.stdout = sys.stderr = open(save_path+'.out', 'a')
 os.makedirs(save_dir, exist_ok=True)
 
+import sys
+tempstdout, tempstderr = sys.stdout, sys.stderr
+sys.stdout = sys.stderr = open(save_path+'.out', 'a')
+print("SLURM_ARRAY_TASK_ID:", task_id)
 
-# In[8]:
+
+# In[3]:
 
 
 print(model)
@@ -84,7 +85,7 @@ model.block()
 
 # ### NUTS, HMC
 
-# In[9]:
+# In[4]:
 
 
 def get_mcmc(model, config):
@@ -98,7 +99,7 @@ def get_mcmc(model, config):
         kernel = infer.NUTS(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-            step_size=1e-4, 
+            step_size=1e-3, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,)
         
@@ -106,7 +107,7 @@ def get_mcmc(model, config):
         kernel = infer.HMC(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
-            step_size=1e-4, 
+            step_size=1e-3, 
             # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
             trajectory_length=1023 * 1e-3 / 4, 
             target_accept_prob=target_accept_prob,)
@@ -131,7 +132,7 @@ def get_mcmc(model, config):
 # init_params_ = init_model.predict(samples=n_chains)
 
 
-# In[10]:
+# In[ ]:
 
 
 continue_run = False
@@ -172,13 +173,42 @@ else:
     model.reset()
     model.condition({'obs': truth['obs']})
     model.block()
+
+
+# In[ ]:
+
+
+if mcmc_config['sampler'] != 'NUTSwG':
     mcmc = get_mcmc(model.model, mcmc_config)
+    mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
+
+else:
+    from montecosmo.samplers import NUTSwG_init, get_NUTSwG_run
+
+    step_fn, init_fn, parameters, init_state_fn = NUTSwG_init(model.logpdf)
+    warmup_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, parameters, mcmc_config['n_samples'], warmup=True)))
+    key = jr.key(42)
+    last_state = jit(vmap(init_state_fn))(init_params_)
+    # last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
 
 
-# In[9]:
+    (last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), last_state)
+    print(parameters,'\n=======\n')
+    jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
+    pdump(last_state, save_path+f"_last_state.p")
+    # pdump(parameters, 'parameters.p'), pdump(tree.map(jnp.mean, infos), 'infos.p')
 
-
-mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
+    run_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, parameters, mcmc_config['n_samples'])))
+    start = 1
+    end = start + mcmc_config['n_runs']-1
+    for i_run in range(start, end+1):
+        print(f"run {i_run}/{end}")
+        key, run_key = jr.split(key, 2)
+        # last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state)
+        last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state)
+        print("infos:", infos)
+        jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
+        pdump(last_state, save_path+f"_last_state.p")
 
 
 # In[ ]:
@@ -193,63 +223,22 @@ mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_f
 # mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
 
 
-# In[11]:
-
-
-save_path
-
-
-# In[ ]:
-
-
-from montecosmo.samplers import NUTSwG_init, get_NUTSwG_run
-
-step_fn, init_fn, parameters, init_state_fn = NUTSwG_init(model.logpdf)
-warmup_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, parameters, mcmc_config['n_samples'], warmup=True)))
-key = jr.key(42)
-last_state = jit(vmap(init_state_fn))(init_params_)
-# last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
-
-
-(last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), last_state)
-print(parameters,'\n=======\n')
-jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
-pdump(last_state, save_path+f"_last_state.p")
-
-run_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, parameters, mcmc_config['n_samples'])))
-start = 1
-end = start + mcmc_config['n_runs']-1
-for i_run in range(start, end+1):
-    print(f"run {i_run}/{end}")
-    key, run_key = jr.split(key, 2)
-    # last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state)
-    last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state, parameters=parameters)
-    jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
-    pdump(last_state, save_path+f"_last_state.p")
-
-
-# In[ ]:
-
-
-infos
-
-
 # In[ ]:
 
 
 from montecosmo.mcbench import Chains
-from montecosmo.plot import SetDark2
+from montecosmo.plot import theme, SetDark2
+theme(usetex=True, font_size=14)
 groups = ['cosmo','bias','init']
 
-tids = [1130]
-labels = 3*['NUTS']
+tids = [task_id]
+labels = 4*['NUTS']
 
 metrics = []
 gdsamps = []
 
 for tid, lab in zip(tids, labels):
     model, mcmc_config, save_dir, save_path = from_id(tid)
-
 
     # Load truth
     print(f"Loading truth from {save_dir}")
@@ -267,11 +256,12 @@ for tid, lab in zip(tids, labels):
 
     # Load last state
     last_state = pload(save_path + "_last_state.p")
-    print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
+    # print("mean_acc_prob:", last_state.mean_accept_prob, "\nss:", last_state.adapt_state.step_size)
 
     # Plot chains
     plt.figure(figsize=(12,4))
     chains.plot(['cosmo', 'bias','init'])
+    plt.tight_layout()
     plt.savefig(save_dir+f'chains_{tid}.png')
     chains.print_summary()
 
@@ -317,6 +307,12 @@ plot_fn()
 plt.xlabel("$N_{\\textrm{eval}}$")
 # plt.ylabel("$N_{\\textrm{eval}}\\;/\\;\\textrm{ESS}$")
 plt.ylabel("$N_{\\textrm{eval}}\\;/\\;N_{\\textrm{eff}}$")
+plt.tight_layout()
 plt.savefig(save_dir+'cumess.png')
-raise
+
+
+# In[ ]:
+
+
+
 
