@@ -323,6 +323,8 @@ def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=
 from montecosmo.fpm import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
 def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, n_steps=5,
            grad_fd=True, lap_fd=False):
+    if a_lpt == a_obs:
+        return particles[None]
     
     solver = EfficientLeapFrog(initial_t0=a_lpt, final_t1=a_obs, cosmo=cosmo)
     stepsize_controller = ConstantStepSize()
