@@ -203,26 +203,32 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         return kavg, pk
   
 
-def transfer(mesh0, mesh1, box_shape, kedges:int | float | list=None):
-    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)   
-    ks, pk0 = pk_fn(mesh0)
-    ks, pk1 = pk_fn(mesh1)
+def transfer(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+    if isinstance(comp, int):
+        comp = (comp, comp)
+    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    ks, pk0 = pk_fn(mesh0, comp=comp[0])
+    ks, pk1 = pk_fn(mesh1, comp=comp[1])
     return ks, (pk1 / pk0)**.5
 
 
-def coherence(mesh0, mesh1, box_shape, kedges:int | float | list=None):
-    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)   
-    ks, pk01 = pk_fn(mesh0, mesh1)
-    ks, pk0 = pk_fn(mesh0)
-    ks, pk1 = pk_fn(mesh1)
+def coherence(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+    if isinstance(comp, int):
+        comp = (comp, comp)
+    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    ks, pk01 = pk_fn(mesh0, mesh1, comp=comp)  
+    ks, pk0 = pk_fn(mesh0, comp=comp[0])
+    ks, pk1 = pk_fn(mesh1, comp=comp[1])
     return ks, pk01 / (pk0 * pk1)**.5
 
 
-def pktranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None):
+def pktranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+    if isinstance(comp, int):
+        comp = (comp, comp)
     pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pk01 = pk_fn(mesh0, mesh1)  
-    ks, pk0 = pk_fn(mesh0)
-    ks, pk1 = pk_fn(mesh1)
+    ks, pk01 = pk_fn(mesh0, mesh1, comp=comp)  
+    ks, pk0 = pk_fn(mesh0, comp=comp[0])
+    ks, pk1 = pk_fn(mesh1, comp=comp[1])
     return ks, pk1, (pk1 / pk0)**.5, pk01 / (pk0 * pk1)**.5
     
 

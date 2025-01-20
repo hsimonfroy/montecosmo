@@ -165,6 +165,32 @@ else:
     init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), nuts_config['n_chains']))
     init_mesh_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
     mcmc = sample_and_save(mcmc, save_path+'_init', 0, 0, extra_fields=['num_steps'], init_params=init_mesh_)
+
+
+    from montecosmo.plot import plot_pk, plot_pktranscoh
+    ls = mcmc.last_state
+    mesh0 = jnp.fft.irfftn(truth['init_mesh'])
+    kpks_ = vmap(lambda x: model.pktranscoh(mesh0, model.reparam(x, fourier=False)['init_mesh']))(init_params_)
+    kpks = vmap(lambda x: model.pktranscoh(mesh0, model.reparam(x, fourier=False)['init_mesh']))(init_params_ | ls.z)
+    kpk0 = model.spectrum(mesh0)
+    kpkobs = model.spectrum(truth['obs']-1)
+    print(ls.z.keys(), init_params_.keys())
+
+    mse_ = jnp.mean((vmap(lambda x: model.reparam(x, fourier=False))(init_params_)['init_mesh']  - mesh0)**2, axis=(1,2,3))
+    mse = jnp.mean((vmap(lambda x: model.reparam(x, fourier=False))(init_params_ | ls.z)['init_mesh']  - mesh0)**2, axis=(1,2,3))
+    print("MSEs:", mse_, mse)
+
+    plt.figure(figsize=(12, 4))
+    plot_pktranscoh(*jnp.median(jnp.stack(kpks_), 1), label='start')
+    plot_pktranscoh(*kpks_, fill=0.68)
+    plot_pktranscoh(*jnp.median(jnp.stack(kpks), 1), label='end')
+    plot_pktranscoh(*kpks, fill=0.68)
+    plt.subplot(131)
+    plot_pk(*kpk0, 'k', label='true')
+    plot_pk(*kpkobs, 'k:', label='obs')
+    plt.tight_layout()
+    plt.savefig(save_dir+f'initpk_{task_id}.png')
+
     
     print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, "\nss:", mcmc.last_state.adapt_state.step_size)
     init_params_ |= mcmc.last_state.z

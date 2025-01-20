@@ -187,7 +187,7 @@ def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[flo
 ##################
 # Power Spectrum #
 ##################
-def plot_pk(ks, pk, *args, i_ell=None, log=False, fill=False, **kwargs):
+def plot_pk(ks, pk, *args, i_ell=None, log=False, fill=None, **kwargs):
     if i_ell is None:
         sub = ""
     else:
@@ -196,60 +196,60 @@ def plot_pk(ks, pk, *args, i_ell=None, log=False, fill=False, **kwargs):
         pk = pk[i_ell]
 
     if log:
-        if fill:
+        if fill is None:
+            plt.loglog(ks, pk, *args, **kwargs)
+        else:
             scis = credint(pk, fill, axis=0)
             plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
-        else:
-            plt.loglog(ks, pk, *args, **kwargs)
         plt.ylabel("$P"+sub+"(k)$ [Mpc/$h$]$^3$")
     else:
-        if fill:
+        if fill is None:
+            plt.plot(ks, ks * pk, *args, **kwargs)
+        else:
             scis = credint(pk, fill, axis=0)
             plt.fill_between(ks[0], *(ks[0] * scis.T), *args, alpha=(1-fill)**.5, **kwargs)
-        else:
-            plt.plot(ks, ks * pk, *args, **kwargs)
         plt.ylabel("$k P"+sub+"(k)$ [Mpc/$h$]$^2$")
     plt.xlabel("$k$ [$h$/Mpc]")
 
 
-def plot_trans(ks, trans, *args, log=False, fill=False, **kwargs):
+def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
     if log:
-        if fill:
+        if fill is None:
+            plt.loglog(ks, trans, *args, **kwargs)
+        else:
             scis = credint(trans, fill, axis=0)
             plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
-        else:
-            plt.loglog(ks, trans, *args, **kwargs)
     else:
-        if fill:
+        if fill is None:
+            plt.semilogy(ks, trans, *args, **kwargs)
+        else:
             scis = credint(trans, fill, axis=0)
             plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.yscale('log')
-        else:
-            plt.semilogy(ks, trans, *args, **kwargs)
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
 
 
-def plot_coh(ks, coh, *args, log=False, fill=False, **kwargs):
+def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
     if log:
-        if fill:
+        if fill is None:
+            plt.loglog(ks, coh, *args, **kwargs)
+        else:
             scis = credint(coh, fill, axis=0)
             plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
-        else:
-            plt.loglog(ks, coh, *args, **kwargs)
     else:
-        if fill:
+        if fill is None:
+            plt.semilogy(ks, coh, *args, **kwargs)
+        else:
             scis = credint(coh, fill, axis=0)
             plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.yscale('log')
-        else:
-            plt.semilogy(ks, coh, *args, **kwargs)
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
 
 
-def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, fill=False, **kwargs):
+def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, fill=None, **kwargs):
     plt.subplot(131)
     plot_pk(ks, pk1, *args, log=log, fill=fill, **kwargs)
 

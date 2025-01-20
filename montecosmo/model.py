@@ -18,7 +18,8 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jaxpm.painting import cic_paint
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
                                gausslin_posterior, lin_power_mesh, 
-                               lpt, nbody, nbody2, lagrangian_weights, rsd) 
+                               lagrangian_weights, rsd) 
+from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
 from montecosmo.metrics import power_spectrum, pktranscoh
 from montecosmo.utils import pdump, pload
 
@@ -349,20 +350,26 @@ class FieldLevelModel(Model):
         cosmology, bias, init = params
 
         # Create regular grid of particles
-        q = jnp.indices(self.mesh_shape).reshape(3,-1).T
+        q = jnp.indices(self.mesh_shape, dtype=jnp.float32).reshape(3,-1).T
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **bias, **init)
 
-        # LPT displacement at a_lpt
-        # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
-        cosmology._workspace = {}  # HACK: temporary fix
-        dq, p, f = lpt(cosmology, **init, positions=q, a=self.a_lpt, order=self.lpt_order)
-        particles = jnp.stack([q + dq, p])
+        if self.lpt_order <= 2:
+            # LPT displacement at a_lpt
+            # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
+            cosmology._workspace = {}  # HACK: temporary fix
+            dq, p = lpt(cosmology, **init, pos=q, a=self.a_lpt, order=self.lpt_order)
+            particles = jnp.stack([q + dq, p])
 
-        # PM displacement from a_lpt to a_obs
-        particles = nbody(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
-        particles = deterministic('pm_part', particles)[-1]
+            # PM displacement from a_lpt to a_obs
+            particles = nbody_tsit5(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
+            particles = deterministic('pm_part', particles)[-1]
+
+        else:
+            cosmology._workspace = {}  # HACK: temporary fix
+            particles = nbody_bf(cosmology, **init, pos=q, a=self.a_obs)
+            particles = deterministic('pm_part', particles)
 
         # RSD displacement at a_obs
         dq = rsd(cosmology, self.a_obs, particles[1])
@@ -550,8 +557,8 @@ class FieldLevelModel(Model):
         return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                             kedges=kedges, comp=comp, multipoles=multipoles, los=los)
 
-    def pktranscoh(self, mesh0, mesh1, kedges:int | float | list=None):
-        return pktranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges)
+    def pktranscoh(self, mesh0, mesh1, kedges:int | float | list=None, comp=(False, False)):
+        return pktranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
 
 
     ########################
