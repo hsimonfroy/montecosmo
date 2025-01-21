@@ -16,11 +16,12 @@ def from_id(id):
     config = {
           'mesh_shape':3 * (args.mesh_length,),
           'box_shape':3 * (args.box_length if args.box_length is not None else 5. * args.mesh_length,), 
-          'a_lpt':args.a_obs if args.lpt_order > 0 else args.a_lpt,
+          'a_lpt':args.a_obs if args.lpt_order < 3 else args.a_lpt,
           'a_obs':args.a_obs,
-          'lpt_order':2 if args.lpt_order in [0,2] else args.lpt_order, # 2lpt + pm for 0
+          'lpt_order':2 if args.lpt_order in [2, 3] else args.lpt_order, # 2lpt + pm for 3
           'precond':args.precond,
-          'obs':args.obs
+          'obs':args.obs,
+          'nbody_steps':5,
           }
     save_dir = get_save_dir(**config)
     model = FieldLevelModel(**default_config | config)
@@ -76,7 +77,7 @@ def get_mcmc(model, config):
             step_size=1e-3, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,
-            adapt_step_size=False,
+            # adapt_step_size=False,
             # adapt_mass_matrix= False,
             )
         
@@ -88,6 +89,31 @@ def get_mcmc(model, config):
             # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
             trajectory_length=1023 * 1e-3 / 4, 
             target_accept_prob=target_accept_prob,)
+
+    mcmc = infer.MCMC(
+        sampler=kernel,
+        num_warmup=n_samples,
+        num_samples=n_samples, # for each run
+        num_chains=n_chains,
+        chain_method="vectorized",
+        progress_bar=True,)
+    
+    return mcmc
+
+
+
+def get_init_mcmc(model, n_chains=8):
+    n_samples = 128
+    
+    kernel = infer.NUTS(
+        model=model,
+        # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
+        step_size=1e-3, 
+        max_tree_depth=10,
+        target_accept_prob=0.65,
+        # adapt_step_size=False,
+        # adapt_mass_matrix= False,
+        )
 
     mcmc = infer.MCMC(
         sampler=kernel,

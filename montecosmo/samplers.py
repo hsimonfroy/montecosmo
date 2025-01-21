@@ -12,7 +12,7 @@ import blackjax.progress_bar
 # HMC/NUTS within Gibbs #
 #########################
 
-def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
+def mwg_warmup(rng_key, state, logpdf, parameters, n_samples=0):
     rng_keys = jr.split(rng_key, num=len(state))
     rng_keys = dict(zip(state.keys(), rng_keys))
 
@@ -24,21 +24,21 @@ def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
     positions = {}
 
     for k in state.keys():
-        # logdensity of component k conditioned on all other components in state
+        # logpdf of component k conditioned on all other components in state
         union = {}
         for _k in state.keys():
             union |= state[_k].position
 
-        def logdensity_k(value):
-            return logdensity_fn(union | value) # update component k
+        def logpdf_k(value):
+            return logpdf(union | value) # update component k
 
         # give state[k] the right log_density NOTE: unnecessary if we only pass position to warmup
         # state[k] = init_fn[k](
         #     position=state[k].position,
-        #     logdensity_fn=logdensity_k
+        #     logdensity_fn=logpdf_k
         # )
 
-        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logdensity_k, **parameters[k], progress_bar=True)
+        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **parameters[k], progress_bar=True)
         rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
         (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
 
@@ -54,7 +54,7 @@ def mwg_warmup(rng_key, state, logdensity_fn, init_fn, parameters, n_samples=0):
 
 
 
-def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, parameters):
+def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, parameters):
     """
     General MWG kernel.
 
@@ -66,7 +66,7 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, paramete
         The PRNG key.
     state
         Dictionary where each item is the state of an MCMC algorithm, i.e., an object of type ``AlgorithmState``.
-    logdensity_fn
+    logpdf
         The log-density function on all components, where the arguments are the keys of ``state``.
     step_fn
         Dictionary with the same keys as ``state``,
@@ -91,25 +91,25 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, paramete
     infos['n_evals'] = 0
 
     for k in state.keys():
-        # logdensity of component k conditioned on all other components in state
+        # logpdf of component k conditioned on all other components in state
         union = {}
         for _k in state.keys():
             union |= state[_k].position
 
-        def logdensity_k(value):
-            return logdensity_fn(union | value) # update component k
+        def logpdf_k(value):
+            return logpdf(union | value) # update component k
         
         # give state[k] the right log_density
         state[k] = init_fn[k](
             position=state[k].position,
-            logdensity_fn=logdensity_k
+            logdensity_fn=logpdf_k
         )
 
         # update state[k]
         state[k], info = step_fn[k](
             rng_key=rng_keys[k],
             state=state[k],
-            logdensity_fn=logdensity_k,
+            logdensity_fn=logpdf_k,
             **parameters[k]
         )
 
@@ -123,7 +123,7 @@ def mwg_kernel_general(rng_key, state, logdensity_fn, step_fn, init_fn, paramete
     
 
 
-def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init_fn, parameters, n_samples):
+def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, parameters, n_samples):
     
     @blackjax.progress_bar.progress_bar_scan(n_samples)
     def one_step(state, xs):
@@ -131,7 +131,7 @@ def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init_f
         state, infos = mwg_kernel_general(
             rng_key=rng_key,
             state=state,
-            logdensity_fn=logdensity_fn,
+            logpdf=logpdf,
             step_fn=step_fn,
             init_fn=init_fn,
             parameters=parameters
@@ -151,21 +151,23 @@ def sampling_loop_general(rng_key, initial_state, logdensity_fn, step_fn, init_f
 
 
 
-def NUTSwG_init(logdensity, kernel="NUTS"):
+def NUTSwG_init(logpdf, kernel="NUTS"):
+    init_ss = 1e-3
+    target_acc_rate = 0.65
 
     if kernel == "HMC":
         ker_api = blackjax.hmc
         parameters = {
             "mesh_": {
-                'target_acceptance_rate': 0.65,
-                'initial_step_size': 1e-4,
+                'target_acceptance_rate': target_acc_rate,
+                'initial_step_size': init_ss,
                 "num_integration_steps": 256,
                 # "inverse_mass_matrix": jnp.ones(64**3),
                 # "step_size": 3*1e-3
             },
             "rest_": {
-                'target_acceptance_rate': 0.65,
-                'initial_step_size': 1e-4,
+                'target_acceptance_rate': target_acc_rate,
+                'initial_step_size': init_ss,
                 "num_integration_steps": 64,
                 # "inverse_mass_matrix": jnp.ones(6),
                 # "step_size": 3*1e-3
@@ -175,15 +177,15 @@ def NUTSwG_init(logdensity, kernel="NUTS"):
         ker_api = blackjax.nuts
         parameters = {
             "mesh_": {
-                'target_acceptance_rate': 0.65,
-                'initial_step_size': 1e-4,
+                'target_acceptance_rate': target_acc_rate,
+                'initial_step_size': init_ss,
                 # 'max_num_doublings':10,
                 # "inverse_mass_matrix": jnp.ones(64**3),
                 # "step_size": 3*1e-3
             },
             "rest_": {
-                'target_acceptance_rate': 0.65,
-                'initial_step_size': 1e-4,
+                'target_acceptance_rate': target_acc_rate,
+                'initial_step_size': init_ss,
                 # 'max_num_doublings':10,
                 # "inverse_mass_matrix": jnp.ones(6),
                 # "step_size": 3*1e-3
@@ -205,49 +207,52 @@ def NUTSwG_init(logdensity, kernel="NUTS"):
     }
 
     def init_state_fn(init_pos):
-        return get_init_state(init_pos, logdensity, init_fn)
+        return get_init_state(init_pos, logpdf, init_fn)
 
     return step_fn, init_fn, parameters, init_state_fn
 
 
-def get_init_state(init_pos, logdensity, init_fn):
+def get_init_state(init_pos, logpdf, init_fn):
     init_pos_block1 = {name:init_pos[name] for name in ['init_mesh_']}
     init_pos_block2 = {name:init_pos[name] for name in ['Omega_m_','sigma8_','b1_','b2_','bs2_','bn2_']}
     init_state = {
         "mesh_": init_fn['mesh_'](
             position = init_pos_block1,
-            logdensity_fn = lambda x: logdensity(x |init_pos_block2)
+            logdensity_fn = lambda x: logpdf(x |init_pos_block2)
         ),
         "rest_": init_fn['rest_'](
             position = init_pos_block2,
-            logdensity_fn = lambda y: logdensity(y | init_pos_block1)
+            logdensity_fn = lambda y: logpdf(y | init_pos_block1)
         )
     }
     return init_state
 
 
-def NUTSwG_run(rng_key, init_state, logdensity, step_fn, init_fn, parameters, n_samples, warmup=False):
-    if warmup:
-        (last_state, parameters), (samples, infos) = mwg_warmup(rng_key, init_state, logdensity, init_fn, parameters, n_samples)
-        return (last_state, parameters), samples, infos
+def NUTSwG_run(rng_key, init_state, parameters, logpdf, step_fn, init_fn, n_samples):
+    last_state, (samples, infos) = sampling_loop_general(
+                                rng_key=rng_key,
+                                initial_state=init_state,
+                                logpdf=logpdf,
+                                step_fn=step_fn,
+                                init_fn=init_fn,
+                                parameters=parameters,
+                                n_samples=n_samples,)
+    return last_state, samples, infos
 
-    else:
-        last_state, (samples, infos) = sampling_loop_general(
-                                    rng_key = rng_key,
-                                    initial_state = init_state,
-                                    logdensity_fn = logdensity,
-                                    step_fn = step_fn,
-                                    init_fn = init_fn,
-                                    parameters = parameters,
-                                    n_samples = n_samples,)
-        return last_state, samples, infos
-
-
-def get_NUTSwG_run(logdensity, step_fn, init_fn, parameters, n_samples, warmup=False):
+def get_NUTSwG_run(logpdf, step_fn, init_fn, n_samples):
     return partial(NUTSwG_run, 
-                   logdensity=logdensity, 
+                   logpdf=logpdf, 
                    step_fn=step_fn, 
                    init_fn=init_fn, 
+                   n_samples=n_samples,)
+
+
+def NUTSwG_warm(rng_key, init_state, logpdf, parameters, n_samples):
+    (last_state, parameters), (samples, infos) = mwg_warmup(rng_key, init_state, logpdf, parameters, n_samples)
+    return (last_state, parameters), samples, infos
+
+def get_NUTSwG_warm(logpdf, parameters, n_samples):
+    return partial(NUTSwG_warm, 
+                   logpdf=logpdf, 
                    parameters=parameters, 
-                   n_samples=n_samples,
-                   warmup=warmup)
+                   n_samples=n_samples)

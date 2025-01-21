@@ -187,7 +187,7 @@ def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[flo
 ##################
 # Power Spectrum #
 ##################
-def plot_pk(ks, pk, *args, i_ell=None, log=False, fill=None, **kwargs):
+def plot_pow(ks, pk, *args, i_ell=None, log=False, fill=None, **kwargs):
     if i_ell is None:
         sub = ""
     else:
@@ -249,9 +249,9 @@ def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
 
 
-def plot_pktranscoh(ks, pk1, trans, coh, *args, log=False, fill=None, **kwargs):
+def plot_powtranscoh(ks, pk1, trans, coh, *args, log=False, fill=None, **kwargs):
     plt.subplot(131)
-    plot_pk(ks, pk1, *args, log=log, fill=fill, **kwargs)
+    plot_pow(ks, pk1, *args, log=log, fill=fill, **kwargs)
 
     plt.subplot(132)
     plot_trans(ks, trans, *args, log=log, fill=fill, **kwargs)

@@ -220,8 +220,9 @@ def get_bullfrog(cosmo:Cosmology, mesh_shape, dg, grad_fd=True, lap_fd=False):
     return step_fn
 
 
-def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, snapshots=None, n_steps=5,
-              grad_fd=True, lap_fd=False):
+def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
+              grad_fd=True, lap_fd=False, snapshots=None):
+    print("bullfrog n_steps:", n_steps)
     if jnp.isrealobj(init_mesh):
         delta_k = jnp.fft.rfftn(init_mesh)
         mesh_shape = init_mesh.shape
@@ -284,8 +285,8 @@ def make_ode_fn(mesh_shape, grad_fd=True, lap_fd=False):
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PIDController, ConstantStepSize
-def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, tol=1e-2,
-           grad_fd=True, lap_fd=False):
+def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2,
+           grad_fd=True, lap_fd=False, snapshots:int|list=None):
     if a_lpt == a_obs:
         return particles[None]
     else:
@@ -303,13 +304,13 @@ def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
                                 stepsize_controller=controller, max_steps=20, saveat=saveat)
         particles = sol.ys
-        debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
         return particles
 
 
 from montecosmo.fpm import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
-def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=None, n_steps=5,
-           grad_fd=True, lap_fd=False):
+def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5,
+           grad_fd=True, lap_fd=False, snapshots=None):
     if a_lpt == a_obs:
         return particles[None]
     

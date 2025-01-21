@@ -222,7 +222,7 @@ def coherence(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(Fal
     return ks, pk01 / (pk0 * pk1)**.5
 
 
-def pktranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+def powtranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
     pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)

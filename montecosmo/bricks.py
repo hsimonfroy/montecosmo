@@ -59,7 +59,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
 
 def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     """
-    Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
+    Return posterior mean, std, and preconditioning fields of the linear matter field (at a=1) given the observed field,
     by assuming Gaussian linear model. All fields are in fourier space.
     """
     # Compute linear matter power spectrum
@@ -72,7 +72,10 @@ def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
     # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
     means = stds**2 * gxy_count * evolve * delta_obs
-    return means, stds, pmeshk
+
+    scales = (1 + gxy_count * evolve**2 * pmeshk)**.5
+    return means, stds, scales
+
 
 
 
@@ -114,7 +117,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
 
 
 def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False, 
-                   guide=None, inv=False, temp=1.) -> dict:
+                   transfer=None, inv=False, temp=1.) -> dict:
     """
     Transform sample mesh into base mesh, i.e. initial wavevectors at a=1.
     """
@@ -140,7 +143,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                     # partial (and static) posterior preconditioning assuming Gaussian linear model and fiducial cosmology
                     # as done in [Bayer+2023](http://arxiv.org/abs/2307.09504)
                     mesh = rg2cgh(mesh) # ~ G(0, I + n * P_fid(a_obs))
-                    mesh *= guide # ~ G(0, I) ; guide = (I + n * P_fid(a_obs))^-1/2
+                    mesh *= transfer # ~ G(0, I) ; guide = (I + n * P_fid(a_obs))^-1/2
                 
                 # Compute linear matter power spectrum
                 pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
@@ -154,7 +157,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                 # mesh = stds * mesh + means # ~ G(0, P)
 
                 mesh = rg2cgh(mesh) # ~ G(0, I + n * (bD)^2 * P)
-                mesh *= guide # ~ G(0, P) ; guide = (n * (bD)^2 + P^-1)^-1/2
+                mesh *= transfer # ~ G(0, P) ; guide = (n * (bD)^2 + P^-1)^-1/2
 
             mesh *= temp**.5
         else:
@@ -171,7 +174,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                     mesh = cgh2rg(mesh)
 
                 elif precond==2:
-                    mesh /= guide # ~ G(0, I + n * P_fid(a_obs))
+                    mesh /= transfer # ~ G(0, I + n * P_fid(a_obs))
                     mesh = cgh2rg(mesh)
 
             elif precond==3:          
@@ -179,7 +182,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                 # mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
                 # mesh = cgh2rg(mesh)
 
-                mesh = safe_div(mesh, guide) # ~ G(0, I + n * (bD)^2 * P) ; guide = (n * (bD)^2 + P^-1)^-1/2
+                mesh = safe_div(mesh, transfer) # ~ G(0, I + n * (bD)^2 * P) ; guide = (n * (bD)^2 + P^-1)^-1/2
                 mesh = cgh2rg(mesh)
 
                 

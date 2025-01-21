@@ -20,7 +20,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology,
                                gausslin_posterior, lin_power_mesh, 
                                lagrangian_weights, rsd_bf, rsd_fpm) 
 from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
-from montecosmo.metrics import power_spectrum, pktranscoh
+from montecosmo.metrics import power_spectrum, powtranscoh
 from montecosmo.utils import pdump, pload
 
 from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div
@@ -71,7 +71,8 @@ default_config={
             'obs':'mesh', # 'mesh', 'pk', 'plk', 'bk' # TODO
             # Preconditioning mode
             'precond':3, # from 0 to 3
-            # PM snapshots                    
+            # PM                 
+            'nbody_steps':5,
             'snapshots':None,
             }
 
@@ -258,6 +259,7 @@ class FieldLevelModel(Model):
     latents:dict
     precond:int
     obs:dict
+    nbody_steps:int
     snapshots:int|list
 
     def __post_init__(self):
@@ -317,30 +319,19 @@ class FieldLevelModel(Model):
         init = {}
         name_ = self.groups['init'][0]+'_'
         if self.precond==0 or self.precond==1:
-            guide = None
             init[name_] = sample(name_, dist.Normal(0., jnp.ones(self.mesh_shape)))
+            transfer = None
 
         elif self.precond==2:
-            guide = (1 + self.gxy_count * self.pmeshk_fiduc)**-.5
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(1 / guide, amp=True)))
+            scales = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
+            transfer = 1 / scales
 
-        elif self.precond==3:
-            # _, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            # init[name_] = sample(name_, dist.Normal(0, cgh2rg(safe_div(pmeshk**.5, stds), amp=True)))
-            # guide = (0, stds)
-        
-            # means, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            # loc, scale = safe_div(-means, stds), jnp.where((pmeshk==0) | (stds==0), 1., pmeshk**.5 / stds)
-            # init[name_] = sample(name_, dist.Normal(cgh2rg(loc), cgh2rg(scale, amp=True)))
-            # # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
-            # guide = (means, stds)
+        elif self.precond==3:        
+            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
 
-            _, guide, pmeshk = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            scale = jnp.where((pmeshk==0) | (guide==0), jnp.finfo(jnp.float32).eps, pmeshk**.5 / guide)
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scale, amp=True)))
-            # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
-
-        init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
+        init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
         return cosmology, bias, init
 
@@ -354,7 +345,7 @@ class FieldLevelModel(Model):
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **bias, **init)
 
-        if self.lpt_order <= 2:
+        if self.lpt_order > 0:
             # LPT displacement at a_lpt
             # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
@@ -362,7 +353,8 @@ class FieldLevelModel(Model):
             particles = jnp.stack([q + dq, p])
 
             # PM displacement from a_lpt to a_obs
-            particles = nbody_tsit5(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots, grad_fd=False, lap_fd=False)
+            particles = nbody_tsit5(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, 
+                                    grad_fd=False, lap_fd=False, snapshots=self.snapshots)
             particles = deterministic('pm_part', particles)[-1]
 
             # RSD displacement at a_obs
@@ -370,9 +362,10 @@ class FieldLevelModel(Model):
             particles = particles.at[0].add(dq)
             particles = deterministic('rsd_part', particles)
 
-        else:
+        else: # TODO: lpt_order is None
             cosmology._workspace = {}  # HACK: temporary fix
-            particles = nbody_bf(cosmology, **init, pos=q, a=self.a_obs, grad_fd=False, lap_fd=False)
+            particles = nbody_bf(cosmology, **init, pos=q, a=self.a_obs, n_steps=self.nbody_steps, 
+                                 grad_fd=False, lap_fd=False, snapshots=self.snapshots)
             particles = deterministic('pm_part', particles)
 
             # RSD displacement at a_obs
@@ -437,20 +430,18 @@ class FieldLevelModel(Model):
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
 
             if self.precond==0 or self.precond==1:
-                guide = None
+                transfer = None
 
             elif self.precond==2:
-                guide = (1 + self.gxy_count * self.pmeshk_fiduc)**-.5
+                transfer = 1 / (1 + self.gxy_count * self.pmeshk_fiduc)**.5
 
             elif self.precond==3:
                 b1 = bias_['b1'] if inv else bias['b1']
-                # _, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
-                # guide = (0., stds)
-                _, guide, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
-            init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=inv, temp=temp)
+            init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=inv, temp=temp)
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
         return rest | cosmo | bias | init # possibly update rest
@@ -559,8 +550,8 @@ class FieldLevelModel(Model):
         return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                             kedges=kedges, comp=comp, multipoles=multipoles, los=los)
 
-    def pktranscoh(self, mesh0, mesh1, kedges:int | float | list=None, comp=(False, False)):
-        return pktranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
+    def powtranscoh(self, mesh0, mesh1, kedges:int | float | list=None, comp=(False, False)):
+        return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
 
 
     ########################
