@@ -55,7 +55,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     kvec = rfftk(mesh_shape)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
-
+    
 
 def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     """
@@ -140,7 +140,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                     # partial (and static) posterior preconditioning assuming Gaussian linear model and fiducial cosmology
                     # as done in [Bayer+2023](http://arxiv.org/abs/2307.09504)
                     mesh = rg2cgh(mesh) # ~ G(0, I + n * P_fid(a_obs))
-                    mesh /= guide # ~ G(0, I) ; guide = (I + n * P_fid(a_obs))^1/2)
+                    mesh *= guide # ~ G(0, I) ; guide = (I + n * P_fid(a_obs))^-1/2
                 
                 # Compute linear matter power spectrum
                 pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
@@ -149,9 +149,12 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
             elif precond==3:
                 # Sample in fourier space with
                 # complete (and dynamic) posterior preconditioning assuming Gaussian linear model
-                means, stds = guide # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
-                mesh = rg2cgh(mesh) # ~ G( -mu * sigma^-1, sigma^-2 * P) 
-                mesh = stds * mesh + means # ~ G(0, P)
+                # means, stds = guide # sigma = (n * (bD)^2 + P^-1)^-1/2 ; mu = sigma^2 * nbD * delta_obs
+                # mesh = rg2cgh(mesh) # ~ G( -mu * sigma^-1, sigma^-2 * P) 
+                # mesh = stds * mesh + means # ~ G(0, P)
+
+                mesh = rg2cgh(mesh) # ~ G(0, I + n * (bD)^2 * P)
+                mesh *= guide # ~ G(0, P) ; guide = (n * (bD)^2 + P^-1)^-1/2
 
             mesh *= temp**.5
         else:
@@ -168,13 +171,18 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                     mesh = cgh2rg(mesh)
 
                 elif precond==2:
-                    mesh *= guide # ~ G(0, I + n * P_fid(a_obs))
+                    mesh /= guide # ~ G(0, I + n * P_fid(a_obs))
                     mesh = cgh2rg(mesh)
 
             elif precond==3:          
-                means, stds = guide # sigma = (n * D^2 + P^-1)^-1/2 ; mu = sigma^2 * n * D * delta_obs
-                mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
+                # means, stds = guide # sigma = (n * (bD)^2 + P^-1)^-1/2 ; mu = sigma^2 * nbD * delta_obs
+                # mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
+                # mesh = cgh2rg(mesh)
+
+                mesh = safe_div(mesh, guide) # ~ G(0, I + n * (bD)^2 * P) ; guide = (n * (bD)^2 + P^-1)^-1/2
                 mesh = cgh2rg(mesh)
+
+                
 
         return {out_name:mesh}
     return {}
@@ -260,7 +268,21 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
+def rsd_bf(cosmo:Cosmology, a, p, los=[0,0,1]):
+    """
+    Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
+    Computed with respect scale factor and line-of-sight.
+    """
+    los = np.asarray(los)
+    los = los / np.linalg.norm(los)
+    # Pi-Integrator momentum p = dx/dg
+    dx_rsd = p * growth_factor(cosmo, a) * growth_rate(cosmo, a)
+    # Project velocity on line-of-sight
+    dx_rsd = dx_rsd * los
+    return dx_rsd
+
+
+def rsd_fpm(cosmo:Cosmology, a, p, los=[0,0,1]):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
@@ -268,16 +290,11 @@ def rsd(cosmo:Cosmology, a, p, los=[0,0,1]):
     a = jnp.atleast_1d(a)
     los = np.asarray(los)
     los = los / np.linalg.norm(los)
-    # # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
+    # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
     dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
-
-    # dx_rsd = p * growth_factor(cosmo, a) * growth_rate(cosmo, a)
-    # dx_rsd = 0.
-
     # Project velocity on line-of-sight
     dx_rsd = dx_rsd * los
     return dx_rsd
-
 
 
 

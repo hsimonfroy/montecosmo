@@ -3,9 +3,9 @@ from montecosmo.model import FieldLevelModel, default_config
 from numpyro import infer
 
 def get_save_dir(**kwargs):
-    # dir = os.path.expanduser("~/scratch/pickles/")
+    dir = os.path.expanduser("~/scratch/pickles/")
     # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
-    dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
+    # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
     dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
@@ -59,12 +59,6 @@ class ParseSlurmId():
                 setattr(self, k, v[int(self.id[i])])
             else:
                 setattr(self, k, v[0])
-
-
-
-
-
-
 
 
 

@@ -34,8 +34,6 @@ def invlaplace_kernel(kvec, fd=False):
     """
     Compute the inverse Laplace kernel.
 
-    cf. [Feng+2016](https://arxiv.org/pdf/1603.00476)
-
     Parameters
     -----------
     kvec: list
@@ -96,9 +94,9 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0)
     pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
 
     # If painted field, double deconvolution to account for both painting and reading 
-    if mesh is None:
-        pot_k *= cic_compensation(kvec)**2
-        print("deconv")
+    # if mesh is None:
+    #     pot_k *= cic_compensation(kvec)**2
+    #     print("deconv")
 
     # Computes gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), pos) 
@@ -156,9 +154,9 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
 
 
 
-
-
-
+###########
+# Solvers #
+###########
 def g2a(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
@@ -184,11 +182,11 @@ def g2ff(cosmo, g):
     return jnp.interp(g, cache["g"], cache["f2"])
 
 
-
 def get_bullfrog(cosmo:Cosmology, mesh_shape, dg, grad_fd=True, lap_fd=False):
 
     def dggdg(cosmo, g):
         gg, f, ff = g2gg(cosmo, g)*-3/7, g2f(cosmo, g), g2ff(cosmo, g)
+        # NOTE: g2gg is normalized such that gg = -3/7 * g2gg ~ -3/7 * g^2
         return jnp.where(g==0., 0., gg * ff / (g * f))
     
     def alpha(cosmo, g0, dg):
@@ -197,8 +195,8 @@ def get_bullfrog(cosmo:Cosmology, mesh_shape, dg, grad_fd=True, lap_fd=False):
         g2 = g0 + dg
 
         dggdg0, dggdg2 = dggdg(cosmo, g0), dggdg(cosmo, g2)
-        # NOTE: linearization of ratio (gg - g^2)/g aroung g0, evaluated at g1
         lin_ratio = (g2gg(cosmo, g0)*-3/7 + dggdg0 * dg / 2) / g1 - g1
+        # NOTE: linearization of ratio (gg - g^2)/g aroung g0, evaluated at g1
         return (dggdg2 - lin_ratio) / (dggdg0 - lin_ratio)
 
     def kick(state, g0, cosmo, dg):
@@ -222,10 +220,8 @@ def get_bullfrog(cosmo:Cosmology, mesh_shape, dg, grad_fd=True, lap_fd=False):
     return step_fn
 
 
-
 def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, snapshots=None, n_steps=5,
               grad_fd=True, lap_fd=False):
-            #  mesh_shape, particles, a_obs, snapshots=None, n_steps=5):
     if jnp.isrealobj(init_mesh):
         delta_k = jnp.fft.rfftn(init_mesh)
         mesh_shape = init_mesh.shape
@@ -245,15 +241,6 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, snapshots=None, n_steps=5,
     # for g in gs:
     #     state, _ = step_fn(state, g)
     return jnp.stack(state)
-
-
-
-
-
-
-
-
-
 
 
 
@@ -314,7 +301,7 @@ def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, snapshots=
             saveat = SaveAt(ts=jnp.asarray(snapshots))   
 
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                                stepsize_controller=controller, max_steps=100, saveat=saveat)
+                                stepsize_controller=controller, max_steps=20, saveat=saveat)
         particles = sol.ys
         debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
         return particles

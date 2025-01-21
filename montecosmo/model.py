@@ -18,7 +18,7 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jaxpm.painting import cic_paint
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
                                gausslin_posterior, lin_power_mesh, 
-                               lagrangian_weights, rsd) 
+                               lagrangian_weights, rsd_bf, rsd_fpm) 
 from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
 from montecosmo.metrics import power_spectrum, pktranscoh
 from montecosmo.utils import pdump, pload
@@ -317,29 +317,28 @@ class FieldLevelModel(Model):
         init = {}
         name_ = self.groups['init'][0]+'_'
         if self.precond==0 or self.precond==1:
-            init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
             guide = None
+            init[name_] = sample(name_, dist.Normal(0., jnp.ones(self.mesh_shape)))
 
         elif self.precond==2:
-            guide = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
-            init[name_] = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), cgh2rg(guide, amp=True)))
+            guide = (1 + self.gxy_count * self.pmeshk_fiduc)**-.5
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(1 / guide, amp=True)))
 
         elif self.precond==3:
             # _, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
             # init[name_] = sample(name_, dist.Normal(0, cgh2rg(safe_div(pmeshk**.5, stds), amp=True)))
             # guide = (0, stds)
         
-            means, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            loc, scale = safe_div(-means, stds), jnp.where((pmeshk==0) | (stds==0), 1., pmeshk**.5 / stds)
-            init[name_] = sample(name_, dist.Normal(cgh2rg(loc), cgh2rg(scale, amp=True)))
-            # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
-            guide = (means, stds)
-
-            # _, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            # scale = jnp.where((pmeshk==0) | (stds==0), 1., pmeshk**.5 / stds)
-            # init[name_] = sample(name_, dist.Normal(0., cgh2rg(scale, amp=True)))
+            # means, stds, pmeshk = gausslin_posterior(self.delta_obs, cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            # loc, scale = safe_div(-means, stds), jnp.where((pmeshk==0) | (stds==0), 1., pmeshk**.5 / stds)
+            # init[name_] = sample(name_, dist.Normal(cgh2rg(loc), cgh2rg(scale, amp=True)))
             # # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
-            # guide = (0., stds)
+            # guide = (means, stds)
+
+            _, guide, pmeshk = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            scale = jnp.where((pmeshk==0) | (guide==0), jnp.finfo(jnp.float32).eps, pmeshk**.5 / guide)
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scale, amp=True)))
+            # NOTE: set scale at k=0 to an arbitrary value as 0 is not allowed, this variable is not constrained anyway.
 
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, guide=guide, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
@@ -359,22 +358,27 @@ class FieldLevelModel(Model):
             # LPT displacement at a_lpt
             # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
-            dq, p = lpt(cosmology, **init, pos=q, a=self.a_lpt, order=self.lpt_order)
+            dq, p = lpt(cosmology, **init, pos=q, a=self.a_lpt, order=self.lpt_order, grad_fd=False, lap_fd=False)
             particles = jnp.stack([q + dq, p])
 
             # PM displacement from a_lpt to a_obs
-            particles = nbody_tsit5(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots)
+            particles = nbody_tsit5(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, self.snapshots, grad_fd=False, lap_fd=False)
             particles = deterministic('pm_part', particles)[-1]
+
+            # RSD displacement at a_obs
+            dq = rsd_fpm(cosmology, self.a_obs, particles[1])
+            particles = particles.at[0].add(dq)
+            particles = deterministic('rsd_part', particles)
 
         else:
             cosmology._workspace = {}  # HACK: temporary fix
-            particles = nbody_bf(cosmology, **init, pos=q, a=self.a_obs)
+            particles = nbody_bf(cosmology, **init, pos=q, a=self.a_obs, grad_fd=False, lap_fd=False)
             particles = deterministic('pm_part', particles)
 
-        # RSD displacement at a_obs
-        dq = rsd(cosmology, self.a_obs, particles[1])
-        particles = particles.at[0].add(dq)
-        particles = deterministic('rsd_part', particles)
+            # RSD displacement at a_obs
+            dq = rsd_bf(cosmology, self.a_obs, particles[1])
+            particles = particles.at[0].add(dq)
+            particles = deterministic('rsd_part', particles)
 
         # CIC paint weighted by Lagrangian bias expansion weights
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
@@ -436,15 +440,13 @@ class FieldLevelModel(Model):
                 guide = None
 
             elif self.precond==2:
-                guide = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
+                guide = (1 + self.gxy_count * self.pmeshk_fiduc)**-.5
 
             elif self.precond==3:
                 b1 = bias_['b1'] if inv else bias['b1']
                 # _, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
                 # guide = (0., stds)
-
-                means, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
-                guide = (means, stds)
+                _, guide, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
@@ -540,7 +542,7 @@ class FieldLevelModel(Model):
         if hasattr(self, "_pmeshk_fiduc"):
             return self._pmeshk_fiduc
         else:
-            print("No fiducial spectral power mesh stored. Will use location of cosmology prior as fiducial.")
+            print("No fiducial spectral power mesh stored. Will use linear spectral power mesh computed at location of cosmology prior.")
             # NOTE: Alternatively, could also use the spectral power mesh of observed mesh
             return lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
             # self._pmeshk_fiduc = lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
