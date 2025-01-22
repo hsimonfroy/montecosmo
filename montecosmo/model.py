@@ -340,42 +340,45 @@ class FieldLevelModel(Model):
         cosmology, bias, init = params
 
         # Create regular grid of particles
-        q = jnp.indices(self.mesh_shape, dtype=jnp.float32).reshape(3,-1).T
+        pos = jnp.indices(self.mesh_shape, dtype=jnp.float32).reshape(3,-1).T
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, self.a_obs, q, self.box_shape, **bias, **init)
+        lbe_weights = lagrangian_weights(cosmology, self.a_obs, pos, self.box_shape, **bias, **init)
 
         if self.lpt_order > 0:
             # LPT displacement at a_lpt
             # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
-            dq, p = lpt(cosmology, **init, pos=q, a=self.a_lpt, order=self.lpt_order, grad_fd=False, lap_fd=False)
-            particles = jnp.stack([q + dq, p])
+            dpos, vel = lpt(cosmology, **init, pos=pos, a=self.a_lpt, order=self.lpt_order, grad_fd=False, lap_fd=False)
+            part = (pos + dpos, vel)
+            # particles = jnp.stack([q + dq, p])
 
             # PM displacement from a_lpt to a_obs
-            particles = nbody_tsit5(cosmology, self.mesh_shape, particles, self.a_lpt, self.a_obs, 
+            part = nbody_tsit5(cosmology, self.mesh_shape, part, self.a_lpt, self.a_obs, 
                                     grad_fd=False, lap_fd=False, snapshots=self.snapshots)
-            particles = deterministic('pm_part', particles)[-1]
+            part = deterministic('pm_part', part)
+            pos, vel = tree.map(lambda x: x[-1], part)
 
             # RSD displacement at a_obs
-            dq = rsd_fpm(cosmology, self.a_obs, particles[1])
-            particles = particles.at[0].add(dq)
-            particles = deterministic('rsd_part', particles)
+            pos += rsd_fpm(cosmology, self.a_obs, vel)
+            pos, vel = deterministic('rsd_part', (pos, vel))
 
         else: # TODO: lpt_order is None
             cosmology._workspace = {}  # HACK: temporary fix
-            particles = nbody_bf(cosmology, **init, pos=q, a=self.a_obs, n_steps=self.nbody_steps, 
+            part = nbody_bf(cosmology, **init, pos=pos, a=self.a_obs, n_steps=self.nbody_steps, 
                                  grad_fd=False, lap_fd=False, snapshots=self.snapshots)
-            particles = deterministic('pm_part', particles)
+            part = deterministic('pm_part', part)
+            pos, vel = tree.map(lambda x: x[-1], part)
 
             # RSD displacement at a_obs
-            dq = rsd_bf(cosmology, self.a_obs, particles[1])
-            particles = particles.at[0].add(dq)
-            particles = deterministic('rsd_part', particles)
+            pos += rsd_bf(cosmology, self.a_obs, vel)
+            pos, vel = deterministic('rsd_part', (pos, vel))
 
         # CIC paint weighted by Lagrangian bias expansion weights
-        biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), particles[0], lbe_weights)
-        biased_mesh = deterministic('bias_mesh', biased_mesh)        
+        biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
+        biased_mesh = deterministic('bias_mesh', biased_mesh)
+        # TODO: should deconv CIC here
+
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
@@ -449,7 +452,6 @@ class FieldLevelModel(Model):
     ###########
     # Getters #
     ###########
-
     def _sample_gauss(self, names:str|list, base=False):
         dic = {}
         names = np.atleast_1d(names)

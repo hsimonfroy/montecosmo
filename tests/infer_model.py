@@ -30,6 +30,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 # get_ipython().run_line_magic('load_ext', 'autoreload')
 # get_ipython().run_line_magic('autoreload', '2')
 
+
 # ## Config and fiduc
 
 # In[2]:
@@ -37,7 +38,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 ################## TO SET #######################
 task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-# task_id = 2132
+# task_id = 2330
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
@@ -106,7 +107,7 @@ else:
     model.block()
 
 
-    mcmc = get_init_mcmc(model.model)    
+    mcmc = get_init_mcmc(model.model, mcmc_config['n_chains'])    
     print("# Warmupping...")
     init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), mcmc.num_chains))
     init_mesh_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!

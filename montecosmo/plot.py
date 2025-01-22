@@ -187,27 +187,27 @@ def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[flo
 ##################
 # Power Spectrum #
 ##################
-def plot_pow(ks, pk, *args, i_ell=None, log=False, fill=None, **kwargs):
+def plot_pow(ks, pow, *args, i_ell=None, log=False, fill=None, **kwargs):
     if i_ell is None:
         sub = ""
     else:
         ell = [0, 2, 4][i_ell]
         sub = f"_{ell}"
-        pk = pk[i_ell]
+        pow = pow[i_ell]
 
     if log:
         if fill is None:
-            plt.loglog(ks, pk, *args, **kwargs)
+            plt.loglog(ks, pow, *args, **kwargs)
         else:
-            scis = credint(pk, fill, axis=0)
+            scis = credint(pow, fill, axis=0)
             plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
         plt.ylabel("$P"+sub+"(k)$ [Mpc/$h$]$^3$")
     else:
         if fill is None:
-            plt.plot(ks, ks * pk, *args, **kwargs)
+            plt.plot(ks, ks * pow, *args, **kwargs)
         else:
-            scis = credint(pk, fill, axis=0)
+            scis = credint(pow, fill, axis=0)
             plt.fill_between(ks[0], *(ks[0] * scis.T), *args, alpha=(1-fill)**.5, **kwargs)
         plt.ylabel("$k P"+sub+"(k)$ [Mpc/$h$]$^2$")
     plt.xlabel("$k$ [$h$/Mpc]")
@@ -249,9 +249,9 @@ def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
 
 
-def plot_powtranscoh(ks, pk1, trans, coh, *args, log=False, fill=None, **kwargs):
+def plot_powtranscoh(ks, pow1, trans, coh, *args, log=False, fill=None, **kwargs):
     plt.subplot(131)
-    plot_pow(ks, pk1, *args, log=log, fill=fill, **kwargs)
+    plot_pow(ks, pow1, *args, log=log, fill=fill, **kwargs)
 
     plt.subplot(132)
     plot_trans(ks, trans, *args, log=log, fill=fill, **kwargs)

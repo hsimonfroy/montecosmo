@@ -112,7 +112,7 @@ def get_init_mcmc(model, n_chains=8):
         max_tree_depth=10,
         target_accept_prob=0.65,
         # adapt_step_size=False,
-        # adapt_mass_matrix= False,
+        # adapt_mass_matrix=False,
         )
 
     mcmc = infer.MCMC(

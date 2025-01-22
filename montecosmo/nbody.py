@@ -157,6 +157,12 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
 ###########
 # Solvers #
 ###########
+def a2g(cosmo, a):
+    if not "background.growth_factor" in cosmo._workspace.keys():
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+    cache = cosmo._workspace["background.growth_factor"]
+    return jnp.interp(a, cache["a"], cache["g"])
+
 def g2a(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
@@ -182,7 +188,10 @@ def g2ff(cosmo, g):
     return jnp.interp(g, cache["g"], cache["f2"])
 
 
-def get_bullfrog(cosmo:Cosmology, mesh_shape, dg, grad_fd=True, lap_fd=False):
+def bullfrog_vf(cosmo:Cosmology, mesh_shape, dg, grad_fd=False, lap_fd=False):
+    """
+    BullFrog vector field.
+    """
 
     def dggdg(cosmo, g):
         gg, f, ff = g2gg(cosmo, g)*-3/7, g2f(cosmo, g), g2ff(cosmo, g)
@@ -211,37 +220,71 @@ def get_bullfrog(cosmo:Cosmology, mesh_shape, dg, grad_fd=True, lap_fd=False):
         pos, vel = state
         return pos + vel * dg / 2, vel
     
-    def step_fn(state, g0):
+    def vector_field(g0, state, args):
+        old = state
         state = drift(state, dg)
         state = kick(state, g0, cosmo, dg)
         state = drift(state, dg)
-        return state, None
+        return tree.map(lambda new, old: (new - old) / dg, state, old)
     
-    return step_fn
+    return vector_field
 
 
+from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
 def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
-              grad_fd=True, lap_fd=False, snapshots=None):
-    print("bullfrog n_steps:", n_steps)
-    if jnp.isrealobj(init_mesh):
-        delta_k = jnp.fft.rfftn(init_mesh)
-        mesh_shape = init_mesh.shape
-    else:
-        delta_k = init_mesh
-        mesh_shape = ch2rshape(init_mesh.shape)
-
-    vel = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
-    state = pos, vel
+              grad_fd=False, lap_fd=False, snapshots:int|list=None):
+    """
+    BullFrog N-body simulation.
+    """
+    n_steps = int(n_steps)
+    g = a2g(cosmo, a)
+    dg = g / n_steps
     
-    g_obs = g2a(cosmo, a)
-    dg = g_obs / n_steps
-    step_fn = get_bullfrog(cosmo, mesh_shape, dg, grad_fd=grad_fd, lap_fd=lap_fd)
+    mesh_shape = ch2rshape(init_mesh.shape)
+    terms = ODETerm(bullfrog_vf(cosmo, mesh_shape, dg, grad_fd=grad_fd, lap_fd=lap_fd))
+    solver = Euler()
+
+    vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
+    state = pos, vel
+
+    if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
+        saveat = SaveAt(t1=True)
+    elif isinstance(snapshots, int): 
+        saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(0, a, snapshots)))  
+    else: 
+        saveat = SaveAt(ts=a2g(cosmo, jnp.asarray(snapshots)))   
+
+    sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat)
+    states = sol.ys
+    # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
+    return states
+
+
+
+
+
+def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
+              grad_fd=False, lap_fd=False, snapshots:int|list=None):
+    """
+    No-diffrax version of BullFrog N-body solver. Simpler but does not optimize for memory usage.
+    """
+    g = a2g(cosmo, a)
+    dg = g / n_steps
     gs = jnp.arange(n_steps) * dg
 
+    mesh_shape = ch2rshape(init_mesh.shape)
+    vector_field = bullfrog_vf(cosmo, mesh_shape, dg, grad_fd=grad_fd, lap_fd=lap_fd)
+
+    def step_fn(state, g0):
+        vf = vector_field(g0, state, None)
+        state = tree.map(lambda x, y: x + dg * y, state, vf)
+        return state, None
+    
+    vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
+    state = pos, vel
+
     state, _ = lax.scan(step_fn, state, gs)
-    # for g in gs:
-    #     state, _ = step_fn(state, g)
-    return jnp.stack(state)
+    return tree.map(lambda x: x[None], state)
 
 
 
@@ -252,9 +295,13 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 
 
 
-def get_ode_fn(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
-    def nbody_ode(a, state, args):
+
+
+def diffrax_vf(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
+    def vector_field(a, state, args):
         """
+        N-body ODE vector field for jax.experimental.ode
+
         state is a phase space state array [*position, *velocities]
         """
         pos, vel = state
@@ -264,23 +311,27 @@ def get_ode_fn(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
         # Computes the update of velocity (kick)
         dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
-        return jnp.stack([dpos, dvel])
-    return nbody_ode
+        # return jnp.stack([dpos, dvel])
+        return dpos, dvel
+    return vector_field
 
 
-def make_ode_fn(mesh_shape, grad_fd=True, lap_fd=False):
-    def nbody_ode(state, a, cosmo):
+def jax_ode_vf(mesh_shape, grad_fd=True, lap_fd=False):
+    def vector_field(state, a, cosmo):
         """
+        N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
+
         state is a tuple (position, velocities)
         """
         pos, vel = state
         forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
+        
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
         # Computes the update of velocity (kick)
         dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
         return dpos, dvel
-    return nbody_ode
+    return vector_field
 
 
 
@@ -288,9 +339,9 @@ from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PI
 def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2,
            grad_fd=True, lap_fd=False, snapshots:int|list=None):
     if a_lpt == a_obs:
-        return particles[None]
+        return tree.map(lambda x: x[None], particles)
     else:
-        terms = ODETerm(get_ode_fn(cosmo, mesh_shape, grad_fd, lap_fd))
+        terms = ODETerm(diffrax_vf(cosmo, mesh_shape, grad_fd, lap_fd))
         solver = Tsit5() # Tsit5 usually better than Dopri5
         controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
 
@@ -303,8 +354,9 @@ def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2,
 
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
                                 stepsize_controller=controller, max_steps=20, saveat=saveat)
+        # NOTE: if max_steps > 20 for dopri5/tsit5, just quit :')
         particles = sol.ys
-        # debug.print("n_solvsteps: {n}", n=sol.stats['num_steps'])
+        # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
         return particles
 
 
@@ -312,40 +364,40 @@ from montecosmo.fpm import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
 def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5,
            grad_fd=True, lap_fd=False, snapshots=None):
     if a_lpt == a_obs:
-        return particles[None]
-    
-    solver = EfficientLeapFrog(initial_t0=a_lpt, final_t1=a_obs, cosmo=cosmo)
-    stepsize_controller = ConstantStepSize()
-    terms = tree.map(
-        LeapFrogODETerm,
-        symplectic_ode(mesh_shape, paint_absolute_pos=False),
-    )
-    cosmo._workspace = {}
-    args = cosmo
-
-    if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
-        saveat = SaveAt(t1=True)
-    elif isinstance(snapshots, int): 
-        saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, snapshots))   
-    else: 
-        saveat = SaveAt(ts=jnp.asarray(snapshots))   
-
-    sol = diffeqsolve(
-            terms,
-            solver=solver,
-            t0=a_lpt,
-            t1=a_obs,
-            dt0=(a_obs - a_lpt) / n_steps,
-            y0=(*particles,),
-            args=args,
-            stepsize_controller=stepsize_controller,
-            saveat=saveat,
-            max_steps=10,
-            # progress_meter=TqdmProgressMeter(refresh_steps=2),
-            # adjoint=BacksolveAdjoint(solver=solver),
+        return tree.map(lambda x: x[None], particles)
+    else:
+        solver = EfficientLeapFrog(initial_t0=a_lpt, final_t1=a_obs, cosmo=cosmo)
+        stepsize_controller = ConstantStepSize()
+        terms = tree.map(
+            LeapFrogODETerm,
+            symplectic_ode(mesh_shape, paint_absolute_pos=False),
         )
+        cosmo._workspace = {}
+        args = cosmo
 
-    particles = sol.ys
-    return particles
+        if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
+            saveat = SaveAt(t1=True)
+        elif isinstance(snapshots, int): 
+            saveat = SaveAt(ts=jnp.linspace(a_lpt, a_obs, snapshots))   
+        else: 
+            saveat = SaveAt(ts=jnp.asarray(snapshots))   
+
+        sol = diffeqsolve(
+                terms,
+                solver=solver,
+                t0=a_lpt,
+                t1=a_obs,
+                dt0=(a_obs - a_lpt) / n_steps,
+                y0=particles,
+                args=args,
+                stepsize_controller=stepsize_controller,
+                saveat=saveat,
+                max_steps=10,
+                # progress_meter=TqdmProgressMeter(refresh_steps=2),
+                # adjoint=BacksolveAdjoint(solver=solver),
+            )
+
+        particles = sol.ys
+        return particles
 
 

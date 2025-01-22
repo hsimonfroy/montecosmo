@@ -12,26 +12,6 @@ from functools import partial
 ##################
 # Power spectrum #
 ##################
-# def _initialize_pk(mesh_shape, box_shape, kmin, dk, los):
-#     kmax = np.pi * np.min(mesh_shape / box_shape) + dk / 2
-#     kedges = np.arange(kmin, kmax, dk)
-
-#     kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
-#     kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
-#             for m, l, kshape in zip(mesh_shape, box_shape, kshapes)]
-#     kmesh = sum(ki**2 for ki in kvec)**0.5
-
-#     dig = np.digitize(kmesh.reshape(-1), kedges)
-#     ksum = np.bincount(dig, minlength=len(kedges)+1)
-
-#     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
-#     kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
-#     mumesh = mumesh / kmesh_nozeros
-#     mumesh = np.where(kmesh==0, 0, mumesh)
-    
-#     return dig, ksum, kedges, mumesh
-
-
 # def power_spectrum(mesh, box_shape, kmin, dk, los=[0,0,1], multipoles=0, kcount=False, galaxy_density=1):
 #     # Initialize values related to powerspectra (wavenumber bins and edges)
 #     mesh_shape = np.array(mesh.shape)
@@ -75,7 +55,7 @@ from functools import partial
 
 
 
-def _initialize_pk(mesh_shape, box_shape, kedges, los):
+def _initialize_spectrum(mesh_shape, box_shape, kedges, los):
     """
     Parameters
     ----------
@@ -157,7 +137,7 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     if isinstance(comp, int):
         comp = (comp, comp)
 
-    dig, kcount, kavg, mumesh = _initialize_pk(mesh_shape, box_shape, kedges, los)
+    dig, kcount, kavg, mumesh = _initialize_spectrum(mesh_shape, box_shape, kedges, los)
     n_bins = len(kavg) + 2
 
     # FFTs
@@ -203,33 +183,33 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         return kavg, pk
   
 
-def transfer(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
-    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pk0 = pk_fn(mesh0, comp=comp[0])
-    ks, pk1 = pk_fn(mesh1, comp=comp[1])
-    return ks, (pk1 / pk0)**.5
+    pow_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    ks, pow0 = pow_fn(mesh0, comp=comp[0])
+    ks, pow1 = pow_fn(mesh1, comp=comp[1])
+    return ks, (pow1 / pow0)**.5
 
 
-def coherence(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
-    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pk01 = pk_fn(mesh0, mesh1, comp=comp)  
-    ks, pk0 = pk_fn(mesh0, comp=comp[0])
-    ks, pk1 = pk_fn(mesh1, comp=comp[1])
-    return ks, pk01 / (pk0 * pk1)**.5
+    pow_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    ks, pow01 = pow_fn(mesh0, mesh1, comp=comp)  
+    ks, pow0 = pow_fn(mesh0, comp=comp[0])
+    ks, pow1 = pow_fn(mesh1, comp=comp[1])
+    return ks, pow01 / (pow0 * pow1)**.5
 
 
-def powtranscoh(mesh0, mesh1, box_shape, kedges:int | float | list=None, comp=(False, False)):
+def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
-    pk_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pk01 = pk_fn(mesh0, mesh1, comp=comp)  
-    ks, pk0 = pk_fn(mesh0, comp=comp[0])
-    ks, pk1 = pk_fn(mesh1, comp=comp[1])
-    return ks, pk1, (pk1 / pk0)**.5, pk01 / (pk0 * pk1)**.5
+    pow_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    ks, pow01 = pow_fn(mesh0, mesh1, comp=comp)  
+    ks, pow0 = pow_fn(mesh0, comp=comp[0])
+    ks, pow1 = pow_fn(mesh1, comp=comp[1])
+    return ks, pow1, (pow1 / pow0)**.5, pow01 / (pow0 * pow1)**.5
     
 
 
