@@ -32,13 +32,15 @@ def mwg_warmup(rng_key, state, logpdf, parameters, n_samples=0):
         def logpdf_k(value):
             return logpdf(union | value) # update component k
 
-        # give state[k] the right log_density NOTE: unnecessary if we only pass position to warmup
+        # give state[k] the right log_density 
+        # NOTE: unnecessary if we only pass position to warmup
         # state[k] = init_fn[k](
         #     position=state[k].position,
         #     logdensity_fn=logpdf_k
         # )
 
-        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **parameters[k], progress_bar=True)
+        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **parameters[k], progress_bar=False) 
+        # NOTE: Progress bar can yield "NotImplementedError: IO effect not supported in vmap-of-cond"
         rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
         (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
 
@@ -256,3 +258,165 @@ def get_NUTSwG_warm(logpdf, parameters, n_samples):
                    logpdf=logpdf, 
                    parameters=parameters, 
                    n_samples=n_samples)
+
+
+
+
+
+
+
+
+
+
+
+
+#########
+# MCLMC #
+#########
+import blackjax
+
+def MCLMC_run(key, init_state, logpdf, n_samples, transform):
+    init_key, tune_key, run_key = jr.split(key, 3)
+
+    # Create an initial state for the sampler
+    initial_state = blackjax.mcmc.mclmc.init(
+        position=init_state, logdensity_fn=logpdf, rng_key=init_key
+    )
+
+    # Build the kernel
+    kernel = blackjax.mcmc.mclmc.build_kernel(
+        logdensity_fn=logpdf,
+        integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
+    )
+
+    ########
+    # # Find values for L and step_size
+    # tunning = blackjax.adaptation.mclmc_adaptation.mclmc_find_L_and_step_size(
+    #     mclmc_kernel=kernel,
+    #     num_steps=n_samples,
+    #     state=initial_state,
+    #     rng_key=tune_key,
+    #     num_effective_samples=1024,
+    # )
+    # state_after_tuning, mclmc_sampler_params = tunning
+    # L = mclmc_sampler_params.L
+    # step_size = mclmc_sampler_params.step_size
+    # initial_state = state_after_tuning
+    ########
+
+    ########
+    L = 25
+    step_size = 2
+    initial_state = init_state
+    ########
+
+    # if not isinstance(initial_state, blackjax.mcmc.integrators.IntegratorState):
+    #     from jax import debug
+    #     debug.print("rep")
+    #     initial_state = mult_tree(initial_state, invmm**(-.5))
+    # tunning = (initial_state, {'L':L, 'step_size':step_size})
+
+
+    # use the quick wrapper to build a new kernel with the tuned parameters
+    sampling_alg = blackjax.mclmc(
+        logpdf,
+        L=L,
+        step_size=step_size,
+    )
+
+    # run the sampler
+    last_state, samples, info = blackjax.util.run_inference_algorithm(
+        rng_key = run_key,
+        initial_state_or_position = initial_state,
+        inference_algorithm = sampling_alg,
+        num_steps = n_samples,
+        transform = transform,
+        progress_bar = True,
+    )
+
+    # Register only relevant infos
+    infos = {"num_steps":jnp.ones(n_samples)}
+    return last_state, samples, infos
+
+def get_MCLMC_run(logdensity, n_samples, transform):
+    return partial(MCLMC_run, 
+                   logdensity = logdensity,
+                   n_samples = n_samples,
+                   transform = transform,)
+
+
+
+
+
+
+
+
+def run_mclmc(logdensity_fn, num_steps, initial_position, key, transform, desired_energy_variance= 5e-4):
+    init_key, tune_key, run_key = jr.split(key, 3)
+
+    # create an initial state for the sampler
+    initial_state = blackjax.mcmc.mclmc.init(
+        position=initial_position, logdensity_fn=logdensity_fn, rng_key=init_key
+    )
+
+    # build the kernel
+    kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
+        logdensity_fn=logdensity_fn,
+        integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
+        sqrt_diag_cov=sqrt_diag_cov,
+    )
+
+    # find values for L and step_size
+    (
+        blackjax_state_after_tuning,
+        blackjax_mclmc_sampler_params,
+    ) = blackjax.mclmc_find_L_and_step_size(
+        mclmc_kernel=kernel,
+        num_steps=num_steps,
+        state=initial_state,
+        rng_key=tune_key,
+        diagonal_preconditioning=False,
+        desired_energy_var=desired_energy_variance
+    )
+
+    # use the quick wrapper to build a new kernel with the tuned parameters
+    sampling_alg = blackjax.mclmc(
+        logdensity_fn,
+        L=blackjax_mclmc_sampler_params.L,
+        step_size=blackjax_mclmc_sampler_params.step_size,
+    )
+
+    # run the sampler
+    _, samples = blackjax.util.run_inference_algorithm(
+        rng_key=run_key,
+        initial_state=blackjax_state_after_tuning,
+        inference_algorithm=sampling_alg,
+        num_steps=num_steps,
+        transform=transform,
+        progress_bar=True,
+    )
+
+    return samples, blackjax_state_after_tuning, blackjax_mclmc_sampler_params, run_key
+
+
+
+
+logdensity = logp_fn
+transform = lambda x: x.position
+n_samples, n_runs, n_chains = 512, 5, 4
+# n_samples, n_runs, n_chains = 512, 100, 8
+save_path = save_dir + f"MCLMC_ns{n_samples:d}_test2"
+
+run_fn = jit(vmap(get_MCLMC_run(logdensity, n_samples, transform=transform)))
+key = jr.key(42)
+# last_state = init_params_
+last_state = tree_map(lambda x: x[:n_chains], init_params_)
+
+for i_run in range(1, n_runs+1):
+    print(f"run {i_run}/{n_runs}")
+    key, run_key = jr.split(key, 2)
+    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
+    samples = tree_map(lambda x: x[:,::2], samples)
+    infos = tree_map(lambda x: 2*x[:,::2], infos)
+    pdump(samples | infos, save_path+f"_{i_run}.p")
+    pdump(last_state, save_path+f"_laststate.p")

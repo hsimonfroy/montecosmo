@@ -290,10 +290,10 @@ class FieldLevelModel(Model):
         out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n"
         return out
 
-    def _model(self, temp=1.):
-        x = self.prior(temp=temp)
+    def _model(self, temp_prior=1., temp_lik=1.):
+        x = self.prior(temp=temp_prior)
         x = self.evolve(x)
-        return self.likelihood(x, temp=temp)
+        return self.likelihood(x, temp=temp_lik)
     
 
 
