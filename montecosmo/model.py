@@ -383,6 +383,8 @@ class FieldLevelModel(Model):
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
         return biased_mesh
+        # from jaxpm.growth import growth_factor
+        # return jnp.fft.irfftn(init['init_mesh']) * (1+bias['b1']) * growth_factor(cosmology, self.a_obs) + 1
 
 
     def likelihood(self, mesh, temp=1.):
@@ -395,7 +397,7 @@ class FieldLevelModel(Model):
         if self.obs == 'mesh':
             # Gaussian noise
             obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5))
-            return obs_mesh # NOTE: this is 1+delta_obs
+            return obs_mesh # NOTE: mesh is 1+delta_obs
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)

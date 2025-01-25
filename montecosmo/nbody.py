@@ -4,7 +4,7 @@ import numpy as np
 from jax import numpy as jnp, tree, debug, lax
 import jax_cosmo as jc
 from jax_cosmo import Cosmology
-from montecosmo.utils import ch2rshape
+from montecosmo.utils import ch2rshape, safe_div
 
 # from jaxpm.pm import pm_forces
 import jax_cosmo as jc
@@ -50,8 +50,7 @@ def invlaplace_kernel(kvec, fd=False):
         kk = sum((ki * np.sinc(ki / (2 * np.pi)))**2 for ki in kvec)
     else:
         kk = sum(ki**2 for ki in kvec)
-    kk_nozeros = np.where(kk==0, 1, kk) 
-    return - np.where(kk==0, 0, 1 / kk_nozeros)
+    return - safe_div(1, kk)
 
 
 def gradient_kernel(kvec, direction, fd=False):
@@ -120,7 +119,6 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
     init_force = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
     dq = growth_factor(cosmo, a) * init_force
     p = a**2 * growth_rate(cosmo, a) * E * dq
-    # f = a**2 * E * dGfa(cosmo, a) * init_force
 
     if order == 2:
         kvec = rfftk(mesh_shape)
@@ -143,13 +141,10 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
         init_force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
         dq2 = (3/7 * growth_factor_second(cosmo, a)) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2
-        # f2 = (a**2 * E * dGf2a(cosmo, a) * 3/7) * init_force2
 
         dq += dq2
         p  += p2
-        # f  += f2
 
-    # return dq, p, f
     return dq, p
 
 
@@ -188,7 +183,7 @@ def g2ff(cosmo, g):
     return jnp.interp(g, cache["g"], cache["f2"])
 
 
-def bullfrog_vf(cosmo:Cosmology, mesh_shape, dg, grad_fd=False, lap_fd=False):
+def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
     """
     BullFrog vector field.
     """
@@ -196,7 +191,7 @@ def bullfrog_vf(cosmo:Cosmology, mesh_shape, dg, grad_fd=False, lap_fd=False):
     def dggdg(cosmo, g):
         gg, f, ff = g2gg(cosmo, g)*-3/7, g2f(cosmo, g), g2ff(cosmo, g)
         # NOTE: g2gg is normalized such that gg = -3/7 * g2gg ~ -3/7 * g^2
-        return jnp.where(g==0., 0., gg * ff / (g * f))
+        return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
     
     def alpha(cosmo, g0, dg):
         '''See Eq. 2.3 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)'''
@@ -241,7 +236,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     dg = g / n_steps
     
     mesh_shape = ch2rshape(init_mesh.shape)
-    terms = ODETerm(bullfrog_vf(cosmo, mesh_shape, dg, grad_fd=grad_fd, lap_fd=lap_fd))
+    terms = ODETerm(bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd))
     solver = Euler()
 
     vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
@@ -254,7 +249,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     else: 
         saveat = SaveAt(ts=a2g(cosmo, jnp.asarray(snapshots)))   
 
-    sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat)
+    sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat) # cosmo as args may leak
     states = sol.ys
     # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
     return states
@@ -273,7 +268,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     gs = jnp.arange(n_steps) * dg
 
     mesh_shape = ch2rshape(init_mesh.shape)
-    vector_field = bullfrog_vf(cosmo, mesh_shape, dg, grad_fd=grad_fd, lap_fd=lap_fd)
+    vector_field = bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
 
     def step_fn(state, g0):
         vf = vector_field(g0, state, None)
@@ -300,9 +295,9 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 def diffrax_vf(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
     def vector_field(a, state, args):
         """
-        N-body ODE vector field for jax.experimental.ode
+        N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
 
-        state is a phase space state array [*position, *velocities]
+        state is a tuple (position, velocities)
         """
         pos, vel = state
         forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
@@ -319,7 +314,7 @@ def diffrax_vf(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
 def jax_ode_vf(mesh_shape, grad_fd=True, lap_fd=False):
     def vector_field(state, a, cosmo):
         """
-        N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
+        Return N-body ODE vector field for jax.experimental.ode
 
         state is a tuple (position, velocities)
         """

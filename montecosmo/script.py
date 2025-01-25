@@ -45,7 +45,7 @@ class ParseSlurmId():
         self.id = str(id)
 
         dic = {}
-        dic['mesh_length'] = [8,16,32,64,128]
+        dic['mesh_length'] = [8,16,32,64,128,130]
         dic['lpt_order'] = [0,1,2,3]
         dic['precond'] = [0,1,2,3]
         dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
