@@ -18,9 +18,9 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jaxpm.painting import cic_paint
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
                                gausslin_posterior, lin_power_mesh, 
-                               lagrangian_weights, rsd_bf, rsd_fpm) 
+                               lagrangian_weights, rsd_bf, rsd_fpm, kaiser_model) 
 from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
-from montecosmo.metrics import power_spectrum, powtranscoh
+from montecosmo.metrics import spectrum, powtranscoh
 from montecosmo.utils import pdump, pload
 
 from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div
@@ -33,9 +33,11 @@ default_config={
             'mesh_shape':3 * (64,), # int
             'box_shape':3 * (320.,), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
             # LSS formation
-            'a_lpt':0.1, 
+            'a_lpt':0.1, # TODO: remove
             'a_obs':0.5,
-            'lpt_order':1,
+            'lpt_order':1, # TODO: replace by options: kaiser, 1lpt, 2lpt, nbody/pm
+            'nbody_steps':5,
+            'snapshots':None,
             # Galaxies
             'gxy_density':1e-3, # in galaxy / (Mpc/h)^3
             # Prior config {name: [group, label, loc, scale, low, high]}
@@ -67,23 +69,11 @@ default_config={
                                     'loc':0.,
                                     'scale':2.,},
                         'init_mesh': {'group':'init',
-                                      'label':'{\\delta}_L',},}, # TODO: rajouter obs? so rename latent variables?
-            'obs':'mesh', # 'mesh', 'pk', 'plk', 'bk' # TODO
+                                      'label':'{\\delta}_L',},},
+            'obs':'field', # 'field', TODO: 'pow', 'powpoles', 'bipow'
             # Preconditioning mode
             'precond':3, # from 0 to 3
-            # PM                 
-            'nbody_steps':5,
-            'snapshots':None,
             }
-
-bench_config = {
-        # Chain subsampling
-        'n_cell':None,
-        'rng_key':jr.key(0),
-        'thinning':1,
-        # Power spectrum
-        'multipoles':[0,2,4],
-        }
 
 
 
@@ -267,8 +257,7 @@ class FieldLevelModel(Model):
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
-        self.prior_loc = self._prior_loc(base=True)
-        # TODO: add prior_loc_ for init chain? Can depends on precond guides
+        self.prior_loc = self._prior_loc()
 
         self.mesh_shape = np.asarray(self.mesh_shape) # avoid int overflow
         self.box_shape = np.asarray(self.box_shape)
@@ -344,14 +333,14 @@ class FieldLevelModel(Model):
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, pos, self.box_shape, **bias, **init)
+        # TODO: gaussian lagrangian weights
 
         if self.lpt_order > 0:
             # LPT displacement at a_lpt
-            # NOTE: lpt assumes given mesh follows linear pk at a=1, and then correct by growth factor for target a_lpt
+            # NOTE: lpt assumes given mesh follows linear spectral power at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
             dpos, vel = lpt(cosmology, **init, pos=pos, a=self.a_lpt, order=self.lpt_order, grad_fd=False, lap_fd=False)
             part = (pos + dpos, vel)
-            # particles = jnp.stack([q + dq, p])
 
             # PM displacement from a_lpt to a_obs
             part = nbody_tsit5(cosmology, self.mesh_shape, part, self.a_lpt, self.a_obs, 
@@ -383,8 +372,8 @@ class FieldLevelModel(Model):
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
         return biased_mesh
-        # from jaxpm.growth import growth_factor
-        # return jnp.fft.irfftn(init['init_mesh']) * (1+bias['b1']) * growth_factor(cosmology, self.a_obs) + 1
+        # Kaiser model
+        return kaiser_model(cosmology, self.a_obs, 1+bias['b1'], **init)
 
 
     def likelihood(self, mesh, temp=1.):
@@ -394,7 +383,7 @@ class FieldLevelModel(Model):
         Return an observed mesh sampled from a location mesh with observational variance.
         """
 
-        if self.obs == 'mesh':
+        if self.obs == 'field':
             # Gaussian noise
             obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5))
             return obs_mesh # NOTE: mesh is 1+delta_obs
@@ -422,8 +411,8 @@ class FieldLevelModel(Model):
         # Extract groups from params
         groups = ['cosmo','bias','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
-        params = Chains(params, self.groups | self.groups_).get(key)
-        cosmo_, bias_, init, rest = (q.data for q in params) # TODO: make it handle Chains?
+        params = Chains(params, self.groups | self.groups_).get(key) # use chain querying
+        cosmo_, bias_, init, rest = (q.data for q in params)
         # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
 
         # Cosmology and Biases
@@ -458,10 +447,6 @@ class FieldLevelModel(Model):
         dic = {}
         names = np.atleast_1d(names)
         for name in names:
-            # if name == 'init_mesh':
-            #     scale = jnp.ones(self.mesh_shape)
-            # else:
-            #     scale = 1
             name = name if base else name+'_'
             dic[name] = sample(name, dist.Normal(0, 1))
         return dic
@@ -504,16 +489,11 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
     
-    def _prior_loc(self, base=True):
+    def _prior_loc(self):
         """
         Return location values from latents config.
         """
-        locs = {}
-        for name, val in self.latents.items():
-            loc = val.get('loc')
-            if loc is not None:
-                locs[name] = loc if base else jnp.zeros_like(loc)
-        return locs
+        return {k:v['loc'] for k,v in self.latents.items() if 'loc' in v}
     
     @property
     def delta_obs(self):
@@ -550,9 +530,9 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), multipoles=0, los=[0.,0.,1.]):
-        return power_spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                            kedges=kedges, comp=comp, multipoles=multipoles, los=los)
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0, los=(0.,0.,1.)):
+        return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
+                            kedges=kedges, comp=comp, poles=poles, los=los)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int | float | list=None, comp=(False, False)):
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
@@ -571,6 +551,7 @@ class FieldLevelModel(Model):
         return chains
     
     def init_model(self, rng, base=False, temp=1.):
+        # TODO: pass delta_obs manually since no need in precond, and remove it as property. It can cause constant folding
         # Fix cosmology and biases to prior location
         cosmology = get_cosmology(**self.prior_loc)
         b1 = self.prior_loc['b1']

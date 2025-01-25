@@ -1,11 +1,15 @@
 import numpy as np
 import jax.numpy as jnp
+from functools import partial
+
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 from jaxpm.kernels import cic_compensation
+
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
-from functools import partial
 # from blackjax.diagnostics import effective_sample_size
+from jax_cosmo import Cosmology
+
 
 
 
@@ -112,13 +116,12 @@ def _initialize_spectrum(mesh_shape, box_shape, kedges, los):
         kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
         mumesh = np.where(kmesh==0, 0, mumesh / kmesh_nozeros)
 
-    
     return dig, kcount, kavg, mumesh
 
 
-def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, comp=(False, False), multipoles=0, los=[0.,0.,1.]):
+def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, comp=(False, False), poles=0, los=(0.,0.,1.)):
     """
-    Compute the auto and cross spectrum of 3D fields, with multipoles.
+    Compute the auto and cross spectrum of 3D fields, with multipole.
     """
     # Initialize
     mesh_shape = np.array(mesh.shape)
@@ -127,12 +130,12 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     else:
         box_shape = np.asarray(box_shape)
 
-    if multipoles==0:
+    if poles==0:
         los = None
     else:
         los = np.asarray(los)
         los /= np.linalg.norm(los)
-    poles = np.atleast_1d(multipoles)
+    poles = np.atleast_1d(poles)
 
     if isinstance(comp, int):
         comp = (comp, comp)
@@ -147,7 +150,7 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
             for m, kshape in zip(mesh_shape, kshapes)] # cell units
         # kvec = fftk(mesh_shape)
-        mesh *= cic_compensation(kvec) # TODO: rfftn, and remove shot noise before compensation 
+        mesh *= cic_compensation(kvec) # TODO: rfftn
 
     if mesh2 is None:
         mmk = mesh.real**2 + mesh.imag**2
@@ -162,31 +165,31 @@ def power_spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         mmk = mesh * mesh2.conj()
 
     # Sum powers
-    pk = jnp.empty((len(poles), n_bins))
+    pow = jnp.empty((len(poles), n_bins))
     for i_ell, ell in enumerate(poles):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh)).reshape(-1)
         if mesh2 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)
-        else: # XXX: bincount is really slow with complex numbers
+        else: # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
             psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
             psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
             psum = (psum_real**2 + psum_imag**2)**.5
-        pk = pk.at[i_ell].set(psum)
+        pow = pow.at[i_ell].set(psum)
 
     # Normalization and conversion from cell units to [Mpc/h]^3
-    pk = (pk / kcount)[:,1:-1] * (box_shape / mesh_shape).prod()
+    pow = (pow / kcount)[:,1:-1] * (box_shape / mesh_shape).prod()
 
     # pk = jnp.concatenate([kavg[None], pk])
-    if np.ndim(multipoles)==0:
-        return kavg, pk[0]
+    if los is None:
+        return kavg, pow[0]
     else:
-        return kavg, pk
+        return kavg, pow
   
 
 def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
-    pow_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
     ks, pow0 = pow_fn(mesh0, comp=comp[0])
     ks, pow1 = pow_fn(mesh1, comp=comp[1])
     return ks, (pow1 / pow0)**.5
@@ -195,7 +198,7 @@ def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, F
 def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
-    pow_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
     ks, pow01 = pow_fn(mesh0, mesh1, comp=comp)  
     ks, pow0 = pow_fn(mesh0, comp=comp[0])
     ks, pow1 = pow_fn(mesh1, comp=comp[1])
@@ -205,7 +208,7 @@ def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, 
 def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
         comp = (comp, comp)
-    pow_fn = partial(power_spectrum, box_shape=box_shape, kedges=kedges)
+    pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
     ks, pow01 = pow_fn(mesh0, mesh1, comp=comp)  
     ks, pow0 = pow_fn(mesh0, comp=comp[0])
     ks, pow1 = pow_fn(mesh1, comp=comp[1])
@@ -220,26 +223,29 @@ def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False
 
 
 
-def kaiser_formula(cosmo, a, pk_init, bias, multipoles=0):
-    multipoles = jnp.atleast_1d(multipoles)
-    a = jnp.atleast_1d(a)
-    beta = growth_rate(cosmo, a) / bias
-    k = pk_init[...,0,:]
-    pk0 = pk_init[...,1,:] * growth_factor(cosmo, a)**2
-    # f = growth_rate(cosmo, a)
+def kaiser_formula(cosmo:Cosmology, a, init_kpow, bE, poles=0):
+    """
+    bE is the Eulerien linear bias
+    """
+    poles = jnp.atleast_1d(poles)
+    beta = growth_rate(cosmo, a) / bE
+    k, pow = init_kpow
+    pow *= growth_factor(cosmo, a)**2
 
-    pk = np.empty((len(multipoles), *pk0.shape))
-    for i_ell, ell in enumerate(multipoles):
+    weights = np.ones(len(poles)) * bE**2
+    for i_ell, ell in enumerate(poles):
         if ell==0:
-            pk[i_ell] = (1 + beta * 2/3 + beta**2 /5) * bias**2 * pk0 
+            weights[i_ell] *= (1 + beta * 2/3 + beta**2 /5)
         elif ell==2:
-            pk[i_ell] = (beta * 4/3 + beta**2 *4/7) * bias**2 * pk0 
+            weights[i_ell] *= (beta * 4/3 + beta**2 *4/7) 
         elif ell==4:
-            pk[i_ell] = beta**2 * 8/35 * bias**2 * pk0 
+            weights[i_ell] *= beta**2 * 8/35
         else: 
             raise NotImplementedError(
-                "Handle only multipoles of order ell=0, 2 ,4. ell={ell} not implemented.") 
-    return jnp.concatenate([k[None], pk])
+                "Handle only poles of order ell=0, 2 ,4. ell={ell} not implemented.")
+        
+    pow = jnp.moveaxis(pow[...,None] * weights, -1, -2)
+    return k, pow
 
 
 # def legendre(ell, x):
@@ -346,7 +352,7 @@ def geomean(x, axis=None):
     return jnp.exp(jnp.mean(jnp.log(x), axis=axis))
 
 def harmean(x, axis=None):
-    return 1/jnp.mean(1/x, axis=axis)
+    return 1 / jnp.mean(1 / x, axis=axis)
 
 def multi_ess(x, axis=None):
     return harmean(effective_sample_size(x), axis=axis)

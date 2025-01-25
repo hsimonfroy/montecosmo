@@ -53,7 +53,7 @@ class ParseSlurmId():
         dic['box_length'] = [None]
         dic['a_lpt'] = [0.1]
         dic['a_obs'] = [0.5]
-        dic['obs'] = ['mesh']
+        dic['obs'] = ['field']
         
         for i, (k, v) in enumerate(dic.items()):
             if i < len(self.id):
@@ -103,7 +103,7 @@ def get_mcmc(model, config):
 
 
 def get_init_mcmc(model, n_chains=8):
-    n_samples = 48
+    n_samples = 64
     
     kernel = infer.NUTS(
         model=model,

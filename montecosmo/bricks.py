@@ -65,9 +65,8 @@ def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
     pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
-
-    D1 = growth_factor(cosmo, jnp.atleast_1d(a))
-    evolve = (1 + b1) * D1 # linear Eulerian bias = 1 + linear Lagrangian bias
+    evolve = (1 + b1) * growth_factor(cosmo, a) # Eulerian linear bias = 1 + Lagrangian linear bias
+    # TODO: add rsd with kaiser model?
 
     stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
     # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
@@ -204,7 +203,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
         w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
     """    
     # Get init_mesh at observation scale factor
-    init_mesh = init_mesh * growth_factor(cosmo, jnp.atleast_1d(a))
+    init_mesh = init_mesh * growth_factor(cosmo, a)
     if jnp.isrealobj(init_mesh):
         delta = init_mesh
         delta_k = jnp.fft.rfftn(delta)
@@ -271,7 +270,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-def rsd_bf(cosmo:Cosmology, a, p, los=[0,0,1]):
+def rsd_bf(cosmo:Cosmology, a, p, los=(0.,0.,1.)):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
@@ -285,12 +284,11 @@ def rsd_bf(cosmo:Cosmology, a, p, los=[0,0,1]):
     return dx_rsd
 
 
-def rsd_fpm(cosmo:Cosmology, a, p, los=[0,0,1]):
+def rsd_fpm(cosmo:Cosmology, a, p, los=(0.,0.,1.)):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
     """
-    a = jnp.atleast_1d(a)
     los = np.asarray(los)
     los = los / np.linalg.norm(los)
     # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
@@ -302,32 +300,27 @@ def rsd_fpm(cosmo:Cosmology, a, p, los=[0,0,1]):
 
 
 
-from numpyro import sample, distributions as dist
-def kaiser_weights(cosmo:Cosmology, a, mesh_shape, los):
-    b = sample('b', dist.Normal(2, 0.25))
-    a = jnp.atleast_1d(a)
+def kaiser_weights(cosmo:Cosmology, a, bE, mesh_shape, los=(0.,0.,1.)):
+    """
+    Return Kaiser Eulerian bias weights including linear bias and RSD.
+    """
     los = jnp.asarray(los)
     los = los / np.linalg.norm(los)
 
     kvec = rfftk(mesh_shape)
     kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
-
     mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
-    kmesh_nozeros = jnp.where(kmesh==0, 1, kmesh) 
-    mumesh = jnp.where(kmesh==0, 0, mumesh / kmesh_nozeros )
+    mumesh = safe_div(mumesh, kmesh)
 
-    return b + growth_rate(cosmo, a) * mumesh**2
+    return bE + growth_rate(cosmo, a) * mumesh**2
 
 
-def apply_kaiser_bias(cosmo:Cosmology, a, init_mesh, los=[0,0,1]):
-    # Get init_mesh at observation scale factor
-    a = jnp.atleast_1d(a)
-    init_mesh = init_mesh * growth_factor(cosmo, a)
-
-    # Apply eulerian kaiser bias weights
-    weights = kaiser_weights(cosmo, a, init_mesh.shape, los)
-    delta_k = jnp.fft.rfftn(init_mesh)
-    kaiser_mesh = jnp.fft.irfftn(weights * delta_k)
-    return kaiser_mesh
+def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,1.)):
+    """
+    Kaiser model, with linear growth, Eulerian linear bias, and RSD.
+    """
+    weights = kaiser_weights(cosmo, a, bE, init_mesh.shape, los)
+    init_mesh *= growth_factor(cosmo, a) * weights
+    return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
 
 
