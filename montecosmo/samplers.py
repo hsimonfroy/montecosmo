@@ -285,40 +285,46 @@ def mclmc_run(key, init_pos, logpdf, n_samples, config=None, transform=None, des
 
 
     if config is None:
+
+    #     # Build the kernel
+    #     kernel = blackjax.mcmc.mclmc.build_kernel(
+    #         logdensity_fn=logpdf,
+    #         integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
+    #         # integrator=blackjax.mcmc.integrators.isokinetic_velocity_verlet,
+    #         # integrator=blackjax.mcmc.integrators.isokinetic_leapfrog,
+    #     )
+
+    #     # Find values for L and step_size
+    #     print("finding L")
+    #     state, config = blackjax.mclmc_find_L_and_step_size(
+    #         mclmc_kernel=kernel,
+    #         num_steps=n_samples,
+    #         state=state,
+    #         rng_key=tune_key,
+    #         # num_effective_samples=1024,
+    #         num_effective_samples=256,
+    #         frac_tune3=0.5
+    #     )
+
         # Build the kernel
-        kernel = blackjax.mcmc.mclmc.build_kernel(
+        kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logpdf,
             integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-            # integrator=blackjax.mcmc.integrators.isokinetic_velocity_verlet,
-            # integrator=blackjax.mcmc.integrators.isokinetic_leapfrog,
+            sqrt_diag_cov=sqrt_diag_cov,
         )
 
         # Find values for L and step_size
+        print("finding L, ss, mm")
         state, config = blackjax.mclmc_find_L_and_step_size(
             mclmc_kernel=kernel,
             num_steps=n_samples,
             state=state,
             rng_key=tune_key,
-            num_effective_samples=1024,
-        )
-
-        # # Build the kernel
-        # kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
-        #     logdensity_fn=logpdf,
-        #     integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-        #     sqrt_diag_cov=sqrt_diag_cov,
-        # )
-
-        # # Find values for L and step_size
-        # state, config = blackjax.mclmc_find_L_and_step_size(
-        #     mclmc_kernel=kernel,
-        #     num_steps=n_samples,
-        #     state=state,
-        #     rng_key=tune_key,
-        #     diagonal_preconditioning=False,
-        #     desired_energy_var=desired_energy_variance
-        #     # num_effective_samples=200,
-        #     )
+            diagonal_preconditioning=True,
+            desired_energy_var=desired_energy_variance,
+            num_effective_samples=256,
+            frac_tune3=0.5
+            )
 
 
         L = config.L
@@ -345,8 +351,8 @@ def mclmc_run(key, init_pos, logpdf, n_samples, config=None, transform=None, des
     last_state, samples, info = blackjax.util.run_inference_algorithm(
     # last_state, samples = blackjax.util.run_inference_algorithm(
         rng_key=run_key,
-        # initial_state=state,
-        initial_state_or_position=state,
+        initial_state=state,
+        # initial_state_or_position=state,
         inference_algorithm=sampler,
         num_steps=n_samples,
         transform=transform,
@@ -354,7 +360,7 @@ def mclmc_run(key, init_pos, logpdf, n_samples, config=None, transform=None, des
     )
     
     # Register only relevant infos
-    n_eval_per_steps = 2 # 1 for velocity verlet, 2 for mclachlan
+    n_eval_per_steps = 2 # 1 for velocity_verlet, 2 for mclachlan
     infos = {"n_evals": n_eval_per_steps * jnp.ones(n_samples)}
 
     return samples, infos, last_state, config
