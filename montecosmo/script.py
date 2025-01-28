@@ -31,8 +31,8 @@ def from_id(id):
         'target_accept_prob':0.65,
         'n_samples':64 if args.sampler == 'NUTSwG' else 64, #
         'max_tree_depth':10,
-        'n_runs':10,
-        'n_chains':8,
+        'n_runs':1,
+        'n_chains':2,
     }
     save_path = save_dir 
     save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
@@ -103,7 +103,7 @@ def get_mcmc(model, config):
 
 
 def get_init_mcmc(model, n_chains=8):
-    n_samples = 64
+    n_samples = 32
     
     kernel = infer.NUTS(
         model=model,

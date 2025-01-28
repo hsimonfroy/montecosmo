@@ -70,7 +70,8 @@ default_config={
                                     'scale':2.,},
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},},
-            'obs':'field', # 'field', TODO: 'pow', 'powpoles', 'bipow'
+            'obs':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
+            # 'poles':(0,2,4), # for powspec
             # Preconditioning mode
             'precond':3, # from 0 to 3
             }

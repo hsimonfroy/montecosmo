@@ -495,10 +495,12 @@ class Chains(Samples):
     def print_summary(self, group_by_chain=True):
         print_summary(self.data, group_by_chain=group_by_chain)
 
-    def plot(self, groups:str|list, batch_ndim=2):
+    def plot(self, groups:str|list=None, batch_ndim=2):
         """
         groups can be variable name or group name
         """
+        if groups is None:
+            groups = list(self)
         groups = list(np.atleast_1d(groups))
         n_conc = max(batch_ndim-1, 0)
         def conc_fn(v):

@@ -229,7 +229,7 @@ from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
 def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
               grad_fd=False, lap_fd=False, snapshots:int|list=None):
     """
-    BullFrog N-body simulation.
+    N-body simulation with BullFrog solver.
     """
     n_steps = int(n_steps)
     g = a2g(cosmo, a)
@@ -261,7 +261,8 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
               grad_fd=False, lap_fd=False, snapshots:int|list=None):
     """
-    No-diffrax version of BullFrog N-body solver. Simpler but does not optimize for memory usage.
+    No-diffrax version of N-body simulation with BullFrog solver. 
+    Simpler but does not optimize for memory usage with binomial checkpointing.
     """
     g = a2g(cosmo, a)
     dg = g / n_steps
@@ -292,13 +293,13 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 
 
 
-def diffrax_vf(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
-    def vector_field(a, state, args):
-        """
-        N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
+def diffrax_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
+    """
+    N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
 
-        state is a tuple (position, velocities)
-        """
+    vector field signature is (a, state, args) -> dstate, where state is a tuple (position, velocities)
+    """
+    def vector_field(a, state, args):
         pos, vel = state
         forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
 
@@ -306,26 +307,19 @@ def diffrax_vf(cosmo:Cosmology, mesh_shape,  grad_fd=True, lap_fd=False):
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
         # Computes the update of velocity (kick)
         dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
-        # return jnp.stack([dpos, dvel])
         return dpos, dvel
     return vector_field
 
 
-def jax_ode_vf(mesh_shape, grad_fd=True, lap_fd=False):
-    def vector_field(state, a, cosmo):
-        """
-        Return N-body ODE vector field for jax.experimental.ode
+def jax_ode_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
+    """
+    Return N-body ODE vector field for jax.experimental.ode.odeint
 
-        state is a tuple (position, velocities)
-        """
-        pos, vel = state
-        forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
-        
-        # Computes the update of position (drift)
-        dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
-        # Computes the update of velocity (kick)
-        dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
-        return dpos, dvel
+    vector field signature is (state, a, *args) -> dstate, where state is a tuple (position, velocities)
+    """
+    vf = diffrax_vf(cosmo, mesh_shape, grad_fd, lap_fd)
+    def vector_field(state, a, *args):
+        return vf(a, state, args)
     return vector_field
 
 

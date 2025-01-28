@@ -11,6 +11,7 @@ import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallo
 import matplotlib.pyplot as plt
 import numpy as np
 from jax import numpy as jnp, random as jr, jit, vmap, grad, debug, tree
+# import jax; jax.config.update("jax_enable_x64", True)
 
 from functools import partial
 from getdist import plots
@@ -38,7 +39,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 ################## TO SET #######################
 task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-# task_id = 2330
+# task_id = 2130
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
@@ -97,36 +98,43 @@ if continue_run:
     model.block()
     mcmc = get_mcmc(model.model, mcmc_config)
 
-    last_state = pload(save_path + "_last_state.p")
+    state = pload(save_path + "_last_state.p")
     mcmc.num_warmup = 0
-    mcmc.post_warmup_state = last_state
+    mcmc.post_warmup_state = state
     init_params_ = None
 else:
     model.reset()
     model.condition({'obs': truth['obs']} | model.prior_loc, frombase=True)
     model.block()
 
-
     mcmc = get_init_mcmc(model.model, mcmc_config['n_chains'])    
     print("# Warmupping...")
-    init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(43), mcmc.num_chains))
+    init_params_ = jit(vmap(model.init_model))(jr.split(jr.key(45), mcmc.num_chains))
+    # init_params_ = model.predict(45, samples=mcmc.num_chains, hide_samp=False)
+
+
     init_mesh_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
     mcmc = sample_and_save(mcmc, save_path+'_init', 0, 0, extra_fields=['num_steps'], init_params=init_mesh_)
+    ils = mcmc.last_state.z
+    
+    # ils = pload(save_path + "_init_last_state.p").z
+    # ils = {k: jnp.broadcast_to(v, (mcmc_config['n_chains'], *jnp.shape(v))) for k, v in truth.items()}
+    # ils = {k+'_': ils[k+'_'] for k in ['Omega_m','sigma8','b1','b2','bs2','bn2','init_mesh']}
+
 
     ################
     from montecosmo.plot import plot_pow, plot_powtranscoh, plot_coh
-    ils = mcmc.last_state
     mesh0 = jnp.fft.irfftn(truth['init_mesh'])
     kptcs__ = vmap(lambda x: model.powtranscoh(mesh0, model.reparam(x, fourier=False)['init_mesh']))(init_params_)
-    kptcs_ = vmap(lambda x: model.powtranscoh(mesh0, model.reparam(x, fourier=False)['init_mesh']))(init_params_ | ils.z)
+    kptcs_ = vmap(lambda x: model.powtranscoh(mesh0, model.reparam(x, fourier=False)['init_mesh']))(init_params_ | ils)
     kpk0 = model.spectrum(mesh0)
-    kptc_ref = model.powtranscoh(mesh0, truth['obs'] - 1)
+    kptc_obs = model.powtranscoh(mesh0, truth['obs'] - 1)
     kpkobs = model.spectrum(truth['obs']-1)
     
-    print(ils.z.keys(), init_params_.keys())
+    print(ils.keys(), init_params_.keys())
 
     mse__ = jnp.mean((vmap(lambda x: model.reparam(x, fourier=False))(init_params_)['init_mesh']  - mesh0)**2, axis=(1,2,3))
-    mse_ = jnp.mean((vmap(lambda x: model.reparam(x, fourier=False))(init_params_ | ils.z)['init_mesh']  - mesh0)**2, axis=(1,2,3))
+    mse_ = jnp.mean((vmap(lambda x: model.reparam(x, fourier=False))(init_params_ | ils)['init_mesh']  - mesh0)**2, axis=(1,2,3))
     print("MSEs:", mse_, mse_)
 
     prob = 0.95
@@ -137,23 +145,27 @@ else:
     plot_powtranscoh(*kptcs_, fill=prob)
     plt.subplot(131)
     plot_pow(*kpk0, 'k', label='true')
-    plot_pow(*kpkobs, 'k:', label='obs')
-    plt.subplot(133)
-    plot_coh(kptc_ref[0], kptc_ref[-1], ':', c='grey', label='ref')
+    plot_pow(*kpkobs, ':', c='grey', label='obs')
     plt.legend()
+    plt.subplot(133)
+    plot_coh(kptc_obs[0], kptc_obs[-1], ':', c='grey', label='obs')
     plt.tight_layout()
-    plt.savefig(save_dir+f'initpk_{task_id}.png')
+    # plt.savefig(save_dir+f'initpk_{task_id}.png')
+    plt.savefig(f'init_glin_{task_id}.png')
 
-    print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, 
-          "\nss:", mcmc.last_state.adapt_state.step_size, 
-          "\nmm_sqrt:", mcmc.last_state.adapt_state.mass_matrix_sqrt)
+    last_state = pload(save_path + "_init_last_state.p")
+    print("mean_acc_prob:", last_state.mean_accept_prob, 
+        "\nss:", last_state.adapt_state.step_size, 
+        "\nmm_sqrt:", last_state.adapt_state.mass_matrix_sqrt)
     ################
     
-    init_params_ |= mcmc.last_state.z
+    init_params_ |= ils
+    # init_params_ |= mcmc.last_state.z
     print(init_params_.keys())
     model.reset()
     model.condition({'obs': truth['obs']})
     model.block()
+
 
 
 # In[ ]:
@@ -164,48 +176,30 @@ if mcmc_config['sampler'] != 'NUTSwG':
     mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
 
 else:
-    from montecosmo.samplers import NUTSwG_init, get_NUTSwG_warm, get_NUTSwG_run
+    from montecosmo.samplers import nutswg_init, get_nutswg_warm, get_nutswg_run
 
-    step_fn, init_fn, parameters, init_state_fn = NUTSwG_init(model.logpdf)
-    warmup_fn = jit(vmap(get_NUTSwG_warm(model.logpdf, parameters, mcmc_config['n_samples'])))
-    last_state = jit(vmap(init_state_fn))(init_params_)
+    step_fn, init_fn, conf, init_state_fn = nutswg_init(model.logpdf)
+    warmup_fn = jit(vmap(get_nutswg_warm(model.logpdf, conf, mcmc_config['n_samples'])))
+    state = jit(vmap(init_state_fn))(init_params_)
     # last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
 
 
-    (last_state, parameters), samples, infos = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), last_state)
-    print("parameters:", parameters,
+    samples, infos, state, config = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), state)
+    print("conf:", conf,
             "infos:", infos, '\n#################\n')
     jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
-    pdump(last_state, save_path+f"_last_state.p")
-    # pdump(parameters, save_path+'_parameters.p'), pdump(tree.map(jnp.mean, infos), save_path+'_infos.p')
+    pdump(state, save_path+f"_last_state.p")
+    pdump(conf, save_path+'_conf.p'), pdump(tree.map(jnp.mean, infos), save_path+'_infos.p')
 
-    run_fn = jit(vmap(get_NUTSwG_run(model.logpdf, step_fn, init_fn, mcmc_config['n_samples'])))
+    run_fn = jit(vmap(get_nutswg_run(model.logpdf, step_fn, init_fn, mcmc_config['n_samples'])))
     start = 1
     end = start + mcmc_config['n_runs']-1
     key = jr.key(42)
     for i_run in range(start, end+1):
         print(f"run {i_run}/{end}")
         key, run_key = jr.split(key, 2)
-        last_state, samples, infos = run_fn(jr.split(run_key, mcmc_config['n_chains']), last_state, parameters=parameters)
+        samples, infos, state, _ = run_fn(jr.split(run_key, mcmc_config['n_chains']), state, conf=conf)
         print("infos:", infos)
         jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
-        pdump(last_state, save_path+f"_last_state.p")
-
-
-# In[ ]:
-
-
-# model.reset()
-# model.condition({'obs': truth['obs']})
-# model.block()
-# mcmc = get_mcmc(model.model, mcmc_config)
-# init_params_ = {k+'_': jnp.broadcast_to(truth[k+'_'], (mcmc_config['n_chains'], *jnp.shape(truth[k+'_']))) for k in ['Omega_m','sigma8','b1','b2','bs2','bn2','init_mesh']}
-
-# mcmc_runned = sample_and_save(mcmc, mcmc_config['n_runs'], save_path, extra_fields=['num_steps'], init_params=init_params_)
-
-
-# In[ ]:
-
-
-
+        pdump(state, save_path+f"_last_state.p")
 

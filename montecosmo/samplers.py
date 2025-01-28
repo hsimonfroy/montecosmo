@@ -1,18 +1,18 @@
 
 import jax.numpy as jnp
 import jax.random as jr
-from jax import jit, vmap, grad, debug, lax, flatten_util
-from jax.tree_util import tree_map
+from jax import jit, vmap, grad, debug, lax, tree
 from functools import partial
 
 import blackjax
 import blackjax.progress_bar
+from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
 #########################
 # HMC/NUTS within Gibbs #
 #########################
 
-def mwg_warmup(rng_key, state, logpdf, parameters, n_samples=0):
+def mwg_warmup(rng_key, state, logpdf, config, n_samples=0):
     rng_keys = jr.split(rng_key, num=len(state))
     rng_keys = dict(zip(state.keys(), rng_keys))
 
@@ -39,8 +39,8 @@ def mwg_warmup(rng_key, state, logpdf, parameters, n_samples=0):
         #     logdensity_fn=logpdf_k
         # )
 
-        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **parameters[k], progress_bar=False) 
-        # NOTE: Progress bar can yield "NotImplementedError: IO effect not supported in vmap-of-cond"
+        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **config[k], progress_bar=False) 
+        # NOTE: window adapt progress bar can yield "NotImplementedError: IO effect not supported in vmap-of-cond"
         rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
         (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
 
@@ -56,7 +56,7 @@ def mwg_warmup(rng_key, state, logpdf, parameters, n_samples=0):
 
 
 
-def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, parameters):
+def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, config):
     """
     General MWG kernel.
 
@@ -76,8 +76,8 @@ def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, parameters):
     init_fn
         Dictionary with the same keys as ``state``,
         each elemtn of chi is an MCMC initializer corresponding to the stepping functions in `step_fn`.
-    parameters
-        Dictionary with the same keys as ``state``, each of which is a dictionary of parameters to
+    config
+        Dictionary with the same keys as ``state``, each of which is a dictionary of config parameters to
         the MCMC algorithm for the corresponding component.
 
     Returns
@@ -112,7 +112,7 @@ def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, parameters):
             rng_key=rng_keys[k],
             state=state[k],
             logdensity_fn=logpdf_k,
-            **parameters[k]
+            **config[k]
         )
 
         # register only relevant infos
@@ -125,7 +125,7 @@ def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, parameters):
     
 
 
-def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, parameters, n_samples):
+def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, config, n_samples):
     
     @blackjax.progress_bar.progress_bar_scan(n_samples)
     def one_step(state, xs):
@@ -136,7 +136,7 @@ def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, para
             logpdf=logpdf,
             step_fn=step_fn,
             init_fn=init_fn,
-            parameters=parameters
+            config=config
         )
         # positions = {k: state[k].position for k in state.keys()}
         union = {}
@@ -153,13 +153,13 @@ def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, para
 
 
 
-def NUTSwG_init(logpdf, kernel="NUTS"):
+def nutswg_init(logpdf, kernel="NUTS"):
     init_ss = 1e-3
     target_acc_rate = 0.65
 
     if kernel == "HMC":
         ker_api = blackjax.hmc
-        parameters = {
+        config = {
             "mesh_": {
                 'target_acceptance_rate': target_acc_rate,
                 'initial_step_size': init_ss,
@@ -177,7 +177,7 @@ def NUTSwG_init(logpdf, kernel="NUTS"):
         }
     elif kernel == "NUTS":
         ker_api = blackjax.nuts
-        parameters = {
+        config = {
             "mesh_": {
                 'target_acceptance_rate': target_acc_rate,
                 'initial_step_size': init_ss,
@@ -211,7 +211,7 @@ def NUTSwG_init(logpdf, kernel="NUTS"):
     def init_state_fn(init_pos):
         return get_init_state(init_pos, logpdf, init_fn)
 
-    return step_fn, init_fn, parameters, init_state_fn
+    return step_fn, init_fn, config, init_state_fn
 
 
 def get_init_state(init_pos, logpdf, init_fn):
@@ -230,33 +230,33 @@ def get_init_state(init_pos, logpdf, init_fn):
     return init_state
 
 
-def NUTSwG_run(rng_key, init_state, parameters, logpdf, step_fn, init_fn, n_samples):
+def nutswg_run(rng_key, init_state, config, logpdf, step_fn, init_fn, n_samples):
     last_state, (samples, infos) = sampling_loop_general(
                                 rng_key=rng_key,
                                 initial_state=init_state,
                                 logpdf=logpdf,
                                 step_fn=step_fn,
                                 init_fn=init_fn,
-                                parameters=parameters,
+                                config=config,
                                 n_samples=n_samples,)
-    return last_state, samples, infos
+    return samples, infos, last_state, config
 
-def get_NUTSwG_run(logpdf, step_fn, init_fn, n_samples):
-    return partial(NUTSwG_run, 
+def get_nutswg_run(logpdf, step_fn, init_fn, n_samples):
+    return partial(nutswg_run, 
                    logpdf=logpdf, 
                    step_fn=step_fn, 
                    init_fn=init_fn, 
                    n_samples=n_samples,)
 
 
-def NUTSwG_warm(rng_key, init_state, logpdf, parameters, n_samples):
-    (last_state, parameters), (samples, infos) = mwg_warmup(rng_key, init_state, logpdf, parameters, n_samples)
-    return (last_state, parameters), samples, infos
+def nutswg_warm(rng_key, init_state, logpdf, config, n_samples):
+    (last_state, config), (samples, infos) = mwg_warmup(rng_key, init_state, logpdf, config, n_samples)
+    return samples, infos, last_state, config
 
-def get_NUTSwG_warm(logpdf, parameters, n_samples):
-    return partial(NUTSwG_warm, 
+def get_nutswg_warm(logpdf, config, n_samples):
+    return partial(nutswg_warm, 
                    logpdf=logpdf, 
-                   parameters=parameters, 
+                   config=config, 
                    n_samples=n_samples)
 
 
@@ -273,150 +273,136 @@ def get_NUTSwG_warm(logpdf, parameters, n_samples):
 #########
 # MCLMC #
 #########
-import blackjax
-
-def MCLMC_run(key, init_state, logpdf, n_samples, transform):
+def mclmc_run(key, init_pos, logpdf, n_samples, config=None, transform=None, desired_energy_variance= 5e-4):
+    if transform is None:
+        transform = lambda x: x.position
     init_key, tune_key, run_key = jr.split(key, 3)
 
     # Create an initial state for the sampler
-    initial_state = blackjax.mcmc.mclmc.init(
-        position=init_state, logdensity_fn=logpdf, rng_key=init_key
+    state = blackjax.mcmc.mclmc.init(
+        position=init_pos, logdensity_fn=logpdf, rng_key=init_key
     )
 
-    # Build the kernel
-    kernel = blackjax.mcmc.mclmc.build_kernel(
-        logdensity_fn=logpdf,
-        integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-    )
 
-    ########
-    # # Find values for L and step_size
-    # tunning = blackjax.adaptation.mclmc_adaptation.mclmc_find_L_and_step_size(
-    #     mclmc_kernel=kernel,
-    #     num_steps=n_samples,
-    #     state=initial_state,
-    #     rng_key=tune_key,
-    #     num_effective_samples=1024,
-    # )
-    # state_after_tuning, mclmc_sampler_params = tunning
-    # L = mclmc_sampler_params.L
-    # step_size = mclmc_sampler_params.step_size
-    # initial_state = state_after_tuning
-    ########
+    if config is None:
+        # Build the kernel
+        kernel = blackjax.mcmc.mclmc.build_kernel(
+            logdensity_fn=logpdf,
+            integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
+            # integrator=blackjax.mcmc.integrators.isokinetic_velocity_verlet,
+            # integrator=blackjax.mcmc.integrators.isokinetic_leapfrog,
+        )
 
-    ########
-    L = 25
-    step_size = 2
-    initial_state = init_state
-    ########
+        # Find values for L and step_size
+        state, config = blackjax.mclmc_find_L_and_step_size(
+            mclmc_kernel=kernel,
+            num_steps=n_samples,
+            state=state,
+            rng_key=tune_key,
+            num_effective_samples=1024,
+        )
 
-    # if not isinstance(initial_state, blackjax.mcmc.integrators.IntegratorState):
-    #     from jax import debug
-    #     debug.print("rep")
-    #     initial_state = mult_tree(initial_state, invmm**(-.5))
-    # tunning = (initial_state, {'L':L, 'step_size':step_size})
+        # # Build the kernel
+        # kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
+        #     logdensity_fn=logpdf,
+        #     integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
+        #     sqrt_diag_cov=sqrt_diag_cov,
+        # )
+
+        # # Find values for L and step_size
+        # state, config = blackjax.mclmc_find_L_and_step_size(
+        #     mclmc_kernel=kernel,
+        #     num_steps=n_samples,
+        #     state=state,
+        #     rng_key=tune_key,
+        #     diagonal_preconditioning=False,
+        #     desired_energy_var=desired_energy_variance
+        #     # num_effective_samples=200,
+        #     )
 
 
-    # use the quick wrapper to build a new kernel with the tuned parameters
-    sampling_alg = blackjax.mclmc(
-        logpdf,
-        L=L,
-        step_size=step_size,
-    )
+        L = config.L
+        step_size = config.step_size
+        return state, config
 
-    # run the sampler
+    elif isinstance(config, dict):
+        L = config['L']
+        step_size = config['step_size']
+
+    elif isinstance(config, MCLMCAdaptationState):
+        L = config.L
+        step_size = config.step_size
+
+
+
+
+
+
+    # Use the quick wrapper to build a new kernel with the tuned parameters
+    sampler = blackjax.mclmc(logpdf,L=L, step_size=step_size,)
+
+    # Run the sampler
     last_state, samples, info = blackjax.util.run_inference_algorithm(
-        rng_key = run_key,
-        initial_state_or_position = initial_state,
-        inference_algorithm = sampling_alg,
-        num_steps = n_samples,
-        transform = transform,
-        progress_bar = True,
-    )
-
-    # Register only relevant infos
-    infos = {"num_steps":jnp.ones(n_samples)}
-    return last_state, samples, infos
-
-def get_MCLMC_run(logdensity, n_samples, transform):
-    return partial(MCLMC_run, 
-                   logdensity = logdensity,
-                   n_samples = n_samples,
-                   transform = transform,)
-
-
-
-
-
-
-
-
-def run_mclmc(logdensity_fn, num_steps, initial_position, key, transform, desired_energy_variance= 5e-4):
-    init_key, tune_key, run_key = jr.split(key, 3)
-
-    # create an initial state for the sampler
-    initial_state = blackjax.mcmc.mclmc.init(
-        position=initial_position, logdensity_fn=logdensity_fn, rng_key=init_key
-    )
-
-    # build the kernel
-    kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
-        logdensity_fn=logdensity_fn,
-        integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-        sqrt_diag_cov=sqrt_diag_cov,
-    )
-
-    # find values for L and step_size
-    (
-        blackjax_state_after_tuning,
-        blackjax_mclmc_sampler_params,
-    ) = blackjax.mclmc_find_L_and_step_size(
-        mclmc_kernel=kernel,
-        num_steps=num_steps,
-        state=initial_state,
-        rng_key=tune_key,
-        diagonal_preconditioning=False,
-        desired_energy_var=desired_energy_variance
-    )
-
-    # use the quick wrapper to build a new kernel with the tuned parameters
-    sampling_alg = blackjax.mclmc(
-        logdensity_fn,
-        L=blackjax_mclmc_sampler_params.L,
-        step_size=blackjax_mclmc_sampler_params.step_size,
-    )
-
-    # run the sampler
-    _, samples = blackjax.util.run_inference_algorithm(
+    # last_state, samples = blackjax.util.run_inference_algorithm(
         rng_key=run_key,
-        initial_state=blackjax_state_after_tuning,
-        inference_algorithm=sampling_alg,
-        num_steps=num_steps,
+        # initial_state=state,
+        initial_state_or_position=state,
+        inference_algorithm=sampler,
+        num_steps=n_samples,
         transform=transform,
         progress_bar=True,
     )
+    
+    # Register only relevant infos
+    n_eval_per_steps = 2 # 1 for velocity verlet, 2 for mclachlan
+    infos = {"n_evals": n_eval_per_steps * jnp.ones(n_samples)}
 
-    return samples, blackjax_state_after_tuning, blackjax_mclmc_sampler_params, run_key
+    return samples, infos, last_state, config
 
 
 
 
-logdensity = logp_fn
-transform = lambda x: x.position
-n_samples, n_runs, n_chains = 512, 5, 4
-# n_samples, n_runs, n_chains = 512, 100, 8
-save_path = save_dir + f"MCLMC_ns{n_samples:d}_test2"
+def get_mclmc_run(logpdf, n_samples, config=None, transform=None, desired_energy_variance= 5e-4):
+    return partial(mclmc_run, 
+                   logpdf=logpdf,
+                   n_samples=n_samples,
+                   config=config,
+                   transform=transform,
+                   desired_energy_variance=desired_energy_variance,)
 
-run_fn = jit(vmap(get_MCLMC_run(logdensity, n_samples, transform=transform)))
-key = jr.key(42)
-# last_state = init_params_
-last_state = tree_map(lambda x: x[:n_chains], init_params_)
 
-for i_run in range(1, n_runs+1):
-    print(f"run {i_run}/{n_runs}")
-    key, run_key = jr.split(key, 2)
-    last_state, samples, infos = run_fn(jr.split(run_key, n_chains), last_state)
-    samples = tree_map(lambda x: x[:,::2], samples)
-    infos = tree_map(lambda x: 2*x[:,::2], infos)
-    pdump(samples | infos, save_path+f"_{i_run}.p")
-    pdump(last_state, save_path+f"_laststate.p")
+
+
+
+
+
+
+
+
+
+#############
+# Optimizer #
+#############
+# NOTE: optimizers are just 0 Kelvin samplers
+from jax.example_libraries.optimizers import adam
+from tqdm import tqdm
+from jax import value_and_grad
+
+def optimize(potential, start, lr0=0.1, n_epochs=100):
+    pots = []
+
+    lr_fn = lambda i: lr0 / (1 + i)**.5
+    opt_init, opt_update, get_params = adam(lr_fn)
+    opt_state = opt_init(start)
+
+    @jit
+    def step(step, opt_state):
+        value, grads = value_and_grad(potential)(get_params(opt_state))
+        opt_state = opt_update(step, grads, opt_state)
+        return value, opt_state
+
+    for i_epoch in tqdm(range(n_epochs)):
+        value, opt_state = step(i_epoch, opt_state)
+        pots.append(value.astype(float))
+    params = get_params(opt_state)
+    return params, pots
