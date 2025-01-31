@@ -263,10 +263,12 @@ class Chains(Samples):
         print(f"Loading: {os.path.basename(path)}, from run {start} to run {end} (included)")
         for i_run in range(start, end + 1):
             if not os.path.exists(path + f"_{i_run}.npz"):
-                # raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
-                print(f"File {path}_{i_run}.npz does not exist, stopping at run {i_run-1}")
-                end = i_run - 1
-                break
+                if i_run == start:
+                    raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
+                else:
+                    print(f"File {path}_{i_run}.npz does not exist, stopping at run {i_run-1}")
+                    end = i_run - 1
+                    break
             
         if transforms is None:
             transforms = []
@@ -282,6 +284,7 @@ class Chains(Samples):
         for i_run in range(start, end + 1):
             # Load
             part = dict(jnp.load(path+f"_{i_run}.npz")) # better than pickle for dict of array-like
+            # part = dict(jnp.load(path+f"_{i_run}.p", allow_pickle=True))
             part = cls(part, groups=groups, labels=labels)
             part = transform(part)
 
@@ -416,7 +419,7 @@ class Chains(Samples):
         others_new = ()
         for other in others:
             others_new += (other[['*~'+name]],)
-
+            
         return infos | tree.map(fn, rest, *others_new)
     
     def last(self, axis=1):
@@ -559,7 +562,7 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
                     rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
-    If `mcmc.num_warmup >= 1`, first step is a warmup step.
+    If `mcmc.num_warmup > 0`, first step is a warmup step.
     So to continue a run, simply do before:
     ```
     mcmc.num_warmup = 0
@@ -570,7 +573,7 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
         rng = jr.key(rng)
 
     # Warmup sampling
-    if mcmc.num_warmup >= 1:
+    if mcmc.num_warmup > 0:
         print(f"\nrun {start}/{end} (warmup)")
 
         # Warmup

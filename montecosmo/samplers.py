@@ -1,17 +1,15 @@
 
-import jax.numpy as jnp
-import jax.random as jr
-from jax import jit, vmap, grad, debug, lax, tree
+from jax import numpy as jnp, random as jr, jit, vmap, grad, debug, lax, tree
 from functools import partial
 
 import blackjax
-import blackjax.progress_bar
+from blackjax.progress_bar import gen_scan_fn # XXX: blackjax >= 1.2.3
 from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
+
 
 #########################
 # HMC/NUTS within Gibbs #
 #########################
-
 def mwg_warmup(rng_key, state, logpdf, config, n_samples=0):
     rng_keys = jr.split(rng_key, num=len(state))
     rng_keys = dict(zip(state.keys(), rng_keys))
@@ -39,8 +37,9 @@ def mwg_warmup(rng_key, state, logpdf, config, n_samples=0):
         #     logdensity_fn=logpdf_k
         # )
 
-        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **config[k], progress_bar=False) 
-        # NOTE: window adapt progress bar can yield "NotImplementedError: IO effect not supported in vmap-of-cond"
+        wind_adapt = blackjax.window_adaptation(blackjax.nuts, logpdf_k, **config[k], progress_bar=True) 
+        # NOTE: window adapt progress bar yield "NotImplementedError: IO effect not supported in vmap-of-cond"
+        # for blackjax==1.2.4 due to progress bar update
         rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
         (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
 
@@ -125,9 +124,9 @@ def mwg_kernel_general(rng_key, state, logpdf, step_fn, init_fn, config):
     
 
 
-def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, config, n_samples):
+def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, config, n_samples, progress_bar=True):
     
-    @blackjax.progress_bar.progress_bar_scan(n_samples)
+    # @blackjax.progress_bar.progress_bar_scan(n_samples)
     def one_step(state, xs):
         _, rng_key = xs
         state, infos = mwg_kernel_general(
@@ -138,16 +137,20 @@ def sampling_loop_general(rng_key, initial_state, logpdf, step_fn, init_fn, conf
             init_fn=init_fn,
             config=config
         )
-        # positions = {k: state[k].position for k in state.keys()}
+
+        # Unionize the blocks
         union = {}
-        for _k in state.keys():
-            union |= state[_k].position
-        # union = mult_tree(union, invmm**.5)
+        for k in state.keys():
+            union |= state[k].position
         return state, (union, infos)
 
     keys = jr.split(rng_key, n_samples)
-    xs = (jnp.arange(n_samples), keys)
-    last_state, (positions, infos) = lax.scan(one_step, initial_state, xs) # scan compile
+    xs = jnp.arange(n_samples), keys
+
+    # last_state, (positions, infos) = lax.scan(one_step, initial_state, xs) # XXX: blackjax < 1.2.3
+  
+    scan_fn = gen_scan_fn(n_samples, progress_bar)
+    last_state, (positions, infos) = scan_fn(one_step, initial_state, xs)
 
     return last_state, (positions, infos)
 
@@ -230,7 +233,7 @@ def get_init_state(init_pos, logpdf, init_fn):
     return init_state
 
 
-def nutswg_run(rng_key, init_state, config, logpdf, step_fn, init_fn, n_samples):
+def nutswg_run(rng_key, init_state, config, logpdf, step_fn, init_fn, n_samples, progress_bar=True):
     last_state, (samples, infos) = sampling_loop_general(
                                 rng_key=rng_key,
                                 initial_state=init_state,
@@ -238,15 +241,17 @@ def nutswg_run(rng_key, init_state, config, logpdf, step_fn, init_fn, n_samples)
                                 step_fn=step_fn,
                                 init_fn=init_fn,
                                 config=config,
-                                n_samples=n_samples,)
-    return samples, infos, last_state, config
+                                n_samples=n_samples,
+                                progress_bar=progress_bar)
+    return samples, infos, last_state
 
-def get_nutswg_run(logpdf, step_fn, init_fn, n_samples):
+def get_nutswg_run(logpdf, step_fn, init_fn, n_samples, progress_bar=True):
     return partial(nutswg_run, 
                    logpdf=logpdf, 
                    step_fn=step_fn, 
                    init_fn=init_fn, 
-                   n_samples=n_samples,)
+                   n_samples=n_samples,
+                   progress_bar=progress_bar)
 
 
 def nutswg_warm(rng_key, init_state, logpdf, config, n_samples):
@@ -273,39 +278,16 @@ def get_nutswg_warm(logpdf, config, n_samples):
 #########
 # MCLMC #
 #########
-def mclmc_run(key, init_pos, logpdf, n_samples, config=None, transform=None, desired_energy_variance= 5e-4):
-    if transform is None:
-        transform = lambda x: x.position
-    init_key, tune_key, run_key = jr.split(key, 3)
+def mclmc_warmup(rng, init_pos, logpdf, n_samples, config=None, 
+              desired_energy_variance=5e-4, diagonal_preconditioning=False):
+    init_key, tune_key = jr.split(rng, 2)
 
     # Create an initial state for the sampler
     state = blackjax.mcmc.mclmc.init(
         position=init_pos, logdensity_fn=logpdf, rng_key=init_key
     )
 
-
     if config is None:
-
-    #     # Build the kernel
-    #     kernel = blackjax.mcmc.mclmc.build_kernel(
-    #         logdensity_fn=logpdf,
-    #         integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-    #         # integrator=blackjax.mcmc.integrators.isokinetic_velocity_verlet,
-    #         # integrator=blackjax.mcmc.integrators.isokinetic_leapfrog,
-    #     )
-
-    #     # Find values for L and step_size
-    #     print("finding L")
-    #     state, config = blackjax.mclmc_find_L_and_step_size(
-    #         mclmc_kernel=kernel,
-    #         num_steps=n_samples,
-    #         state=state,
-    #         rng_key=tune_key,
-    #         # num_effective_samples=1024,
-    #         num_effective_samples=256,
-    #         frac_tune3=0.5
-    #     )
-
         # Build the kernel
         kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logpdf,
@@ -320,65 +302,271 @@ def mclmc_run(key, init_pos, logpdf, n_samples, config=None, transform=None, des
             num_steps=n_samples,
             state=state,
             rng_key=tune_key,
-            diagonal_preconditioning=True,
+            diagonal_preconditioning=diagonal_preconditioning,
             desired_energy_var=desired_energy_variance,
             num_effective_samples=256,
-            frac_tune3=0.5
+            # frac_tune3=0.5
             )
-
-
-        L = config.L
-        step_size = config.step_size
-        return state, config
 
     elif isinstance(config, dict):
         L = config['L']
         step_size = config['step_size']
+        sqrt_diag_cov = config.get('sqrt_diag_cov', 1.0)
+        config = MCLMCAdaptationState(L=L, step_size=step_size, sqrt_diag_cov=sqrt_diag_cov)
+
+    else:
+        assert isinstance(config, MCLMCAdaptationState), \
+        "config must be either None, a dict, or a MCLMCAdaptationState"
+
+    return state, config
+
+
+
+def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logpdf, n_samples,  
+              transform=None, thinning=1, progress_bar=True):
+    
+    if transform is None:
+        transform = lambda state, info: state.position
+        # transform = lambda state, info: state.position, tree.map(lambda x: jnp.mean(x), info)
+        # transform = lambda state: state.position # XXX: blackjax < 1.2.3
+
+    if isinstance(config, dict):
+        L = config['L']
+        step_size = config['step_size']
+        sqrt_diag_cov = config.get('sqrt_diag_cov', 1.0)
 
     elif isinstance(config, MCLMCAdaptationState):
         L = config.L
         step_size = config.step_size
-
-
-
-
-
+        sqrt_diag_cov = config.sqrt_diag_cov
 
     # Use the quick wrapper to build a new kernel with the tuned parameters
-    sampler = blackjax.mclmc(logpdf,L=L, step_size=step_size,)
+    sampler = blackjax.mclmc(logpdf, L=L, step_size=step_size, sqrt_diag_cov=sqrt_diag_cov)
 
     # Run the sampler
-    last_state, samples, info = blackjax.util.run_inference_algorithm(
-    # last_state, samples = blackjax.util.run_inference_algorithm(
-        rng_key=run_key,
-        initial_state=state,
-        # initial_state_or_position=state,
-        inference_algorithm=sampler,
-        num_steps=n_samples,
-        transform=transform,
-        progress_bar=True,
-    )
+    if thinning==1:
+        state, samples = blackjax.util.run_inference_algorithm(
+        # state, samples, info = blackjax.util.run_inference_algorithm( # XXX: blackjax < 1.2.3 but wrong state
+            rng_key=rng,
+            initial_state=state,
+            inference_algorithm=sampler,
+            num_steps=n_samples,
+            transform=transform,
+            progress_bar=progress_bar,
+        )
+    else:
+        state, samples = run_with_thinning(
+            rng_key=rng,
+            inference_algorithm=sampler,
+            num_steps=n_samples,
+            initial_state=state,
+            transform=transform,
+            progress_bar=progress_bar,
+            thinning=thinning
+        )
     
     # Register only relevant infos
-    n_eval_per_steps = 2 # 1 for velocity_verlet, 2 for mclachlan
-    infos = {"n_evals": n_eval_per_steps * jnp.ones(n_samples)}
+    n_eval_per_steps = 2 # NOTE: 1 for velocity_verlet, 2 for mclachlan
+    infos = {"n_evals": n_eval_per_steps * thinning * jnp.ones(n_samples)}
 
-    return samples, infos, last_state, config
-
-
+    return state, samples|infos
 
 
-def get_mclmc_run(logpdf, n_samples, config=None, transform=None, desired_energy_variance= 5e-4):
+
+def get_mclmc_run(logpdf, n_samples, transform=None, thinning=1, progress_bar=True):
     return partial(mclmc_run, 
                    logpdf=logpdf,
                    n_samples=n_samples,
-                   config=config,
                    transform=transform,
-                   desired_energy_variance=desired_energy_variance,)
+                   thinning=thinning,    
+                   progress_bar=progress_bar)
+
+
+def get_mclmc_warmup(logpdf, n_samples, config=None,
+              desired_energy_variance=5e-4, diagonal_preconditioning=False):
+    return partial(mclmc_warmup,
+                   logpdf=logpdf,
+                   n_samples=n_samples,
+                   config=config,
+                   desired_energy_variance=desired_energy_variance,
+                   diagonal_preconditioning=diagonal_preconditioning)
+
+
+##################
+# Adjusted MCLMC #
+##################
+# from blackjax.mcmc.adjusted_mclmc import rescale # NOTE: blackjax > 1.2.4
+from blackjax.util import run_inference_algorithm
+
+# def run_adjusted_mclmc(
+#     logdensity_fn,
+#     num_steps,
+#     initial_position,
+#     key,
+#     transform=lambda state, _ : state.position,
+#     diagonal_preconditioning=False,
+#     random_trajectory_length=True,
+#     L_proposal_factor=jnp.inf
+# ):
+
+#     init_key, tune_key, run_key = jr.split(key, 3)
+
+#     initial_state = blackjax.mcmc.adjusted_mclmc.init(
+#         position=initial_position,
+#         logdensity_fn=logdensity_fn,
+#         random_generator_arg=init_key,
+#     )
+
+#     if random_trajectory_length:
+#         integration_steps_fn = lambda avg_num_integration_steps: lambda k: jnp.ceil(
+#             jr.uniform(k) * rescale(avg_num_integration_steps))
+#     else:
+#         integration_steps_fn = lambda avg_num_integration_steps: lambda _: jnp.ceil(avg_num_integration_steps)
+
+#     kernel = lambda rng_key, state, avg_num_integration_steps, step_size, sqrt_diag_cov: blackjax.mcmc.adjusted_mclmc.build_kernel(
+#         integration_steps_fn=integration_steps_fn(avg_num_integration_steps),
+#         sqrt_diag_cov=sqrt_diag_cov,
+#     )(
+#         rng_key=rng_key,
+#         state=state,
+#         step_size=step_size,
+#         logdensity_fn=logdensity_fn,
+#         L_proposal_factor=L_proposal_factor,
+#     )
+
+#     target_acc_rate = 0.9 # our recommendation
+
+#     (
+#         blackjax_state_after_tuning,
+#         blackjax_mclmc_sampler_params,
+#     ) = blackjax.adjusted_mclmc_find_L_and_step_size(
+#         mclmc_kernel=kernel,
+#         num_steps=num_steps,
+#         state=initial_state,
+#         rng_key=tune_key,
+#         target=target_acc_rate,
+#         frac_tune1=0.1,
+#         frac_tune2=0.1,
+#         frac_tune3=0.0, # our recommendation
+#         diagonal_preconditioning=diagonal_preconditioning,
+#     )
+
+#     step_size = blackjax_mclmc_sampler_params.step_size
+#     L = blackjax_mclmc_sampler_params.L
+
+#     alg = blackjax.adjusted_mclmc(
+#         logdensity_fn=logdensity_fn,
+#         step_size=step_size,
+#         integration_steps_fn=lambda key: jnp.ceil(
+#             jr.uniform(key) * rescale(L / step_size)
+#         ),
+#         sqrt_diag_cov=blackjax_mclmc_sampler_params.sqrt_diag_cov,
+#         L_proposal_factor=L_proposal_factor,
+#     )
+
+#     _, out = run_inference_algorithm(
+#         rng_key=run_key,
+#         initial_state=blackjax_state_after_tuning,
+#         inference_algorithm=alg,
+#         num_steps=num_steps,
+#         transform=transform,
+#         progress_bar=False,
+#     )
+
+#     return out
 
 
 
 
+
+
+
+
+
+
+
+from functools import partial
+from typing import Callable, Union
+
+from blackjax.base import SamplingAlgorithm, VIAlgorithm
+from blackjax.progress_bar import progress_bar_scan
+from blackjax.types import ArrayLikeTree, PRNGKey
+
+def run_with_thinning(
+    rng_key: PRNGKey,
+    inference_algorithm: SamplingAlgorithm|VIAlgorithm,
+    num_steps: int,
+    initial_state: ArrayLikeTree = None,
+    initial_position: ArrayLikeTree = None,
+    progress_bar: bool = False,
+    thinning: int = 1,
+    transform: Callable = lambda x: x,
+) -> tuple:
+    """
+    Wrapper to run an inference algorithm.
+
+    Note that this utility function does not work for Stochastic Gradient MCMC samplers
+    like sghmc, as SG-MCMC samplers require additional control flow for batches of data
+    to be passed in during each sample.
+
+    Parameters
+    ----------
+    rng_key
+        The random state used by JAX's random numbers generator.
+    initial_state
+        The initial state of the inference algorithm.
+    initial_position
+        The initial position of the inference algorithm. This is used when the initial
+        state is not provided.
+    inference_algorithm
+        One of blackjax's sampling algorithms or variational inference algorithms.
+    num_steps
+        Number of MCMC steps.
+    progress_bar
+        Whether to display a progress bar.
+    transform
+        A transformation of the trace of states to be returned. This is useful for
+        computing determinstic variables, or returning a subset of the states.
+        By default, the states are returned as is.
+    """
+
+    if initial_state is None and initial_position is None:
+        raise ValueError(
+            "Either `initial_state` or `initial_position` must be provided."
+        )
+    if initial_state is not None and initial_position is not None:
+        raise ValueError(
+            "Only one of `initial_state` or `initial_position` must be provided."
+        )
+
+    if initial_state is None:
+        rng_key, init_key = jr.split(rng_key, 2)
+        initial_state = inference_algorithm.init(initial_position, init_key)
+
+
+    def one_sub_step(state, rng_key):
+        state, info = inference_algorithm.step(rng_key, state)
+        return state, info
+    
+    def one_step(state, xs):
+        _, rng_key = xs
+        keys = jr.split(rng_key, thinning)
+        state, infos = lax.scan(one_sub_step, state, keys)
+        return state, transform(state, infos)
+        # return state, transform(state) # XXX: blackjax < 1.2.3
+
+    keys = jr.split(rng_key, num_steps)
+    xs = jnp.arange(num_steps), keys
+    
+    scan_fn = gen_scan_fn(num_steps, progress_bar)
+    final_state, history = scan_fn(one_step, initial_state, xs)
+
+    # if progress_bar:
+    #     one_step = progress_bar_scan(num_steps)(one_step) # XXX: blackjax < 1.2.3
+
+    final_state, history = lax.scan(one_step, initial_state, xs)
+
+    return final_state, history
 
 
 

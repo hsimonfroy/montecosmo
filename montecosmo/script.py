@@ -32,7 +32,7 @@ def from_id(id):
         'n_samples':64 if args.sampler == 'NUTSwG' else 64, #
         'max_tree_depth':10,
         'n_runs':10,
-        'n_chains':8,
+        'n_chains':4,
     }
     save_path = save_dir 
     save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
