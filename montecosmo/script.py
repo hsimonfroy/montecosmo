@@ -8,7 +8,7 @@ def get_save_dir(**kwargs):
     # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
-    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}_L256_e5.6/"
+    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}_norsdb/"
     return dir
 
 def from_id(id):
@@ -22,7 +22,8 @@ def from_id(id):
           'precond':args.precond,
           'obs':args.obs,
           'nbody_steps':5,
-          'los':(0.,0.,1.),
+        #   'los':(0.,0.,1.),
+          'los':None,
           }
     save_dir = get_save_dir(**config)
     model = FieldLevelModel(**default_config | config)

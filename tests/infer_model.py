@@ -7,7 +7,7 @@
 # In[1]:
 
 
-import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
+import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.66' # NOTE: jax preallocates GPU (default 75%)
 import matplotlib.pyplot as plt
 import numpy as np
 from jax import numpy as jnp, random as jr, jit, vmap, grad, debug, tree
@@ -25,7 +25,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
+# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
 
 # get_ipython().run_line_magic('matplotlib', 'inline')
 # get_ipython().run_line_magic('load_ext', 'autoreload')
@@ -39,7 +39,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 ################## TO SET #######################
 task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-# task_id = 2130
+# task_id = 3133
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
@@ -63,7 +63,7 @@ if not os.path.exists(save_dir+"truth.p"):
     # Predict and save fiducial
     truth = {'Omega_m': 0.31, 
             'sigma8': 0.81, 
-            'b1': 1., 
+            'b1': 0., 
             'b2':0., 
             'bs2':0., 
             'bn2': 0.}
@@ -78,7 +78,8 @@ else:
     print(f"Loading truth from {save_dir}")
     truth = pload(save_dir+"truth.p")
 
-model.condition({'obs': truth['obs']})
+model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
+# model.condition({'obs': truth['obs']})
 model.delta_obs = truth['obs'] - 1
 model.block()
 # model.render()
@@ -96,12 +97,6 @@ if continue_run:
     model.reset()
     model.condition({'obs': truth['obs']})
     model.block()
-    mcmc = get_mcmc(model.model, mcmc_config)
-
-    state = pload(save_path + "_last_state.p")
-    mcmc.num_warmup = 0
-    mcmc.post_warmup_state = state
-    init_params_ = None
 else:
     model.reset()
     model.condition({'obs': truth['obs']} | model.prior_loc, frombase=True)
@@ -114,10 +109,12 @@ else:
 
 
     init_mesh_ = {k: init_params_[k] for k in ['init_mesh_']} # NOTE: !!!!!!!
+    
     mcmc = sample_and_save(mcmc, save_path+'_init', 0, 0, extra_fields=['num_steps'], init_params=init_mesh_)
     ils = mcmc.last_state.z
     
     # ils = pload(save_path + "_init_last_state.p").z
+    
     # ils = {k: jnp.broadcast_to(v, (mcmc_config['n_chains'], *jnp.shape(v))) for k, v in truth.items()}
     # ils = {k+'_': ils[k+'_'] for k in ['Omega_m','sigma8','b1','b2','bs2','bn2','init_mesh']}
 
@@ -159,11 +156,13 @@ else:
         "\nmm_sqrt:", last_state.adapt_state.mass_matrix_sqrt)
     ################
     
-    init_params_ |= ils
+    # init_params_ |= ils
+    init_params_ = {k:v for k,v in init_params_.items() if k in ['Omega_m_', 'sigma8_']} | ils
     # init_params_ |= mcmc.last_state.z
     print(init_params_.keys())
     model.reset()
-    model.condition({'obs': truth['obs']})
+    # model.condition({'obs': truth['obs']})
+    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
     model.block()
 
 
@@ -173,7 +172,14 @@ else:
 
 if mcmc_config['sampler'] != 'NUTSwG':
     mcmc = get_mcmc(model.model, mcmc_config)
-    mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
+    if continue_run:
+        mcmc.num_warmup = 0
+        mcmc.post_warmup_state = pload(save_path + "_last_state.p")
+        # start = 2
+        mcmc_runned = sample_and_save(mcmc, save_path, start, mcmc_config['n_runs'], rng=43, extra_fields=['num_steps'])
+
+    else:
+        mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
 
 else:
     from montecosmo.samplers import nutswg_init, get_nutswg_warm, get_nutswg_run
@@ -181,12 +187,11 @@ else:
     step_fn, init_fn, conf, init_state_fn = nutswg_init(model.logpdf)
     warmup_fn = jit(vmap(get_nutswg_warm(model.logpdf, conf, mcmc_config['n_samples'])))
     state = jit(vmap(init_state_fn))(init_params_)
-    # last_state = pload(save_dir+"NUTSGibbs/HMCGibbs_ns256_x_nc8_laststate32.p")
 
 
-    samples, infos, state, config = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), state)
+    samples, infos, state, conf = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), state)
     print("conf:", conf,
-            "infos:", infos, '\n#################\n')
+            "\n\ninfos:", infos, '\n#################\n')
     jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
     pdump(state, save_path+f"_last_state.p")
     pdump(conf, save_path+'_conf.p'), pdump(tree.map(jnp.mean, infos), save_path+'_infos.p')
@@ -198,8 +203,8 @@ else:
     for i_run in range(start, end+1):
         print(f"run {i_run}/{end}")
         key, run_key = jr.split(key, 2)
-        samples, infos, state, _ = run_fn(jr.split(run_key, mcmc_config['n_chains']), state, conf=conf)
-        print("infos:", infos)
+        samples, infos, state = run_fn(jr.split(run_key, mcmc_config['n_chains']), state, conf)
+        print("infos:", tree.map(lambda x: jnp.mean(x, 1), infos))
         jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
         pdump(state, save_path+f"_last_state.p")
 
