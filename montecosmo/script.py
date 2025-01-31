@@ -8,7 +8,7 @@ def get_save_dir(**kwargs):
     # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
-    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
+    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}_L256_e5.6/"
     return dir
 
 def from_id(id):

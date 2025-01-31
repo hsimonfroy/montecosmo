@@ -280,6 +280,8 @@ def rsd_bf(cosmo:Cosmology, a, p, los:np.ndarray=None):
     if los is None:
         return jnp.zeros_like(p)
     else:
+        los = np.asarray(los)
+        los /= jnp.linalg.norm(los)
         # Pi-Integrator momentum p = dx/dg
         dx_rsd = p * growth_factor(cosmo, a) * growth_rate(cosmo, a)
         # Project velocity on line-of-sight
@@ -297,6 +299,8 @@ def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
     if los is None:
         return jnp.zeros_like(p)
     else:
+        los = np.asarray(los)
+        los /= jnp.linalg.norm(los)
         # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
         dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
         # Project velocity on line-of-sight
@@ -315,9 +319,11 @@ def kaiser_weights(cosmo:Cosmology, a, bE, mesh_shape, los:np.ndarray=None):
     if los is None:
         return bE
     else:
+        los = np.asarray(los)
+        los /= jnp.linalg.norm(los)
         kvec = rfftk(mesh_shape)
         kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
-        mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
         mumesh = safe_div(mumesh, kmesh)
 
         return bE + growth_rate(cosmo, a) * mumesh**2

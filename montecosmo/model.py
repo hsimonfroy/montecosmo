@@ -336,7 +336,7 @@ class FieldLevelModel(Model):
         cosmology, bias, init = params
 
         # Create regular grid of particles
-        pos = jnp.indices(self.mesh_shape, dtype=jnp.float32).reshape(3,-1).T
+        pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, pos, self.box_shape, **bias, **init)
@@ -537,11 +537,11 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0, los=(0.,0.,1.)):
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                            kedges=kedges, comp=comp, poles=poles, los=los)
+                            kedges=kedges, comp=comp, poles=poles, los=self.los)
 
-    def powtranscoh(self, mesh0, mesh1, kedges:int | float | list=None, comp=(False, False)):
+    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(False, False)):
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
 
 

@@ -110,16 +110,17 @@ def _initialize_spectrum(mesh_shape, box_shape, kedges, los):
     kavg = kavg[1:-1]
 
     if los is None:
-        mumesh = 1.
+        mumesh = 0.
     else:
-        mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
         kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
         mumesh = np.where(kmesh==0, 0, mumesh / kmesh_nozeros)
 
     return dig, kcount, kavg, mumesh
 
 
-def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, comp=(False, False), poles=0, los=(0.,0.,1.)):
+def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
+             comp=(False, False), poles=0, los:np.ndarray=None):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
@@ -268,7 +269,7 @@ def kaiser_formula(cosmo:Cosmology, a, init_kpow, bE, poles=0):
 
 import math
 def wigner3j_square(ellout, ellin, prefactor=True):
-    """
+    r"""
     Return the coefficients corresponding to the product of two Legendre polynomials, corresponding to :math:`C_{\ell \ell^{\prime} L}`
     of e.g. eq. 2.2 of https://arxiv.org/pdf/2106.06324.pdf, with :math:`\ell` corresponding to ``ellout`` and :math:`\ell^{\prime}` to ``ellin``.
 
