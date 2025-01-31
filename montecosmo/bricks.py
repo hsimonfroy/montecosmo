@@ -270,52 +270,60 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-def rsd_bf(cosmo:Cosmology, a, p, los=(0.,0.,1.)):
+def rsd_bf(cosmo:Cosmology, a, p, los:np.ndarray=None):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
+
+    No RSD if los is None.
     """
-    los = np.asarray(los)
-    los = los / np.linalg.norm(los)
-    # Pi-Integrator momentum p = dx/dg
-    dx_rsd = p * growth_factor(cosmo, a) * growth_rate(cosmo, a)
-    # Project velocity on line-of-sight
-    dx_rsd = dx_rsd * los
-    return dx_rsd
+    if los is None:
+        return jnp.zeros_like(p)
+    else:
+        # Pi-Integrator momentum p = dx/dg
+        dx_rsd = p * growth_factor(cosmo, a) * growth_rate(cosmo, a)
+        # Project velocity on line-of-sight
+        dx_rsd = dx_rsd * los
+        return dx_rsd
 
 
-def rsd_fpm(cosmo:Cosmology, a, p, los=(0.,0.,1.)):
+def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
     Computed with respect scale factor and line-of-sight.
+    
+    No RSD if los is None.
     """
-    los = np.asarray(los)
-    los = los / np.linalg.norm(los)
-    # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
-    dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
-    # Project velocity on line-of-sight
-    dx_rsd = dx_rsd * los
-    return dx_rsd
+    if los is None:
+        return jnp.zeros_like(p)
+    else:
+        # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
+        dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
+        # Project velocity on line-of-sight
+        dx_rsd = dx_rsd * los
+        return dx_rsd
 
 
 
 
-def kaiser_weights(cosmo:Cosmology, a, bE, mesh_shape, los=(0.,0.,1.)):
+def kaiser_weights(cosmo:Cosmology, a, bE, mesh_shape, los:np.ndarray=None):
     """
     Return Kaiser Eulerian bias weights including linear bias and RSD.
+
+    No RSD if los is None.
     """
-    los = jnp.asarray(los)
-    los = los / np.linalg.norm(los)
+    if los is None:
+        return bE
+    else:
+        kvec = rfftk(mesh_shape)
+        kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
+        mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
+        mumesh = safe_div(mumesh, kmesh)
 
-    kvec = rfftk(mesh_shape)
-    kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
-    mumesh = sum(ki*losi for ki, losi in zip(kvec, los))
-    mumesh = safe_div(mumesh, kmesh)
-
-    return bE + growth_rate(cosmo, a) * mumesh**2
+        return bE + growth_rate(cosmo, a) * mumesh**2
 
 
-def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,1.)):
+def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los:np.ndarray=None):
     """
     Kaiser model, with linear growth, Eulerian linear bias, and RSD.
     """

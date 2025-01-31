@@ -22,6 +22,7 @@ def from_id(id):
           'precond':args.precond,
           'obs':args.obs,
           'nbody_steps':5,
+          'los':(0.,0.,1.),
           }
     save_dir = get_save_dir(**config)
     model = FieldLevelModel(**default_config | config)

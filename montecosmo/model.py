@@ -72,6 +72,7 @@ default_config={
                                       'label':'{\\delta}_L',},},
             'obs':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
             # 'poles':(0,2,4), # for powspec
+            'los':(0.,0.,1.),
             # Preconditioning mode
             'precond':3, # from 0 to 3
             }
@@ -252,6 +253,7 @@ class FieldLevelModel(Model):
     obs:dict
     nbody_steps:int
     snapshots:int|list
+    los:tuple
 
     def __post_init__(self):
         assert(self.a_lpt <= self.a_obs), "a_lpt must be less than (<=) a_obs"
@@ -260,9 +262,13 @@ class FieldLevelModel(Model):
         self.labels = self._labels()
         self.prior_loc = self._prior_loc()
 
-        self.mesh_shape = np.asarray(self.mesh_shape) # avoid int overflow
+        self.mesh_shape = np.asarray(self.mesh_shape)
+        # NOTE: avoid int overflow for mesh_shape product by dividing first with box_shape then product
         self.box_shape = np.asarray(self.box_shape)
         self.cell_shape = self.box_shape / self.mesh_shape
+        if self.los is not None:
+            self.los = np.asarray(self.los)
+            self.los = self.los / np.linalg.norm(self.los)
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
@@ -350,7 +356,7 @@ class FieldLevelModel(Model):
             pos, vel = tree.map(lambda x: x[-1], part)
 
             # RSD displacement at a_obs
-            pos += rsd_fpm(cosmology, self.a_obs, vel)
+            pos += rsd_fpm(cosmology, self.a_obs, vel, self.los)
             pos, vel = deterministic('rsd_part', (pos, vel))
 
         else: # TODO: lpt_order is None
@@ -361,7 +367,7 @@ class FieldLevelModel(Model):
             pos, vel = tree.map(lambda x: x[-1], part)
 
             # RSD displacement at a_obs
-            pos += rsd_bf(cosmology, self.a_obs, vel)
+            pos += rsd_bf(cosmology, self.a_obs, vel, self.los)
             pos, vel = deterministic('rsd_part', (pos, vel))
 
         # CIC paint weighted by Lagrangian bias expansion weights
@@ -374,7 +380,7 @@ class FieldLevelModel(Model):
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
         return biased_mesh
         # Kaiser model
-        return kaiser_model(cosmology, self.a_obs, 1+bias['b1'], **init)
+        return kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
 
 
     def likelihood(self, mesh, temp=1.):
