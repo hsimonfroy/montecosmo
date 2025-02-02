@@ -202,7 +202,7 @@ class Model():
     def render(self, render_dist=False, render_params=False):
         display(render_model(self.model, render_distributions=render_dist, render_params=render_params))
 
-    def partial(self, *args, **kwargs): # TODO: copy signature?
+    def partial(self, *args, **kwargs):
         self.model = partial(self.model, *args, **kwargs)
 
 
@@ -269,7 +269,7 @@ class FieldLevelModel(Model):
         self.prior_loc = self._prior_loc()
 
         self.mesh_shape = np.asarray(self.mesh_shape)
-        # NOTE: avoid int overflow for mesh_shape product by dividing first with box_shape then product
+        # NOTE: if x32, cast mesh_shape into float32 to avoid int32 overflow when computing products
         self.box_shape = np.asarray(self.box_shape).astype(float)
         self.cell_shape = self.box_shape / self.mesh_shape
         if self.los is not None:
