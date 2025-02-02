@@ -490,6 +490,7 @@ class Chains(Samples):
     def to_getdist(self, label=None):
         samples, names, labels = [], [], []
         for k, v in self.data.items():
+            # Flatten all chains
             samples.append(v.reshape(-1))
             names.append(k)
             labels.append(self.labels.get(k, None))
@@ -506,6 +507,9 @@ class Chains(Samples):
             groups = list(self)
         groups = list(np.atleast_1d(groups))
         n_conc = max(batch_ndim-1, 0)
+        tot_conc = tree.map(lambda x: jnp.prod(jnp.array(jnp.shape(x))[:n_conc]), self[groups])
+
+        # Concatenate all chains
         def conc_fn(v):
             for _ in range(n_conc):
                 v = jnp.concatenate(v)
@@ -515,9 +519,18 @@ class Chains(Samples):
         for i_plt, g in enumerate(groups):
             plt.subplot(1, len(groups), i_plt+1)
             plt.title(g)
-            for k, v in conc[[g]].items():
+            for i_l, (k, v) in enumerate(conc[[g]].items()):
                 label = conc.labels.get(k)
                 plt.plot(v, label=k if label is None else '$'+label+'$')
+
+                # Plot vertical lines to separate chains
+                if i_l == 0:
+                    tot = tot_conc[k]
+                    leng = len(v) // tot
+                    for i in range(1, tot):
+                        plt.axvline(i * leng, color='grey', alpha=1., 
+                                    linestyle='-', linewidth=0.1, zorder=-1)
+
             plt.legend()
 
 

@@ -45,7 +45,7 @@ default_config={
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
                                     'scale':0.2,
-                                    'low': 0.05, # XXX: Omega_m < Omega_c implies nan
+                                    'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
                                     'label':'{\\sigma}_8',
@@ -54,8 +54,7 @@ default_config={
                                     'low': 0.,},
                         'b1': {'group':'bias',
                                     'label':'{b}_1',
-                                    # 'loc':1.,
-                                    'loc':0.,
+                                    'loc':1.,
                                     'scale':0.5,},
                         'b2': {'group':'bias',
                                     'label':'{b}_2',
@@ -118,9 +117,9 @@ class Model():
     def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
         """
         Run model conditionned on samples.
-        If samples is None, return a single prediction.
-        If samples is an int or tuple, return a prediction of such shape.
-        If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
+        * If samples is None, return a single prediction.
+        * If samples is an int or tuple, return a prediction of such shape.
+        * If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
         """
         if isinstance(rng, int):
             rng = jr.key(rng)
@@ -163,6 +162,12 @@ class Model():
     # Wrappers #
     ############
     def logpdf(self, params):
+        """
+        A log-density function of the model. In particular, it is the log-*probability*-density function 
+        with respect to the full set of variables, i.e. E[e^logpdf] = 1.
+
+        For unnormalized log-densities in numpyro, see https://forum.pyro.ai/t/unnormalized-densities/3251/9
+        """
         return log_density(self.model, (), {}, params)[0]
 
     def potential(self, params):
@@ -185,7 +190,7 @@ class Model():
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
         """
-        Precedence is given according to the order hide_fn, hide, expose_types, expose, (hide_base, hide_det).
+        Precedence is given according to the order: hide_fn, hide, expose_types, expose, (hide_base, hide_det).
         Only the set of parameters with the precedence is considered.
         The default call thus hides base and other deterministic sites, for sampling purposes.
         """
@@ -251,7 +256,7 @@ class FieldLevelModel(Model):
     gxy_density:float
     latents:dict
     precond:int
-    obs:dict
+    obs:str
     nbody_steps:int
     snapshots:int|list
     los:tuple
@@ -265,7 +270,7 @@ class FieldLevelModel(Model):
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: avoid int overflow for mesh_shape product by dividing first with box_shape then product
-        self.box_shape = np.asarray(self.box_shape)
+        self.box_shape = np.asarray(self.box_shape).astype(float)
         self.cell_shape = self.box_shape / self.mesh_shape
         if self.los is not None:
             self.los = np.asarray(self.los)

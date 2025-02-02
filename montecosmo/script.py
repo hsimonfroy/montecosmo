@@ -8,7 +8,7 @@ def get_save_dir(**kwargs):
     # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}"
-    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}_norsdb/"
+    dir += f"_al{kwargs['a_lpt']:.1f}_ao{kwargs['a_obs']:.1f}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']:d}_ob{kwargs['obs']}/"
     return dir
 
 def from_id(id):
@@ -22,8 +22,6 @@ def from_id(id):
           'precond':args.precond,
           'obs':args.obs,
           'nbody_steps':5,
-        #   'los':(0.,0.,1.),
-          'los':None,
           }
     save_dir = get_save_dir(**config)
     model = FieldLevelModel(**default_config | config)
@@ -31,10 +29,10 @@ def from_id(id):
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':64 if args.sampler == 'NUTSwG' else 64, #
-        'max_tree_depth':10,
+        'n_samples':64 if args.mesh_length < 128 else 32,
+        'max_tree_depth':10 if args.mesh_length < 128 else 12,
         'n_runs':10,
-        'n_chains':4,
+        'n_chains':4 if args.mesh_length < 128 else 4, ######
     }
     save_path = save_dir 
     save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
@@ -88,8 +86,8 @@ def get_mcmc(model, config):
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
             step_size=1e-3, 
-            # Rule of thumb (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
-            trajectory_length=1023 * 1e-3 / 4, 
+            # Heuristic (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
+            trajectory_length=1023 * 2e-2 / 4, 
             target_accept_prob=target_accept_prob,)
 
     mcmc = infer.MCMC(
@@ -106,12 +104,13 @@ def get_mcmc(model, config):
 
 def get_init_mcmc(model, n_chains=8):
     n_samples = 32
+    max_tree_depth = 10 ######
     
     kernel = infer.NUTS(
         model=model,
         # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
         step_size=1e-3, 
-        max_tree_depth=10,
+        max_tree_depth=max_tree_depth,
         target_accept_prob=0.65,
         # adapt_step_size=False,
         # adapt_mass_matrix=False,

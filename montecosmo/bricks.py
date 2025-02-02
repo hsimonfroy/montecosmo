@@ -82,8 +82,8 @@ def get_cosmology(**cosmo) -> Cosmology:
     """
     Return full cosmology object from cosmological params.
     """
-    return Planck18(Omega_c = cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
-                    sigma8 = cosmo['sigma8'])
+    return Planck18(Omega_c=cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
+                    sigma8=cosmo['sigma8'])
 
 
 def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
