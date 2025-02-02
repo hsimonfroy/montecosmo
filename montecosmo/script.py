@@ -78,7 +78,7 @@ def get_mcmc(model, config):
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,
             # adapt_step_size=False,
-            # adapt_mass_matrix= False,
+            # adapt_mass_matrix=False,
             )
         
     elif name == "HMC":
