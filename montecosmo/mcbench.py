@@ -209,18 +209,19 @@ class Samples(UserDict):
     def concat(self, *others, axis=0):
         return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
-    def stackby(self, groups:str|list=None, remove=True, axis=-1):
+    def stackby(self, names:str|list=None, remove=True, axis=-1):
         """
         Stack variables by groups, optionally removing individual variables.
-        groups can be variable name or group name.
+
+        names can be variable names (no stacking) or group names.
         """
-        if groups is None:
-            groups = self.groups
-        elif isinstance(groups, str):
-            groups = [groups]
+        if names is None:
+            names = self.groups
+        elif isinstance(names, str):
+            names = [names]
 
         new = self.copy()
-        for g in groups:
+        for g in names:
             if g not in self: # if g is a variable do noting
                 if len(self.groups[g]) == 1:
                     new.data[g] = self[g]
@@ -334,13 +335,22 @@ class Chains(Samples):
             out[k] = jnp.stack(out[k])
         return out
     
-    def choice(self, n, name=['init','init_'], rng=42, batch_ndim=2):
+    def choice(self, n, names:str|list=None, rng=42, batch_ndim=2, replace=False):
+        """
+        Select a random subsample of size n along given axis for variables selected by names.
+        names can be variable names or group names.
+        """
+        if names is None:
+            names = list(self)
+        else:
+            names = np.atleast_1d(names)
+
         if isinstance(rng, int):
             rng = jr.key(rng)
-        fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=False)
+        fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=replace)
         fn = nvmap(fn, batch_ndim)
 
-        for k in name:
+        for k in names:
             self |= tree.map(fn, self.get([k]))
         return self
 
@@ -499,25 +509,26 @@ class Chains(Samples):
     def print_summary(self, group_by_chain=True):
         print_summary(self.data, group_by_chain=group_by_chain)
 
-    def plot(self, groups:str|list=None, batch_ndim=2):
+    def plot(self, names:str|list=None, batch_ndim=2):
         """
-        groups can be variable name or group name
+        names can be variable names or group names.
         """
-        if groups is None:
-            groups = list(self)
-        groups = list(np.atleast_1d(groups))
+        if names is None:
+            names = list(self)
+        else:
+            names = list(np.atleast_1d(names))
         n_conc = max(batch_ndim-1, 0)
-        tot_conc = tree.map(lambda x: jnp.prod(jnp.array(jnp.shape(x))[:n_conc]), self[groups])
+        tot_conc = tree.map(lambda x: jnp.prod(jnp.array(jnp.shape(x))[:n_conc]), self[names])
 
         # Concatenate all chains
         def conc_fn(v):
             for _ in range(n_conc):
                 v = jnp.concatenate(v)
             return v
-        conc = tree.map(conc_fn, self[groups])
+        conc = tree.map(conc_fn, self[names])
 
-        for i_plt, g in enumerate(groups):
-            plt.subplot(1, len(groups), i_plt+1)
+        for i_plt, g in enumerate(names):
+            plt.subplot(1, len(names), i_plt+1)
             plt.title(g)
             for i_l, (k, v) in enumerate(conc[[g]].items()):
                 label = conc.labels.get(k)
@@ -530,7 +541,6 @@ class Chains(Samples):
                     for i in range(1, tot):
                         plt.axvline(i * leng, color='grey', alpha=1., 
                                     linestyle='-', linewidth=0.1, zorder=-1)
-
             plt.legend()
 
 
@@ -568,7 +578,12 @@ def save_run(mcmc:MCMC, i_run:int, path:str, extra_fields:list=None, group_by_ch
     del samples
 
     # Save or overwrite last state
-    pdump(mcmc.last_state, path+f"_last_state.p") 
+    pdump(mcmc.last_state, path+f"_last_state.p")
+        
+    print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, 
+    "\nss:", mcmc.last_state.adapt_state.step_size, 
+    "\nmm_sqrt:", mcmc.last_state.adapt_state.mass_matrix_sqrt)
+
 
 
 def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=(),

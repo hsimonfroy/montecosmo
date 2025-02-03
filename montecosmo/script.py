@@ -29,10 +29,10 @@ def from_id(id):
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':2 if args.mesh_length < 128 else 32,
-        'max_tree_depth':10 if args.mesh_length < 128 else 12,
+        'n_samples':64 if args.mesh_length < 128 else 32, ######
+        'max_tree_depth':10 if args.mesh_length < 128 else 12, ######
         'n_runs':10,
-        'n_chains':4 if args.mesh_length < 128 else 4, ######
+        'n_chains':4 if args.mesh_length < 128 else 2, ######
     }
     save_path = save_dir 
     save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
@@ -47,7 +47,7 @@ class ParseSlurmId():
         dic = {}
         dic['mesh_length'] = [8,16,32,64,128,130]
         dic['lpt_order'] = [0,1,2,3]
-        dic['precond'] = [0,1,2,3]
+        dic['precond'] = [0,1,2,3,4,5,6]
         dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
 
         dic['box_length'] = [None]

@@ -210,12 +210,12 @@ class Model():
     #################
     # Save and load #
     #################
-    def save(self, dir_path): # with pickle because not array-like
-        pdump(asdict(self), os.path.join(dir_path, "model.p"))
+    def save(self, path): # with pickle because not array-like
+        pdump(asdict(self), path)
 
     @classmethod
-    def load(cls, dir_path):
-        return cls(**pload(os.path.join(dir_path, "model.p")))
+    def load(cls, path):
+        return cls(**pload(path))
 
 
 
@@ -333,6 +333,20 @@ class FieldLevelModel(Model):
             _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
 
+        elif self.precond==4:        
+            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, 0., self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
+
+        elif self.precond==5:
+            cosmol = get_cosmology(**self.prior_loc)
+            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
+
+        elif self.precond==6:        
+            cosmol = get_cosmology(**self.prior_loc)
+            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
+
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
         return cosmology, bias, init
@@ -379,7 +393,7 @@ class FieldLevelModel(Model):
         # CIC paint weighted by Lagrangian bias expansion weights
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
         biased_mesh = deterministic('bias_mesh', biased_mesh)
-        # TODO: should deconv CIC here
+        # TODO: should deconv CIC here?
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
@@ -441,10 +455,21 @@ class FieldLevelModel(Model):
 
             elif self.precond==2:
                 transfer = 1 / (1 + self.gxy_count * self.pmeshk_fiduc)**.5
-
+            
             elif self.precond==3:
                 b1 = bias_['b1'] if inv else bias['b1']
                 _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+
+            elif self.precond==4:
+                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, 0., self.a_obs, self.box_shape, self.gxy_count)
+
+            elif self.precond==5:
+                cosmol = get_cosmology(**self.prior_loc)
+                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
+
+            elif self.precond==6:        
+                cosmol = get_cosmology(**self.prior_loc)
+                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)

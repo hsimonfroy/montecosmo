@@ -148,7 +148,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                 pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
                 mesh *= pmeshk**.5 # ~ G(0, P)
 
-            elif precond==3:
+            elif precond>=3:
                 # Sample in fourier space with
                 # complete (and dynamic) posterior preconditioning assuming Gaussian linear model
                 # means, stds = guide # sigma = (n * (bD)^2 + P^-1)^-1/2 ; mu = sigma^2 * nbD * delta_obs
@@ -176,7 +176,7 @@ def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False,
                     mesh /= transfer # ~ G(0, I + n * P_fid(a_obs))
                     mesh = cgh2rg(mesh)
 
-            elif precond==3:          
+            elif precond>=3:        
                 # means, stds = guide # sigma = (n * (bD)^2 + P^-1)^-1/2 ; mu = sigma^2 * nbD * delta_obs
                 # mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
                 # mesh = cgh2rg(mesh)
