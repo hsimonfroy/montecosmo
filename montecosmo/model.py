@@ -355,6 +355,10 @@ class FieldLevelModel(Model):
     def evolve(self, params:tuple):
         cosmology, bias, init = params
 
+        if self.lpt_order==4:
+            # Kaiser model
+            return kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
+                    
         # Create regular grid of particles
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
 
@@ -362,7 +366,7 @@ class FieldLevelModel(Model):
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, pos, self.box_shape, **bias, **init)
         # TODO: gaussian lagrangian weights
 
-        if self.lpt_order > 0:
+        if 1 <= self.lpt_order <= 3:
             # LPT displacement at a_lpt
             # NOTE: lpt assumes given mesh follows linear spectral power at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
@@ -379,7 +383,7 @@ class FieldLevelModel(Model):
             pos += rsd_fpm(cosmology, self.a_obs, vel, self.los)
             pos, vel = deterministic('rsd_part', (pos, vel))
 
-        else: # TODO: lpt_order is None
+        elif self.lpt_order==0: # TODO: lpt_order is None
             cosmology._workspace = {}  # HACK: temporary fix
             part = nbody_bf(cosmology, **init, pos=pos, a=self.a_obs, n_steps=self.nbody_steps, 
                                  grad_fd=False, lap_fd=False, snapshots=self.snapshots)
@@ -399,8 +403,7 @@ class FieldLevelModel(Model):
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
         return biased_mesh
-        # Kaiser model
-        return kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
+
 
 
     def likelihood(self, mesh, temp=1.):
@@ -586,6 +589,13 @@ class FieldLevelModel(Model):
     def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2):
         chains = chains.copy()
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
+        return chains
+    
+    def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
+                           kedges:int|float|list=None, comp=(False, False), batch_ndim=2) -> Chains:
+        chains = chains.copy()
+        fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges, comp=comp), batch_ndim)
+        chains.data['kptc'] = fn(chains.data[name])
         return chains
     
     def init_model(self, rng, base=False, temp=1.):

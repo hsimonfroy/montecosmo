@@ -272,8 +272,8 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 def rsd_bf(cosmo:Cosmology, a, p, los:np.ndarray=None):
     """
-    Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
-    Computed with respect scale factor and line-of-sight.
+    Redshift-Space Distortion (RSD) displacement from cosmology and BullFrog momentum.
+    Computed with respect to scale factor and line-of-sight.
 
     No RSD if los is None.
     """
@@ -291,8 +291,8 @@ def rsd_bf(cosmo:Cosmology, a, p, los:np.ndarray=None):
 
 def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
     """
-    Redshift-Space Distortion (RSD) displacement from cosmology and Particle Mesh (PM) momentum.
-    Computed with respect scale factor and line-of-sight.
+    Redshift-Space Distortion (RSD) displacement from cosmology and FastPM momentum.
+    Computed with respect to scale factor and line-of-sight.
     
     No RSD if los is None.
     """

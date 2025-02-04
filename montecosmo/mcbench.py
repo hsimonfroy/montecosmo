@@ -221,16 +221,16 @@ class Samples(UserDict):
             names = [names]
 
         new = self.copy()
-        for g in names:
-            if g not in self: # if g is a variable do noting
-                if len(self.groups[g]) == 1:
-                    new.data[g] = self[g]
+        for k in names:
+            if k not in self: # if name is a variable do noting
+                if len(self.groups[k]) == 1:
+                    new.data[k] = self[k]
                 else:
-                    new.data[g] = jnp.stack(self[g], axis=axis)
+                    new.data[k] = jnp.stack(self[k], axis=axis)
 
                 # Remove individual variables
                 if remove:
-                    for k in self.groups[g]:
+                    for k in self.groups[k]:
                         new.data.pop(k)
         return new
 
@@ -509,41 +509,45 @@ class Chains(Samples):
     def print_summary(self, group_by_chain=True):
         print_summary(self.data, group_by_chain=group_by_chain)
 
-    def plot(self, names:str|list=None, batch_ndim=2):
+
+    def plot(self, names:str|list=None, batch_ndim=2, grid=True, log=False):
         """
-        names can be variable names or group names.
+        Plot chains. names can be variable names or group names.
         """
         if names is None:
             names = list(self)
         else:
             names = list(np.atleast_1d(names))
-        n_conc = max(batch_ndim-1, 0)
-        tot_conc = tree.map(lambda x: jnp.prod(jnp.array(jnp.shape(x))[:n_conc]), self[names])
 
-        # Concatenate all chains
+        # Concatenate all extra dimensions
+        n_conc = max(batch_ndim-2, 0)
         def conc_fn(v):
             for _ in range(n_conc):
                 v = jnp.concatenate(v)
-            return v
+            return jnp.atleast_2d(v)
         conc = tree.map(conc_fn, self[names])
 
-        for i_plt, g in enumerate(names):
-            plt.subplot(1, len(names), i_plt+1)
-            plt.title(g)
-            for i_l, (k, v) in enumerate(conc[[g]].items()):
-                label = conc.labels.get(k)
-                plt.plot(v, label=k if label is None else '$'+label+'$')
+        # All item shapes should match on the first batch_ndim dimensions,
+        # so take the first item shape
+        n_chains = jnp.shape(next(iter(conc.values())))[0]
 
-                # Plot vertical lines to separate chains
-                if i_l == 0:
-                    tot = tot_conc[k]
-                    leng = len(v) // tot
-                    for i in range(1, tot):
-                        plt.axvline(i * leng, color='grey', alpha=1., 
-                                    linestyle='-', linewidth=0.1, zorder=-1)
-            plt.legend()
+        fig = plt.gcf()
+        subfigs = fig.subfigures(len(names), 1)
+        for subfig, name in zip(subfigs, names):
 
+            subfig.suptitle(f"{name}")
+            axs = subfig.subplots(1, n_chains, sharey='row')
+            axs = np.atleast_1d(axs)
+            subfig.subplots_adjust(wspace=0)
 
+            for k, v in conc[[name]].items():
+                for i_c, ax in enumerate(axs):
+                    label = conc.labels.get(k)
+                    ax.plot(v[i_c], label=k if label is None else '$'+label+'$')
+                    if log: 
+                        ax.set_yscale('log')
+                    ax.grid(grid)
+                ax.legend()
 
 
 
@@ -579,12 +583,7 @@ def save_run(mcmc:MCMC, i_run:int, path:str, extra_fields:list=None, group_by_ch
 
     # Save or overwrite last state
     pdump(mcmc.last_state, path+f"_last_state.p")
-        
-    print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, 
-    "\nss:", mcmc.last_state.adapt_state.step_size, 
-    "\nmm_sqrt:", mcmc.last_state.adapt_state.mass_matrix_sqrt)
-
-
+    
 
 def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=(),
                     rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
@@ -607,6 +606,11 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
         # Warmup
         mcmc.warmup(rng, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
         save_run(mcmc, start, path, extra_fields, group_by_chain)
+
+        # Print warmup last state infos
+        print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, 
+            "\nss:", mcmc.last_state.adapt_state.step_size, 
+            "\nmm_sqrt:", mcmc.last_state.adapt_state.mass_matrix_sqrt)
 
         # Handling rng key and destroy init_params
         rng_run = mcmc.post_warmup_state.rng_key

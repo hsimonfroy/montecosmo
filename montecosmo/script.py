@@ -16,7 +16,7 @@ def from_id(id):
     config = {
           'mesh_shape':3 * (args.mesh_length,),
           'box_shape':3 * (args.box_length if args.box_length is not None else 5. * args.mesh_length,), 
-          'a_lpt':args.a_obs if args.lpt_order < 3 else args.a_lpt,
+          'a_lpt':args.a_obs if args.lpt_order != 3 else args.a_lpt,
           'a_obs':args.a_obs,
           'lpt_order':2 if args.lpt_order in [2, 3] else args.lpt_order, # 2lpt + pm for 3
           'precond':args.precond,
@@ -46,7 +46,7 @@ class ParseSlurmId():
 
         dic = {}
         dic['mesh_length'] = [8,16,32,64,128,130]
-        dic['lpt_order'] = [0,1,2,3]
+        dic['lpt_order'] = [0,1,2,3,4]
         dic['precond'] = [0,1,2,3,4,5,6]
         dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
 
