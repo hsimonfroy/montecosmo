@@ -4,14 +4,14 @@
 # # Model Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[1]:
+# In[2]:
 
 
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
 import matplotlib.pyplot as plt
 import numpy as np
 from jax import numpy as jnp, random as jr, config as jconfig, jit, vmap, grad, debug, tree
-jconfig.update("jax_enable_x64", True)
+# jconfig.update("jax_enable_x64", True)
 
 from functools import partial
 from getdist import plots
@@ -25,11 +25,11 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-# get_ipython().system('jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb')
+# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
 
-# get_ipython().run_line_magic('matplotlib', 'inline')
-# get_ipython().run_line_magic('load_ext', 'autoreload')
-# get_ipython().run_line_magic('autoreload', '2')
+get_ipython().run_line_magic('matplotlib', 'inline')
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
 
 
 # ## Config and fiduc
@@ -39,19 +39,19 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 ################## TO SET #######################
 # task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-task_id = 4133
+task_id = 3150
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
 print("save path:", save_path)
 
-import sys
-tempstdout, tempstderr = sys.stdout, sys.stderr
-sys.stdout = sys.stderr = open(save_path+'.out', 'a')
-job_id = int(os.environ['SLURM_ARRAY_JOB_ID'])
-print("SLURM_ARRAY_JOB_ID:", job_id)
-print("SLURM_ARRAY_TASK_ID:", task_id)
-print("jax_enable_x64:", jconfig.read("jax_enable_x64"))
+# import sys
+# tempstdout, tempstderr = sys.stdout, sys.stderr
+# sys.stdout = sys.stderr = open(save_path+'.out', 'a')
+# job_id = int(os.environ['SLURM_ARRAY_JOB_ID'])
+# print("SLURM_ARRAY_JOB_ID:", job_id)
+# print("SLURM_ARRAY_TASK_ID:", task_id)
+# print("jax_enable_x64:", jconfig.read("jax_enable_x64"))
 
 
 # In[3]:
@@ -74,7 +74,7 @@ if not os.path.exists(save_dir+"truth.p"):
     truth = model.predict(samples=truth, hide_base=False, hide_samp=False, frombase=True)
     
     print(f"Saving model and truth at {save_dir}")
-    model.save(save_dir)    
+    model.save(save_dir+"model.p")    
     pdump(truth, save_dir+"truth.p")
 else:
     print(f"Loading truth from {save_dir}")
@@ -94,7 +94,7 @@ model.block()
 # In[4]:
 
 
-continue_run = False
+continue_run = True
 if continue_run:
     model.reset()
     model.condition({'obs': truth['obs']})
@@ -149,7 +149,7 @@ else:
     plt.subplot(133)
     plot_coh(kptc_obs[0], kptc_obs[-1], ':', c='grey', label='obs')
     plt.tight_layout()
-    plt.savefig(save_dir+f'initpk_{task_id}.png')
+    plt.savefig(save_dir+f'init_glin_{task_id}.png')
     # plt.savefig(f'init_glin_{task_id}.png')
 
     last_state = pload(save_path + "_init_last_state.p")
@@ -168,32 +168,33 @@ else:
     model.block()
 
 
-
 # In[ ]:
 
 
-if mcmc_config['sampler'] != 'NUTSwG':
+from tqdm import tqdm
+if mcmc_config['sampler'] in ['NUTS', 'HMC']:
     mcmc = get_mcmc(model.model, mcmc_config)
     if continue_run:
-        print(f"{jnp.result_type(True)}") # HACK: why is it working?!!
+        print(f"{jnp.result_type(True)=}") # HACK: why is it working?!!
         mcmc.num_warmup = 0
         mcmc.post_warmup_state = pload(save_path + "_last_state.p")
-        start = 11
+        start = 7
         end = start + mcmc_config['n_runs'] - 1
         mcmc_runned = sample_and_save(mcmc, save_path, start, end, rng=43, extra_fields=['num_steps'])
 
     else:
         mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
 
-else:
+elif mcmc_config['sampler'] == 'NUTSWG':
     from montecosmo.samplers import nutswg_init, get_nutswg_warm, get_nutswg_run
+    n_samples, n_runs, n_chains = mcmc_config['n_samples'], mcmc_config['n_runs'], mcmc_config['n_chains']
 
     step_fn, init_fn, conf, init_state_fn = nutswg_init(model.logpdf)
 
     # warmup_fn = jit(vmap(get_nutswg_warm(model.logpdf, conf, mcmc_config['n_samples'], progress_bar=False)))
     # state = jit(vmap(init_state_fn))(init_params_)
 
-    # samples, infos, state, conf = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), state)
+    # samples, infos, state, conf = warmup_fn(jr.split(jr.key(43), n_chains), state)
     # print("conf:", conf,
     #         "\n\ninfos:", infos, '\n#################\n')
     # jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
@@ -203,15 +204,53 @@ else:
     conf = pload(save_path+'_conf.p')
     state = pload(save_path+'_last_state.p')
     
-    run_fn = jit(vmap(get_nutswg_run(model.logpdf, step_fn, init_fn, mcmc_config['n_samples'], progress_bar=False)))
-    start = 11
-    end = start + mcmc_config['n_runs'] - 1
+    run_fn = jit(vmap(get_nutswg_run(model.logpdf, step_fn, init_fn, n_samples, progress_bar=False)))
+    start = 1 ######
+    end = start + n_runs - 1
     key = jr.key(42)
-    for i_run in range(start, end+1):
+    for i_run in tqdm(range(start, end+1)):
         print(f"run {i_run}/{end}")
         key, run_key = jr.split(key, 2)
-        samples, infos, state = run_fn(jr.split(run_key, mcmc_config['n_chains']), state, conf)
+        samples, infos, state = run_fn(jr.split(run_key, n_chains), state, conf)
         print("infos:", tree.map(lambda x: jnp.mean(x, 1), infos))
         jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
+        pdump(state, save_path+f"_last_state.p")
+
+elif mcmc_config['sampler'] == 'MCLMC':
+    from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
+
+    config = None
+    # config = {'L':256., 'step_size': 2.,} # 256, 2 for 32^3
+    # config = {'L':193, 'step_size': 45,} # 64^3
+    # config = {'L':550, 'step_size': 30,} # 64^3 norsdb fOc a=.5
+    # config = {'L':500, 'step_size': 10,} # 64^3 norsdb
+    # config = {'L':450, 'step_size': 3,} # 64^3 a=.5
+    config = {'L':500, 'step_size': 3,} # 64, 128^3 a=.5
+
+    warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_samples=4096, config=config)))
+    state, config = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), init_params_)
+    print(config)
+    # pdump(state, save_path+f"_last_state.p")
+    # pdump(config, save_path+f"_conf.p")
+
+    # state = pload(save_path+f"_last_state.p")
+    # config = pload(save_path+f"_conf.p")
+    n_samples, n_runs, n_chains = mcmc_config['n_samples'], mcmc_config['n_runs'], mcmc_config['n_chains']
+
+    thinning = 128
+    run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=thinning, progress_bar=False)))
+
+    start = 1 ######
+    end = start + n_runs - 1
+    key = jr.key(42)
+    for i_run in tqdm(range(start, n_runs + start)):
+        print(f"run {i_run}/{n_runs}")
+        key, run_key = jr.split(key, 2)
+        state, samples, info = run_fn(jr.split(run_key, n_chains), state, config)
+        
+        info = tree.map(lambda x: jnp.mean(x**2, 1), info)
+        print(info, "\nmean square energy fluctation per dim:", info.energy_change / model.mesh_shape.astype(float).prod(), '\n')
+
+        jnp.savez(save_path+f"_{i_run}.npz", **samples)
         pdump(state, save_path+f"_last_state.p")
 

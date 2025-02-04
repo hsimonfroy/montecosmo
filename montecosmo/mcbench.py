@@ -518,14 +518,15 @@ class Chains(Samples):
             names = list(self)
         else:
             names = list(np.atleast_1d(names))
-
-        # Concatenate all extra dimensions
+        
+        # Concatenate extra dims or expand missing dims
         n_conc = max(batch_ndim-2, 0)
-        def conc_fn(v):
+        n_exp = max(2-batch_ndim, 0)
+        def conc_exp_fn(v):
             for _ in range(n_conc):
                 v = jnp.concatenate(v)
-            return jnp.atleast_2d(v)
-        conc = tree.map(conc_fn, self[names])
+            return jnp.expand_dims(v, axis=range(n_exp))
+        conc = tree.map(conc_exp_fn, self[names])
 
         # All item shapes should match on the first batch_ndim dimensions,
         # so take the first item shape

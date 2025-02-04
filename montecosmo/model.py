@@ -18,7 +18,8 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jaxpm.painting import cic_paint
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
                                gausslin_posterior, lin_power_mesh, 
-                               lagrangian_weights, rsd_bf, rsd_fpm, kaiser_model) 
+                               lagrangian_weights, rsd_bf, rsd_fpm, kaiser_model)
+from montecosmo.bricks import gausslin_posterior2 ################
 from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
 from montecosmo.metrics import spectrum, powtranscoh
 from montecosmo.utils import pdump, pload
@@ -339,12 +340,12 @@ class FieldLevelModel(Model):
 
         elif self.precond==5:
             cosmol = get_cosmology(**self.prior_loc)
-            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
+            _, transfer, scales = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
 
         elif self.precond==6:        
             cosmol = get_cosmology(**self.prior_loc)
-            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
+            _, transfer, scales = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
 
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=False, temp=temp)
@@ -468,11 +469,11 @@ class FieldLevelModel(Model):
 
             elif self.precond==5:
                 cosmol = get_cosmology(**self.prior_loc)
-                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
+                _, transfer, _ = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
 
             elif self.precond==6:        
                 cosmol = get_cosmology(**self.prior_loc)
-                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
+                _, transfer, _ = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)

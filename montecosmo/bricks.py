@@ -75,6 +75,25 @@ def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
     scales = (1 + gxy_count * evolve**2 * pmeshk)**.5
     return means, stds, scales
 
+def gausslin_posterior2(delta_obs, cosmo:Cosmology, cosmo_fiduc:Cosmology, b1, a, box_shape, gxy_count):
+    """
+    Return posterior mean, std, and preconditioning fields of the linear matter field (at a=1) given the observed field,
+    by assuming Gaussian linear model. All fields are in fourier space.
+    """
+    # Compute linear matter power spectrum
+    mesh_shape = ch2rshape(delta_obs.shape)
+    pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
+    pmeshk_fiduc = lin_power_mesh(cosmo_fiduc, mesh_shape, box_shape)
+    evolve = (1 + b1) * growth_factor(cosmo_fiduc, a) # Eulerian linear bias = 1 + Lagrangian linear bias
+    # TODO: add rsd with kaiser model?
+
+    stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk_fiduc))**.5
+    # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
+    means = stds**2 * gxy_count * evolve * delta_obs
+
+    scales = (1 + gxy_count * evolve**2 * pmeshk_fiduc)**.5
+    return means, stds, scales
+
 
 
 

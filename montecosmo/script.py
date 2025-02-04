@@ -30,8 +30,8 @@ def from_id(id):
         'sampler':args.sampler,
         'target_accept_prob':0.65,
         'n_samples':64 if args.mesh_length < 128 else 32, ######
-        'max_tree_depth':10 if args.mesh_length < 128 else 12, ######
-        'n_runs':10,
+        'max_tree_depth':10,
+        'n_runs':20,
         'n_chains':4 if args.mesh_length < 128 else 2, ######
     }
     save_path = save_dir 
@@ -103,7 +103,7 @@ def get_mcmc(model, config):
 
 
 def get_init_mcmc(model, n_chains=8):
-    n_samples = 32
+    n_samples = 64
     max_tree_depth = 10 ######
     
     kernel = infer.NUTS(
