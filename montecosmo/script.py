@@ -31,7 +31,7 @@ def from_id(id):
         'target_accept_prob':0.65,
         'n_samples':64 if args.mesh_length < 128 else 32, ######
         'max_tree_depth':10,
-        'n_runs':20,
+        'n_runs':15,
         'n_chains':4 if args.mesh_length < 128 else 2, ######
     }
     save_path = save_dir 
@@ -86,8 +86,8 @@ def get_mcmc(model, config):
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
             step_size=1e-3, 
-            # Heuristic (2**max_tree_depth-1)*step_size_NUTS/(2 to 4), compare with default 2pi.
-            trajectory_length=1023 * 2e-2 / 4, 
+            # Heuristic mean_n_steps_NUTS*step_size_NUTS/(2 to 4), compare with default 2pi.
+            trajectory_length=350 * 2e-2 / 4, 
             target_accept_prob=target_accept_prob,)
 
     mcmc = infer.MCMC(

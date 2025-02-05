@@ -4,10 +4,10 @@
 # # Model Inference
 # Infer from a cosmological model via MCMC samplers. 
 
-# In[2]:
+# In[1]:
 
 
-import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
+import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.66' # NOTE: jax preallocates GPU (default 75%)
 import matplotlib.pyplot as plt
 import numpy as np
 from jax import numpy as jnp, random as jr, config as jconfig, jit, vmap, grad, debug, tree
@@ -39,7 +39,7 @@ get_ipython().run_line_magic('autoreload', '2')
 
 ################## TO SET #######################
 # task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-task_id = 3150
+task_id = 3130
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
@@ -178,9 +178,9 @@ if mcmc_config['sampler'] in ['NUTS', 'HMC']:
         print(f"{jnp.result_type(True)=}") # HACK: why is it working?!!
         mcmc.num_warmup = 0
         mcmc.post_warmup_state = pload(save_path + "_last_state.p")
-        start = 7
+        start = 11
         end = start + mcmc_config['n_runs'] - 1
-        mcmc_runned = sample_and_save(mcmc, save_path, start, end, rng=43, extra_fields=['num_steps'])
+        mcmc_runned = sample_and_save(mcmc, save_path, start, end, rng=44, extra_fields=['num_steps'])
 
     else:
         mcmc_runned = sample_and_save(mcmc, save_path, 0, mcmc_config['n_runs'], extra_fields=['num_steps'], init_params=init_params_)
@@ -225,6 +225,7 @@ elif mcmc_config['sampler'] == 'MCLMC':
     # config = {'L':550, 'step_size': 30,} # 64^3 norsdb fOc a=.5
     # config = {'L':500, 'step_size': 10,} # 64^3 norsdb
     # config = {'L':450, 'step_size': 3,} # 64^3 a=.5
+    # config = {'L':350, 'step_size': 3,} # 64^3 a=.5
     config = {'L':500, 'step_size': 3,} # 64, 128^3 a=.5
 
     warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_samples=4096, config=config)))
@@ -253,4 +254,10 @@ elif mcmc_config['sampler'] == 'MCLMC':
 
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
         pdump(state, save_path+f"_last_state.p")
+
+
+# In[ ]:
+
+
+
 
