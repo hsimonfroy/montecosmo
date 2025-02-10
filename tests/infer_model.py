@@ -25,11 +25,12 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 # import mlflow
 # mlflow.set_tracking_uri(uri="http://127.0.0.1:8081")
 # mlflow.set_experiment("infer")
-# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb
+# !jupyter nbconvert --to script ./src/montecosmo/tests/infer_model.ipynb/
 
-get_ipython().run_line_magic('matplotlib', 'inline')
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
+# get_ipython().run_line_magic('matplotlib', 'inline')
+# get_ipython().run_line_magic('load_ext', 'autoreload')
+# get_ipython().run_line_magic('autoreload', '2')
+# get_ipython().system('hostname')
 
 
 # ## Config and fiduc
@@ -39,7 +40,7 @@ get_ipython().run_line_magic('autoreload', '2')
 
 ################## TO SET #######################
 # task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
-task_id = 3130
+task_id = 215011
 print("SLURM_ARRAY_TASK_ID:", task_id)
 model, mcmc_config, save_dir, save_path = from_id(task_id)
 os.makedirs(save_dir, exist_ok=True)
@@ -54,7 +55,7 @@ print("save path:", save_path)
 # print("jax_enable_x64:", jconfig.read("jax_enable_x64"))
 
 
-# In[3]:
+# In[4]:
 
 
 print(model)
@@ -69,6 +70,8 @@ if not os.path.exists(save_dir+"truth.p"):
             'b2':0., 
             'bs2':0., 
             'bn2': 0.}
+    if model.prior_loc['b1'] == 0:
+        truth['b1'] = 0.
 
     model.reset()
     truth = model.predict(samples=truth, hide_base=False, hide_samp=False, frombase=True)
@@ -80,25 +83,28 @@ else:
     print(f"Loading truth from {save_dir}")
     truth = pload(save_dir+"truth.p")
 
-model.condition({'obs': truth['obs']})
-model.delta_obs = truth['obs'] - 1
+model.reset()
+if model.prior_loc['b1'] == 0:
+    print('no bias')
+    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
+    # model.condition({'obs': truth['obs'], 'bn2': truth['bn2']}, frombase=True)
+else:
+    model.condition({'obs': truth['obs']})
 model.block()
-# model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
-# model.render()
+model.render()
+model.delta_obs = truth['obs'] - 1
 
 
 # ## Run
 
 # ### NUTS, HMC
 
-# In[4]:
+# In[5]:
 
 
-continue_run = True
+continue_run = False
 if continue_run:
-    model.reset()
-    model.condition({'obs': truth['obs']})
-    model.block()
+    pass
 else:
     model.reset()
     model.condition({'obs': truth['obs']} | model.prior_loc, frombase=True)
@@ -151,21 +157,25 @@ else:
     plt.tight_layout()
     plt.savefig(save_dir+f'init_glin_{task_id}.png')
     # plt.savefig(f'init_glin_{task_id}.png')
-
-    last_state = pload(save_path + "_init_last_state.p")
-    print("mean_acc_prob:", last_state.mean_accept_prob, 
-        "\nss:", last_state.adapt_state.step_size, 
-        "\nmm_sqrt:", last_state.adapt_state.mass_matrix_sqrt)
     ################    
     
-    init_params_ |= ils
-    # init_params_ |= mcmc.last_state.z
+    if model.prior_loc['b1'] == 0:
+        print('no bias')
+        init_params_ = {k:v for k,v in init_params_.items() if k in ['Omega_m_', 'sigma8_']} | ils
+        # init_params_ = {k:v for k,v in init_params_.items() if k in ['Omega_m_', 'sigma8_','b1_','b2_','bs2_']} | ils
+    else:
+        init_params_ |= ils
+        # init_params_ |= mcmc.last_state.z
     print(init_params_.keys())
-    model.reset()
+
+model.reset()
+if model.prior_loc['b1'] == 0:
+    print('no bias')
+    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
+    # model.condition({'obs': truth['obs'], 'bn2': truth['bn2']}, frombase=True)
+else:
     model.condition({'obs': truth['obs']})
-    # init_params_ = {k:v for k,v in init_params_.items() if k in ['Omega_m_', 'sigma8_']} | ils
-    # model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
-    model.block()
+model.block()
 
 
 # In[ ]:
@@ -178,7 +188,7 @@ if mcmc_config['sampler'] in ['NUTS', 'HMC']:
         print(f"{jnp.result_type(True)=}") # HACK: why is it working?!!
         mcmc.num_warmup = 0
         mcmc.post_warmup_state = pload(save_path + "_last_state.p")
-        start = 11
+        start = 3 ###############
         end = start + mcmc_config['n_runs'] - 1
         mcmc_runned = sample_and_save(mcmc, save_path, start, end, rng=44, extra_fields=['num_steps'])
 

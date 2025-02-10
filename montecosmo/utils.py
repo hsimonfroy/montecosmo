@@ -1,16 +1,17 @@
 from __future__ import annotations # for Union typing | in python<3.10
 
 from pickle import dump, load, HIGHEST_PROTOCOL
-from functools import wraps
+from functools import partial, wraps
 
 import numpy as np
 import jax.numpy as jnp
 import jax.random as jr
-from jax import jit, vmap, grad, tree
+from jax import jit, vmap, grad, tree, lax
 
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
 
+from numpyro.distributions import Distribution, constraints, TruncatedNormal, Uniform
 
 
 
@@ -74,9 +75,9 @@ def safe_div(x, y):
 
 
 
-
-
-
+######################################
+# Truncated Normal reparametrization #
+######################################
 def lowtail(x, low=-jnp.inf, high=None):
     temp = 1/6.2842226/2 # best temperature at 12 sigma
     energy = - jnp.stack(jnp.broadcast_arrays(x, low), axis=0)
@@ -106,10 +107,10 @@ def std2trunc(x, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     """
     Transport standard normal variable to a general truncated normal variable. 
     """
-    scale_nonzero = jnp.where(scale==0, 1, scale)
-    lowhigh = (jnp.stack([low, high]) - loc) / scale_nonzero
-    low, high = jnp.where(scale==0, jnp.stack([-jnp.inf, jnp.inf]), lowhigh)
-    lim = 12 # switch to a more stable approx at 12 sigma
+    if scale==0:
+        return loc * jnp.ones_like(x)
+    low, high = (low - loc) / scale, (high - loc) / scale
+    lim = 12 # switch to a more stable approx at 12 sigma, for float32
     condlist = [(x < -lim) & (low < -lim), (lim < x) & (lim < high)]
     funclist = [lowtail, hightail, body]
     return loc + scale * jnp.piecewise(x, condlist, funclist, low=low, high=high)
@@ -147,14 +148,91 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     Transport a general truncated normal variable to a standard normal variable.
     """
     y, low, high = (y - loc) / scale, (low - loc) / scale, (high - loc) / scale
-    lim = 12 # switch to a more stable approx at 12 sigma
+    lim = 12 # switch to a more stable approx at 12 sigma, for float32
     condlist = [(y < -lim) & (low < -lim), (lim < y) & (lim < high)]
     funclist = [invlowtail, invhightail, invbody]
     return jnp.piecewise(y, condlist, funclist, low=low, high=high)
 
 
+class DetruncTruncNorm(Distribution):
+    """
+    Detruncated Truncated Normal distribution.
+    Detruncation is such that a truncated normal with estimated parameters is transformed into a standard normal.
+
+    This means `std2trunc(DetruncTruncNorm(loc, scale, low, high, loc_est, scale_est), loc_est, scale_est, low, high)` 
+    is distributed as `TruncNorm(loc, scale, low, high)`.
+    """
+    arg_constraints = {'loc': constraints.real, 'scale': constraints.positive, 
+                       'low': constraints.real, 'high': constraints.real,
+                       'loc_est': constraints.real, 'scale_est': constraints.positive, 
+                       }
+    support = constraints.real
+    def __init__(self, loc, scale, low=-jnp.inf, high=jnp.inf, loc_est=None, scale_est=None, *, validate_args=None):
+        self.loc = loc
+        self.scale = scale
+        self.low = low
+        self.high = high
+  
+        self.loc_est = loc if loc_est is None else loc_est
+        self.scale_est = scale if scale_est is None else scale_est
+
+        batch_shape = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale), jnp.shape(low), jnp.shape(high))
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+    def sample(self, key, sample_shape=()):
+        trunc = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).sample(key, sample_shape)
+        return trunc2std(trunc, self.loc_est, self.scale_est, self.low, self.high)
+
+    def log_prob(self, value):
+        fn = partial(std2trunc, loc=self.loc_est, scale=self.scale_est, low=self.low, high=self.high)
+        log_abs_det_jac = lambda x: jnp.log(jnp.abs(grad(fn)(x)))
+        log_pdf = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).log_prob
+        return log_pdf(fn(value)) + log_abs_det_jac(value)
+
+class DetruncUnif(Distribution):
+    """
+    Detruncated Uniform distribution.
+    Detruncation is such that a truncated normal with estimated parameters is transformed into a standard normal.
+
+    This means `std2trunc(DetruncUnif(low, high, loc_est, scale_est), loc_est, scale_est, low, high)` 
+    is distributed as `Unif(low, high)`.
+    """
+    arg_constraints = {'low': constraints.real, 'high': constraints.real,
+                       'loc_est': constraints.real, 'scale_est': constraints.positive, 
+                       }
+    support = constraints.real
+    def __init__(self, low, high, loc_est=None, scale_est=None, *, validate_args=None):
+        self.low = low
+        self.high = high
+        
+        self.loc_est = (high + low) / 2 if loc_est is None else loc_est
+        self.scale_est = (high - low) / 12**.5 if scale_est is None else scale_est
+
+        batch_shape = lax.broadcast_shapes(jnp.shape(low), jnp.shape(high))
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+    def sample(self, key, sample_shape=()):
+        trunc = Uniform(self.low, self.high).sample(key, sample_shape)
+        return trunc2std(trunc, self.loc_est, self.scale_est, self.low, self.high)
+
+    def log_prob(self, value):
+        fn = partial(std2trunc, loc=self.loc_est, scale=self.scale_est, low=self.low, high=self.high)
+        log_abs_det_jac = lambda x: jnp.log(jnp.abs(grad(fn)(x)))
+        log_pdf = Uniform(self.low, self.high).log_prob
+        return log_pdf(fn(value)) + log_abs_det_jac(value)
+
+def analyt_log_abs_det_jac(x, loc, scale, low, high):
+    # NOTE: this analytical logabsdetjac for std2trunc fails after 12sigma for float32
+    low, high = (low - loc) / scale, (high - loc) / scale
+    cdf_low, cdf_high = norm.cdf(low), norm.cdf(high)
+    # return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(std2trunc(x, 0., 1., low, high)))
+    cdf_y = cdf_low + (cdf_high - cdf_low) * norm.cdf(x)
+    return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(norm.ppf(cdf_y)))
 
 
+#############################
+# Fourier reparametrization #
+#############################
 def id_cgh(shape, part="real", norm="backward"):
     """
     Return indices and weights to permute a real Gaussian tensor of shape ``mesh_shape`` (3D)

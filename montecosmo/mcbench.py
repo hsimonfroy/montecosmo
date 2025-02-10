@@ -47,7 +47,7 @@ class Samples(UserDict):
 
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
-        if self._istreeof(key, (int, slice, type(Ellipsis))):
+        if self._istreeof(key, (int, slice, type(Ellipsis), np.ndarray, jnp.ndarray)):
             return tree.map(lambda x: x[key], self)
 
         # Querying with groups
@@ -534,6 +534,7 @@ class Chains(Samples):
 
         fig = plt.gcf()
         subfigs = fig.subfigures(len(names), 1)
+        subfigs = np.atleast_1d(subfigs)
         for subfig, name in zip(subfigs, names):
 
             subfig.suptitle(f"{name}")
@@ -541,13 +542,18 @@ class Chains(Samples):
             axs = np.atleast_1d(axs)
             subfig.subplots_adjust(wspace=0)
 
-            for k, v in conc[[name]].items():
+            for i_n, (k, v) in enumerate(conc[[name]].items()):
                 for i_c, ax in enumerate(axs):
                     label = conc.labels.get(k)
                     ax.plot(v[i_c], label=k if label is None else '$'+label+'$')
                     if log: 
                         ax.set_yscale('log')
                     ax.grid(grid)
+
+                    xlab = ax.get_xticklabels()
+                    if xlab and i_n==0:
+                        plt.setp(xlab[:2], visible=False)
+
                 ax.legend()
 
 

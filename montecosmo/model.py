@@ -19,12 +19,12 @@ from jaxpm.painting import cic_paint
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
                                gausslin_posterior, lin_power_mesh, 
                                lagrangian_weights, rsd_bf, rsd_fpm, kaiser_model)
-from montecosmo.bricks import gausslin_posterior2 ################
+from montecosmo.bricks import gausslin_posterior2, _samp2base ################
 from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
 from montecosmo.metrics import spectrum, powtranscoh
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div
+from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
 from montecosmo.mcbench import Chains
 
 
@@ -46,13 +46,17 @@ default_config={
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
                                     'scale':0.2,
+                                    'scale_est':0.06,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
                                     'label':'{\\sigma}_8',
                                     'loc':0.8102,
                                     'scale':0.2,
-                                    'low': 0.,},
+                                    'scale_est':0.04,
+                                    'low': 0.,
+                                    # 'high': 2.,
+                                    },
                         'b1': {'group':'bias',
                                     'label':'{b}_1',
                                     'loc':1.,
@@ -76,6 +80,7 @@ default_config={
             'los':(0.,0.,1.),
             # Preconditioning mode
             'precond':3, # from 0 to 3
+            'prior_mode':'detrunc'
             }
 
 
@@ -262,6 +267,8 @@ class FieldLevelModel(Model):
     snapshots:int|list
     los:tuple
 
+    prior_mode:str
+
     def __post_init__(self):
         assert(self.a_lpt <= self.a_obs), "a_lpt must be less than (<=) a_obs"
         self.groups = self._groups(base=True)
@@ -312,8 +319,16 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
         for g in ['cosmo', 'bias']:
-            dic = self._sample_gauss(self.groups[g], base=False) # sample               
-            dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
+
+            if not hasattr(self, "prior_mode") or self.prior_mode=='prior':
+                print("########### prior")
+                dic = self._sample_gauss(self.groups[g], base=False) # sample               
+                dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
+            elif self.prior_mode=='detrunc':
+                print("########### detrunc")
+                dic = self._sample(self.groups[g]) # sample               
+                dic = _samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
+
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
         cosmo, bias = tup
         cosmology = get_cosmology(**cosmo)        
@@ -330,23 +345,19 @@ class FieldLevelModel(Model):
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
             transfer = 1 / scales
 
-        elif self.precond==3:        
+        elif self.precond==3: # Dynamic     
             _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
 
-        elif self.precond==4:        
-            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, 0., self.a_obs, self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
-
-        elif self.precond==5:
+        elif self.precond==5: # Static
             cosmol = get_cosmology(**self.prior_loc)
             _, transfer, scales = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
 
-        elif self.precond==6:        
-            cosmol = get_cosmology(**self.prior_loc)
-            _, transfer, scales = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
+        elif self.precond==7: # Same as 5
+            scales = (1 + self.gxy_count * (1 + self.prior_loc['b1'])**2 * self.pmeshk_fiduc)**.5
             init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
+            transfer = 1 / scales
 
         init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=False, temp=temp)
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
@@ -447,8 +458,15 @@ class FieldLevelModel(Model):
         # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
 
         # Cosmology and Biases
-        cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
-        bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+        if not hasattr(self, "prior_mode") or self.prior_mode=='prior':
+            print("########### prior")
+            cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
+            bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+        elif self.prior_mode=='detrunc':
+            print("########### detrunc")
+            cosmo = _samp2base(cosmo_, self.latents, inv=inv, temp=temp)
+            bias = _samp2base(bias_, self.latents, inv=inv, temp=temp)
+
 
         # Initial conditions
         if len(init) > 0:
@@ -464,16 +482,12 @@ class FieldLevelModel(Model):
                 b1 = bias_['b1'] if inv else bias['b1']
                 _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
 
-            elif self.precond==4:
-                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, 0., self.a_obs, self.box_shape, self.gxy_count)
-
             elif self.precond==5:
                 cosmol = get_cosmology(**self.prior_loc)
                 _, transfer, _ = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
 
-            elif self.precond==6:        
-                cosmol = get_cosmology(**self.prior_loc)
-                _, transfer, _ = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, 0., self.a_obs, self.box_shape, self.gxy_count)
+            elif self.precond==7:
+                transfer = 1 / (1 + self.gxy_count * (1 + self.prior_loc['b1'])**2 * self.pmeshk_fiduc)**.5
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
@@ -491,6 +505,26 @@ class FieldLevelModel(Model):
         for name in names:
             name = name if base else name+'_'
             dic[name] = sample(name, dist.Normal(0, 1))
+        return dic
+    
+    def _sample(self, names:str|list):
+        dic = {}
+        names = np.atleast_1d(names)
+        for name in names:
+            loc, scale = self.latents[name].get('loc', None), self.latents[name].get('scale', None)
+            low, high = self.latents[name].get('low', -jnp.inf), self.latents[name].get('high', jnp.inf)
+            loc_est, scale_est = self.latents[name].get('loc_est', loc), self.latents[name].get('scale_est', scale)
+
+            if loc is None or scale is None:
+                print(f"####### unif {name}")
+                assert low != -jnp.inf and high != jnp.inf, \
+                    f"low and high must be finite if no loc and scale are provided for {name}"
+                assert loc_est is not None and scale_est is not None, \
+                    f"loc_est and scale_est must be provided if no loc and scale are provided for {name}"
+                dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_est, scale_est))
+            else:
+                print(f"####### truncnorm {name}")
+                dic[name+'_'] = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_est, scale_est))
         return dic
 
     # def _get_by_groups(self, params, groups, base=True):
