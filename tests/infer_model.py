@@ -70,7 +70,7 @@ if not os.path.exists(save_dir+"truth.p"):
             'b2':0., 
             'bs2':0., 
             'bn2': 0.}
-    if model.prior_loc['b1'] == 0:
+    if model.loc_fid['b1'] == 0:
         truth['b1'] = 0.
 
     model.reset()
@@ -84,7 +84,7 @@ else:
     truth = pload(save_dir+"truth.p")
 
 model.reset()
-if model.prior_loc['b1'] == 0:
+if model.loc_fid['b1'] == 0:
     print('no bias')
     model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
     # model.condition({'obs': truth['obs'], 'bn2': truth['bn2']}, frombase=True)
@@ -107,7 +107,7 @@ if continue_run:
     pass
 else:
     model.reset()
-    model.condition({'obs': truth['obs']} | model.prior_loc, frombase=True)
+    model.condition({'obs': truth['obs']} | model.loc_fid, frombase=True)
     model.block()
 
     mcmc = get_init_mcmc(model.model, mcmc_config['n_chains'])    
@@ -159,7 +159,7 @@ else:
     # plt.savefig(f'init_glin_{task_id}.png')
     ################    
     
-    if model.prior_loc['b1'] == 0:
+    if model.loc_fid['b1'] == 0:
         print('no bias')
         init_params_ = {k:v for k,v in init_params_.items() if k in ['Omega_m_', 'sigma8_']} | ils
         # init_params_ = {k:v for k,v in init_params_.items() if k in ['Omega_m_', 'sigma8_','b1_','b2_','bs2_']} | ils
@@ -169,7 +169,7 @@ else:
     print(init_params_.keys())
 
 model.reset()
-if model.prior_loc['b1'] == 0:
+if model.loc_fid['b1'] == 0:
     print('no bias')
     model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
     # model.condition({'obs': truth['obs'], 'bn2': truth['bn2']}, frombase=True)

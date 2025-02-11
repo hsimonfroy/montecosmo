@@ -103,12 +103,14 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0)
 
 
 
+
+
 def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False):
     """
-    Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
+    Computes first and second order LPT displacement, 
+    e.g. Eq 3.5 and 3.7 [List and Hahn](http://arxiv.org/abs/2409.19049)
+    or Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
-    a = jnp.atleast_1d(a)
-    E = jc.background.Esqr(cosmo, a)**.5
     if jnp.isrealobj(init_mesh):
         delta_k = jnp.fft.rfftn(init_mesh)
         mesh_shape = init_mesh.shape
@@ -116,9 +118,9 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
         delta_k = init_mesh
         mesh_shape = ch2rshape(init_mesh.shape)
 
-    init_force = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
-    dq = growth_factor(cosmo, a) * init_force
-    p = a**2 * growth_rate(cosmo, a) * E * dq
+    force1 = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
+    dpos = a2g(cosmo, a) * force1
+    vel = force1
 
     if order == 2:
         kvec = rfftk(mesh_shape)
@@ -138,26 +140,49 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
                 hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
 
-        init_force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
-        dq2 = (3/7 * growth_factor_second(cosmo, a)) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
-        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2
+        force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
+        dpos -= a2gg(cosmo, a) * force2
+        vel  -= a2dggdg(cosmo, a) * force2
 
-        dq += dq2
-        p  += p2
-
-    return dq, p
+    return dpos, vel
 
 
 
 ###########
-# Solvers #
+# Growths #
 ###########
+# Growth from scale factor
 def a2g(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["g"])
 
+def a2gg(cosmo, a):
+    if not "background.growth_factor" in cosmo._workspace.keys():
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+    cache = cosmo._workspace["background.growth_factor"]
+    # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
+    return jnp.interp(a, cache["a"], cache["g2"]) * -3/7
+
+def a2f(cosmo, a):
+    if not "background.growth_factor" in cosmo._workspace.keys():
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+    cache = cosmo._workspace["background.growth_factor"]
+    return jnp.interp(a, cache["a"], cache["f"])
+
+def a2ff(cosmo, a):
+    if not "background.growth_factor" in cosmo._workspace.keys():
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+    cache = cosmo._workspace["background.growth_factor"]
+    return jnp.interp(a, cache["a"], cache["f2"])
+
+def a2dggdg(cosmo, a):
+    g, gg, f, ff = a2g(cosmo, a), a2gg(cosmo, a), a2f(cosmo, a), a2ff(cosmo, a)
+    return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
+
+
+# Growth from growth factor
 def g2a(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
@@ -168,7 +193,8 @@ def g2gg(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
     cache = cosmo._workspace["background.growth_factor"]
-    return jnp.interp(g, cache["g"], cache["g2"])
+    # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
+    return jnp.interp(g, cache["g"], cache["g2"]) * -3/7
 
 def g2f(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
@@ -182,24 +208,26 @@ def g2ff(cosmo, g):
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f2"])
 
+def g2dggdg(cosmo, g):
+    gg, f, ff = g2gg(cosmo, g), g2f(cosmo, g), g2ff(cosmo, g)
+    return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
 
+
+
+###########
+# Solvers #
+###########
 def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
     """
     BullFrog vector field.
     """
-
-    def dggdg(cosmo, g):
-        gg, f, ff = g2gg(cosmo, g)*-3/7, g2f(cosmo, g), g2ff(cosmo, g)
-        # NOTE: g2gg is normalized such that gg = -3/7 * g2gg ~ -3/7 * g^2
-        return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
-    
     def alpha(cosmo, g0, dg):
         '''See Eq. 2.3 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)'''
         g1 = g0 + dg / 2
         g2 = g0 + dg
 
-        dggdg0, dggdg2 = dggdg(cosmo, g0), dggdg(cosmo, g2)
-        lin_ratio = (g2gg(cosmo, g0)*-3/7 + dggdg0 * dg / 2) / g1 - g1
+        dggdg0, dggdg2 = g2dggdg(cosmo, g0), g2dggdg(cosmo, g2)
+        lin_ratio = (g2gg(cosmo, g0) + dggdg0 * dg / 2) / g1 - g1
         # NOTE: linearization of ratio (gg - g^2)/g aroung g0, evaluated at g1
         return (dggdg2 - lin_ratio) / (dggdg0 - lin_ratio)
 
@@ -255,9 +283,6 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     return states
 
 
-
-
-
 def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
               grad_fd=False, lap_fd=False, snapshots:int|list=None):
     """
@@ -291,6 +316,56 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 
 
 
+
+
+
+
+
+
+
+def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False):
+    """
+    Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
+    """
+    a = jnp.atleast_1d(a)
+    E = jc.background.Esqr(cosmo, a)**.5
+    if jnp.isrealobj(init_mesh):
+        delta_k = jnp.fft.rfftn(init_mesh)
+        mesh_shape = init_mesh.shape
+    else:
+        delta_k = init_mesh
+        mesh_shape = ch2rshape(init_mesh.shape)
+
+    init_force = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
+    dq = growth_factor(cosmo, a) * init_force
+    p = a**2 * growth_rate(cosmo, a) * E * dq
+
+    if order == 2:
+        kvec = rfftk(mesh_shape)
+        pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
+
+        delta2 = 0
+        shear_acc = 0
+        for i in range(3):
+            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
+            shear_ii = gradient_kernel(kvec, i, grad_fd)**2
+            shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
+            delta2 += shear_ii * shear_acc 
+            shear_acc += shear_ii
+
+            for j in range(i+1, 3):
+                # Substract squared strict-up-triangle terms
+                hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
+                delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
+
+        init_force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
+        dq2 = (3/7 * growth_factor_second(cosmo, a)) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = (a**2 * growth_rate_second(cosmo, a) * E) * dq2
+
+        dq += dq2
+        p  += p2
+
+    return dq, p
 
 
 def diffrax_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
@@ -389,4 +464,24 @@ def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5,
         particles = sol.ys
         return particles
 
+
+
+
+def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
+    """
+    Redshift-Space Distortion (RSD) displacement from cosmology and FastPM momentum.
+    Computed with respect to scale factor and line-of-sight.
+    
+    No RSD if los is None.
+    """
+    if los is None:
+        return jnp.zeros_like(p)
+    else:
+        los = np.asarray(los)
+        los /= jnp.linalg.norm(los)
+        # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
+        dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
+        # Project velocity on line-of-sight
+        dx_rsd = dx_rsd * los
+        return dx_rsd
 

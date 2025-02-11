@@ -14,13 +14,11 @@ import numpy as np
 
 from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 
-# from jaxpm.pm import lpt, make_ode_fn
 from jaxpm.painting import cic_paint
-from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, 
-                               gausslin_posterior, lin_power_mesh, 
-                               lagrangian_weights, rsd_bf, rsd_fpm, kaiser_model)
-from montecosmo.bricks import gausslin_posterior2, _samp2base ################
-from montecosmo.nbody import lpt, nbody_bf, nbody_tsit5, nbody_fpm
+from jax_cosmo import Cosmology
+from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
+                               lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
+from montecosmo.nbody import lpt, nbody_bf
 from montecosmo.metrics import spectrum, powtranscoh
 from montecosmo.utils import pdump, pload
 
@@ -33,30 +31,33 @@ default_config={
             # Mesh and box parameters
             'mesh_shape':3 * (64,), # int
             'box_shape':3 * (320.,), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
-            # LSS formation
-            'a_lpt':0.1, # TODO: remove
+            # Evolution
             'a_obs':0.5,
-            'lpt_order':1, # TODO: replace by options: kaiser, 1lpt, 2lpt, nbody/pm
+            'evolution':'lpt', # kaiser, lpt, nbody
             'nbody_steps':5,
-            'snapshots':None,
-            # Galaxies
+            'nbody_snapshots':None,
+            'lpt_order':2,
+            # Observables
             'gxy_density':1e-3, # in galaxy / (Mpc/h)^3
-            # Prior config {name: [group, label, loc, scale, low, high]}
+            'obs':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
+            'los':(0.,0.,1.),
+            'poles':(0,2,4),
+            # Latents
+            'precond':'kaiser', # direct, fourier, kaiser
             'latents': {'Omega_m': {'group':'cosmo', 
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
-                                    'scale':0.2,
-                                    'scale_est':0.06,
+                                    'scale':0.5,
+                                    'scale_fid':0.06,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
                                     'label':'{\\sigma}_8',
                                     'loc':0.8102,
-                                    'scale':0.2,
-                                    'scale_est':0.04,
+                                    'scale':0.5,
+                                    'scale_fid':0.04,
                                     'low': 0.,
-                                    # 'high': 2.,
-                                    },
+                                    'high':jnp.inf,},
                         'b1': {'group':'bias',
                                     'label':'{b}_1',
                                     'loc':1.,
@@ -75,12 +76,6 @@ default_config={
                                     'scale':2.,},
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},},
-            'obs':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
-            # 'poles':(0,2,4), # for powspec
-            'los':(0.,0.,1.),
-            # Preconditioning mode
-            'precond':3, # from 0 to 3
-            'prior_mode':'detrunc'
             }
 
 
@@ -253,28 +248,30 @@ class FieldLevelModel(Model):
     gxy_density : float
         Galaxy density in galaxy / (Mpc/h)^3
     """
-
+    # Mesh and box parameters
     mesh_shape:np.ndarray
     box_shape:np.ndarray
-    a_lpt:float
+    # Evolution
+    evolution:str
     a_obs:float
-    lpt_order:int
-    gxy_density:float
-    latents:dict
-    precond:int
-    obs:str
     nbody_steps:int
-    snapshots:int|list
+    nbody_snapshots:int|list
+    lpt_order:int
+    # Observable
+    obs:str
+    gxy_density:float
     los:tuple
-
-    prior_mode:str
+    poles:tuple
+    # Latents
+    precond:str
+    latents:dict
 
     def __post_init__(self):
-        assert(self.a_lpt <= self.a_obs), "a_lpt must be less than (<=) a_obs"
+        self.latents = self._validate_latents()
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
-        self.prior_loc = self._prior_loc()
+        self.loc_fid = self._loc_fid()
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float32 to avoid int32 overflow when computing products
@@ -309,7 +306,6 @@ class FieldLevelModel(Model):
 
 
 
-
     def prior(self, temp=1.):
         """
         A prior for cosmological model. 
@@ -319,16 +315,8 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
         for g in ['cosmo', 'bias']:
-
-            if not hasattr(self, "prior_mode") or self.prior_mode=='prior':
-                print("########### prior")
-                dic = self._sample_gauss(self.groups[g], base=False) # sample               
-                dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
-            elif self.prior_mode=='detrunc':
-                print("########### detrunc")
-                dic = self._sample(self.groups[g]) # sample               
-                dic = _samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
-
+            dic = self._sample(self.groups[g]) # sample               
+            dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
         cosmo, bias = tup
         cosmology = get_cosmology(**cosmo)        
@@ -336,40 +324,23 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_'
-        if self.precond==0 or self.precond==1:
-            init[name_] = sample(name_, dist.Normal(0., jnp.ones(self.mesh_shape)))
-            transfer = None
 
-        elif self.precond==2:
-            scales = (1 + self.gxy_count * self.pmeshk_fiduc)**.5
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
-            transfer = 1 / scales
-
-        elif self.precond==3: # Dynamic     
-            _, transfer, scales = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, bias['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
-
-        elif self.precond==5: # Static
-            cosmol = get_cosmology(**self.prior_loc)
-            _, transfer, scales = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
-
-        elif self.precond==7: # Same as 5
-            scales = (1 + self.gxy_count * (1 + self.prior_loc['b1'])**2 * self.pmeshk_fiduc)**.5
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scales, amp=True)))
-            transfer = 1 / scales
-
-        init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=False, temp=temp)
+        scale, transfer = self.precond_scale_and_transfer(cosmology)
+        init[name_] = sample(name_, dist.Normal(0., scale)) # sample
+        init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
+
         return cosmology, bias, init
 
 
     def evolve(self, params:tuple):
         cosmology, bias, init = params
 
-        if self.lpt_order==4:
+        if self.evolution=='kaiser':
             # Kaiser model
-            return kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
+            biased_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
+            biased_mesh = deterministic('bias_mesh', biased_mesh)
+            return biased_mesh
                     
         # Create regular grid of particles
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
@@ -378,33 +349,24 @@ class FieldLevelModel(Model):
         lbe_weights = lagrangian_weights(cosmology, self.a_obs, pos, self.box_shape, **bias, **init)
         # TODO: gaussian lagrangian weights
 
-        if 1 <= self.lpt_order <= 3:
+        if self.evolution=='lpt':
             # LPT displacement at a_lpt
             # NOTE: lpt assumes given mesh follows linear spectral power at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
-            dpos, vel = lpt(cosmology, **init, pos=pos, a=self.a_lpt, order=self.lpt_order, grad_fd=False, lap_fd=False)
-            part = (pos + dpos, vel)
+            dpos, vel = lpt(cosmology, **init, pos=pos, a=self.a_obs, order=self.lpt_order, grad_fd=False, lap_fd=False)
+            pos += dpos
+            pos, vel = deterministic('lpt_part', (pos, vel))
 
-            # PM displacement from a_lpt to a_obs
-            part = nbody_tsit5(cosmology, self.mesh_shape, part, self.a_lpt, self.a_obs, 
-                                    grad_fd=False, lap_fd=False, snapshots=self.snapshots)
-            part = deterministic('pm_part', part)
-            pos, vel = tree.map(lambda x: x[-1], part)
-
-            # RSD displacement at a_obs
-            pos += rsd_fpm(cosmology, self.a_obs, vel, self.los)
-            pos, vel = deterministic('rsd_part', (pos, vel))
-
-        elif self.lpt_order==0: # TODO: lpt_order is None
+        elif self.evolution=='nbody':
             cosmology._workspace = {}  # HACK: temporary fix
             part = nbody_bf(cosmology, **init, pos=pos, a=self.a_obs, n_steps=self.nbody_steps, 
-                                 grad_fd=False, lap_fd=False, snapshots=self.snapshots)
-            part = deterministic('pm_part', part)
+                                 grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
+            part = deterministic('nbody_part', part)
             pos, vel = tree.map(lambda x: x[-1], part)
 
-            # RSD displacement at a_obs
-            pos += rsd_bf(cosmology, self.a_obs, vel, self.los)
-            pos, vel = deterministic('rsd_part', (pos, vel))
+        # RSD displacement at a_obs
+        pos += rsd(cosmology, self.a_obs, vel, self.los)
+        pos, vel = deterministic('rsd_part', (pos, vel))
 
         # CIC paint weighted by Lagrangian bias expansion weights
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
@@ -415,7 +377,6 @@ class FieldLevelModel(Model):
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
         return biased_mesh
-
 
 
     def likelihood(self, mesh, temp=1.):
@@ -444,8 +405,6 @@ class FieldLevelModel(Model):
         #     return obs_pk
 
 
-
-
     def reparam(self, params:dict, fourier=True, inv=False, temp=1.):
         """
         Transform sample params into base params.
@@ -458,88 +417,96 @@ class FieldLevelModel(Model):
         # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
 
         # Cosmology and Biases
-        if not hasattr(self, "prior_mode") or self.prior_mode=='prior':
-            print("########### prior")
-            cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
-            bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
-        elif self.prior_mode=='detrunc':
-            print("########### detrunc")
-            cosmo = _samp2base(cosmo_, self.latents, inv=inv, temp=temp)
-            bias = _samp2base(bias_, self.latents, inv=inv, temp=temp)
-
+        cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
+        bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
 
         # Initial conditions
         if len(init) > 0:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-
-            if self.precond==0 or self.precond==1:
-                transfer = None
-
-            elif self.precond==2:
-                transfer = 1 / (1 + self.gxy_count * self.pmeshk_fiduc)**.5
-            
-            elif self.precond==3:
-                b1 = bias_['b1'] if inv else bias['b1']
-                _, transfer, _ = gausslin_posterior(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
-
-            elif self.precond==5:
-                cosmol = get_cosmology(**self.prior_loc)
-                _, transfer, _ = gausslin_posterior2(jnp.zeros(r2chshape(self.mesh_shape)), cosmology, cosmol, self.prior_loc['b1'], self.a_obs, self.box_shape, self.gxy_count)
-
-            elif self.precond==7:
-                transfer = 1 / (1 + self.gxy_count * (1 + self.prior_loc['b1'])**2 * self.pmeshk_fiduc)**.5
+            _, transfer = self.precond_scale_and_transfer(cosmology)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
-            init = samp2base_mesh(init, cosmology, self.box_shape, self.precond, transfer=transfer, inv=inv, temp=temp)
+            init = samp2base_mesh(init, self.precond, transfer=transfer, inv=inv, temp=temp)
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
+
         return rest | cosmo | bias | init # possibly update rest
+
 
     ###########
     # Getters #
-    ###########
-    def _sample_gauss(self, names:str|list, base=False):
-        dic = {}
-        names = np.atleast_1d(names)
-        for name in names:
-            name = name if base else name+'_'
-            dic[name] = sample(name, dist.Normal(0, 1))
-        return dic
-    
+    ###########   
     def _sample(self, names:str|list):
         dic = {}
         names = np.atleast_1d(names)
         for name in names:
-            loc, scale = self.latents[name].get('loc', None), self.latents[name].get('scale', None)
-            low, high = self.latents[name].get('low', -jnp.inf), self.latents[name].get('high', jnp.inf)
-            loc_est, scale_est = self.latents[name].get('loc_est', loc), self.latents[name].get('scale_est', scale)
+            conf = self.latents[name]
+            loc, scale = conf.get('loc', None), conf.get('scale', None)
+            low, high = conf.get('low', -jnp.inf), conf.get('high', jnp.inf)
+            loc_fid, scale_fid = conf['loc_fid'], conf['scale_fid']
 
-            if loc is None or scale is None:
+            if loc is None:
                 print(f"####### unif {name}")
-                assert low != -jnp.inf and high != jnp.inf, \
-                    f"low and high must be finite if no loc and scale are provided for {name}"
-                assert loc_est is not None and scale_est is not None, \
-                    f"loc_est and scale_est must be provided if no loc and scale are provided for {name}"
-                dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_est, scale_est))
+                dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
             else:
-                print(f"####### truncnorm {name}")
-                dic[name+'_'] = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_est, scale_est))
+                if low != -jnp.inf or high != jnp.inf:
+                    print(f"####### truncnorm {name}")
+                    dic[name+'_'] = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
+                else:
+                    print(f"####### norm {name}")
+                    dic[name+'_'] = sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
         return dic
+    
 
-    # def _get_by_groups(self, params, groups, base=True):
-    #     """
-    #     Given group names, return corresponding params dict.
-    #     """
-    #     tup = ()
-    #     for g in groups:
-    #         dic = {}
-    #         for k in self.groups[g]:
-    #             k = k if base else k+'_'
-    #             if k in params:
-    #                 dic[k] = params[k]        
-    #         tup += (dic,)
-    #     return tup
+    def precond_scale_and_transfer(self, cosmo:Cosmology):
+        pmeshk = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
+
+        if self.precond in ['direct', 'fourier']:
+            scale = jnp.ones(self.mesh_shape)
+            transfer = pmeshk**.5
+
+        elif self.precond=='kaiser':
+            cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
+            boost = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.los)
+            pmeshk_fid = lin_power_mesh(cosmo_fid, self.mesh_shape, self.box_shape)
+
+            scale = (1 + self.gxy_count * boost**2 * pmeshk_fid)**.5
+            transfer = pmeshk**.5 / scale
+            scale = cgh2rg(scale, amp=True)
+        
+        return scale, transfer
+            
+
+    def _validate_latents(self):
+        new = {}
+        for name, conf in self.latents.items():
+            new[name] = conf.copy()
+            loc, scale = conf.get('loc'), conf.get('scale')
+            low, high = conf.get('low'), conf.get('high')
+            loc_fid, scale_fid = conf.get('loc_fid'), conf.get('scale_fid')
+
+            assert not (loc is None) ^ (scale is None),\
+                f"latent '{name}' not valid: loc and scale must be both provided or both not provided"
+            assert not (low is None) ^ (high is None),\
+                f"latent '{name}' not valid: low and high must be both provided or both not provided"
+            
+            if loc is not None: # Normal or Truncated Normal prior
+                if loc_fid is None:
+                    new[name]['loc_fid'] = loc
+                if scale_fid is None:
+                    new[name]['scale_fid'] = scale
+            
+            elif low is not None: # Uniform prior
+                assert low <= high,\
+                    f"latent '{name}' not valid: low must be lower than high"
+                assert low != -jnp.inf and high != jnp.inf,\
+                    f"latent '{name}' not valid: low and high must be finite for uniform distribution"
+                if loc_fid is None:
+                    new[name]['loc_fid'] = (low + high) / 2
+                if scale_fid is None:
+                    new[name]['scale_fid'] = (high - low) / 12**.5
+        return new
 
     def _groups(self, base=True):
         """
@@ -565,43 +532,12 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
     
-    def _prior_loc(self):
+    def _loc_fid(self):
         """
         Return location values from latents config.
         """
-        return {k:v['loc'] for k,v in self.latents.items() if 'loc' in v}
+        return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
     
-    @property
-    def delta_obs(self):
-        if hasattr(self, "_delta_obs"):
-            return self._delta_obs
-        else:
-            print("No observed mesh stored. Default to zero mesh.")
-            return jnp.zeros(r2chshape(self.mesh_shape))
-    
-    @delta_obs.setter
-    def delta_obs(self, value):
-        if jnp.isrealobj(value):
-            # self._delta_obs = jnp.fft.rfftn(value)
-            self._delta_obs = np.array(jnp.fft.rfftn(value))
-        else:
-            # self._delta_obs = value
-            self._delta_obs = np.array(value) # NOTE: to test constant folding
-
-    @property
-    def pmeshk_fiduc(self):
-        if hasattr(self, "_pmeshk_fiduc"):
-            return self._pmeshk_fiduc
-        else:
-            print("No fiducial spectral power mesh stored. Will use linear spectral power mesh computed at location of cosmology prior.")
-            # NOTE: Alternatively, could also use the spectral power mesh of observed mesh
-            return lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
-            # self._pmeshk_fiduc = lin_power_mesh(get_cosmology(**self.prior_loc), self.mesh_shape, self.box_shape, self.a_obs)
-            # return self._pmeshk_fiduc # Leak
-    
-    @pmeshk_fiduc.setter
-    def pmeshk_fiduc(self, value):
-        self._pmeshk_fiduc = value
 
     ###########
     # Metrics #
@@ -633,18 +569,17 @@ class FieldLevelModel(Model):
         chains.data['kptc'] = fn(chains.data[name])
         return chains
     
-    def init_model(self, rng, base=False, temp=1.):
-        # TODO: pass delta_obs manually since no need in precond, and remove it as property. It can cause constant folding
-        # Fix cosmology and biases to prior location
-        cosmology = get_cosmology(**self.prior_loc)
-        b1 = self.prior_loc['b1']
+    def init_model(self, rng, delta_obs, base=False, temp=1.):
+        if jnp.isrealobj(delta_obs):
+            delta_obs = jnp.fft.rfftn(delta_obs)
 
-        # initial field given other latent and observation, assuming linear Gaussian model
-        means, stds, _ = gausslin_posterior(self.delta_obs, cosmology, b1, self.a_obs, self.box_shape, self.gxy_count)
+        cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
+        means, stds = kaiser_posterior(delta_obs, cosmo_fid, bE_fid, self.a_obs, 
+                                       self.box_shape, self.gxy_count, self.los)
         means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, amp=True)
         post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
 
-        init_params = self.prior_loc | {'init_mesh': post_mesh}
+        init_params = self.loc_fid | {'init_mesh': post_mesh}
         if base:
             return init_params
         else:
@@ -652,39 +587,3 @@ class FieldLevelModel(Model):
 
     
 
-
-
-
-    # def prior(self):
-    #     """
-    #     A prior for cosmological model. 
-
-    #     Return standardized params for computing cosmology, initial conditions, and Lagrangian biases.
-    #     """
-    #     # Sample reparametrized cosmology and biases
-    #     for group in ['cosmo', 'bias']:
-    #         params_ = {}
-    #         for name in self.groups[group]:            
-    #             name_ = name+'_'
-    #             params_[name_] = sample(name_, dist.Normal(0, 1))
-    #         yield params_
-
-    #     # Sample reparametrized initial conditions
-    #     name_ = self.groups['init'][0]+'_'         
-    #     mesh = sample(name_, dist.Normal(jnp.zeros(self.mesh_shape), jnp.ones(self.mesh_shape)))
-    #     yield {name_:mesh}
-    
-    # def reparam(self, params, inv=False, temp=1.):
-    #     """
-    #     Transform sample params into base params.
-    #     """
-    #     cosmo, bias, init = params
-
-    #     # Cosmology and Biases
-    #     cosmo = samp2base(cosmo, self.latent, inv=inv, temp=temp)
-    #     cosmology = get_cosmology(**cosmo)
-    #     bias = samp2base(bias, self.latent, inv=inv, temp=temp)
-
-    #     # Initial conditions
-    #     init = samp2base_mesh(init, cosmology, self.mesh_shape, self.box_shape, self.fourier, inv=inv, temp=temp)
-    #     return cosmology, bias, init

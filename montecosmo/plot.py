@@ -77,13 +77,13 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, vlim:float | t
         The shape of the mesh physical box in Mpc/h. If None, it defaults to mesh shape.
     sli : int, float or slice, optional
         The slice to be averaged along the last axis of the mesh. 
-        If None, entire axis is used. 
-        If integer, specifies the number of slices used starting from 0. 
-        If float, specifies the proportion of axis used starting from 0.
+        * If None, entire axis is used. 
+        * If integer, specifies the number of slices used starting from 0. 
+        * If float, specifies the proportion of axis used starting from 0.
     vlim : float or tuple of float, optional
         The limit values for colormap. 
-        If float, specifies the proportion of values discarded bilateraly. 
-        If tuple, specifies (vmin, vmax).
+        * If float, specifies the proportion of values discarded bilateraly. 
+        * If tuple, specifies (vmin, vmax).
     cmap : str, optional
         The colormap used for plotting. Default is 'viridis'.
 

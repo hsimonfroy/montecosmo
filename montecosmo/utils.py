@@ -324,7 +324,8 @@ def cgh2rg(meshk, amp:bool=False, norm="backward"):
     
     mesh = jnp.zeros(shape)
     if not amp:
-        mesh = mesh.at[id_imag].set(safe_div(meshk.imag, w_imag)) # w_imag can be zero, which is not safe for gradients
+        # NOTE: w_imag can be zero, which is not safe for gradients
+        mesh = mesh.at[id_imag].set(safe_div(meshk.imag, w_imag)) 
         mesh = mesh.at[id_real].set(meshk.real / w_real)
         # NOTE: real after imag to overwrite the 2^3=8 points
     else:

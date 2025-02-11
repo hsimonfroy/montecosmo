@@ -43,64 +43,24 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
     # as interpolation in loglog space can produce nan gradients
-    pk_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), k, logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
-    return pk_fn
+    pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), k, logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    return pow_fn
 
 
 def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     """
     Return linear matter power spectrum field.
     """
-    pk_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
+    pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
     kvec = rfftk(mesh_shape)
     k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
-    return pk_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+    return pow_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
     
-
-def gausslin_posterior(delta_obs, cosmo:Cosmology, b1, a, box_shape, gxy_count):
-    """
-    Return posterior mean, std, and preconditioning fields of the linear matter field (at a=1) given the observed field,
-    by assuming Gaussian linear model. All fields are in fourier space.
-    """
-    # Compute linear matter power spectrum
-    mesh_shape = ch2rshape(delta_obs.shape)
-    pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
-    evolve = (1 + b1) * growth_factor(cosmo, a) # Eulerian linear bias = 1 + Lagrangian linear bias
-    # TODO: add rsd with kaiser model?
-
-    # stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
-    stds = (pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
-    # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
-    means = stds**2 * gxy_count * evolve * delta_obs
-
-    scales = (1 + gxy_count * evolve**2 * pmeshk)**.5
-    return means, stds, scales
-
-def gausslin_posterior2(delta_obs, cosmo:Cosmology, cosmo_fiduc:Cosmology, b1, a, box_shape, gxy_count):
-    """
-    Return posterior mean, std, and preconditioning fields of the linear matter field (at a=1) given the observed field,
-    by assuming Gaussian linear model. All fields are in fourier space.
-    """
-    # Compute linear matter power spectrum
-    mesh_shape = ch2rshape(delta_obs.shape)
-    pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
-    pmeshk_fiduc = lin_power_mesh(cosmo_fiduc, mesh_shape, box_shape)
-    evolve = (1 + b1) * growth_factor(cosmo_fiduc, a) # Eulerian linear bias = 1 + Lagrangian linear bias
-    # TODO: add rsd with kaiser model?
-
-    stds = (pmeshk / (1 + gxy_count * evolve**2 * pmeshk_fiduc))**.5
-    # stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk_fiduc))**.5
-    # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
-    means = stds**2 * gxy_count * evolve * delta_obs
-
-    scales = (1 + gxy_count * evolve**2 * pmeshk_fiduc)**.5
-    return means, stds, scales
-
 
 def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, los=None):
     """
-    Return posterior mean, std, and preconditioning fields of the linear matter field (at a=1) given the observed field,
-    by assuming Gaussian linear model. All fields are in fourier space.
+    Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
+    by assuming Kaiser model. All fields are in fourier space.
     """
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
@@ -111,9 +71,7 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, lo
     stds = (pmeshk / (1 + gxy_count * boost**2 * pmeshk))**.5
     # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
     means = stds**2 * gxy_count * boost * delta_obs
-
-    scales = (1 + gxy_count * boost**2 * pmeshk)**.5
-    return means, stds, scales
+    return means, stds
 
 
 def get_cosmology(**cosmo) -> Cosmology:
@@ -133,124 +91,54 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
         name = in_name if inv else in_name[:-1]
         out_name = in_name+'_' if inv else in_name[:-1]
 
-        loc, scale = config[name]['loc'], config[name]['scale']
-        low, high = config[name].get('low', -jnp.inf), config[name].get('high', jnp.inf)
-        scale *= temp**.5
+        conf = config[name]
+        low, high = conf.get('low', -jnp.inf), conf.get('high', jnp.inf)
+        loc_fid, scale_fid = conf['loc_fid'], conf['scale_fid']
+        scale_fid *= temp**.5
 
         # Reparametrize
         if not inv:
             if low != -jnp.inf or high != jnp.inf:
-                push = lambda x: std2trunc(x, loc, scale, low, high) # truncate value in interval
+                push = lambda x: std2trunc(x, loc_fid, scale_fid, low, high)
             else:
-                push = lambda x: x * scale + loc
+                push = lambda x: x * scale_fid + loc_fid
         else:
             if low != -jnp.inf or high != jnp.inf:
-                push = lambda x: trunc2std(x, loc, scale, low, high)
+                push = lambda x: trunc2std(x, loc_fid, scale_fid, low, high)
             else:
-                push = lambda x: (x - loc) / scale
-
-        out[out_name] = push(value)
-    return out
-
-def _samp2base(params:dict, config, inv=False, temp=1.) -> dict:
-    """
-    Transform sample params into base params.
-    """
-    out = {}
-    for in_name, value in params.items():
-        name = in_name if inv else in_name[:-1]
-        out_name = in_name+'_' if inv else in_name[:-1]
-
-        loc, scale = config[name].get('loc', None), config[name].get('scale', None)
-        low, high = config[name].get('low', -jnp.inf), config[name].get('high', jnp.inf)
-        loc_est, scale_est = config[name].get('loc_est', loc), config[name].get('scale_est', scale)
-        assert loc_est is not None and scale_est is not None, \
-            f"loc_est and scale_est must be provided if no loc and scale are provided for {name}"
-        scale_est *= temp**.5
-
-        # Reparametrize
-        if not inv:
-            if low != -jnp.inf or high != jnp.inf:
-                push = lambda x: std2trunc(x, loc_est, scale_est, low, high) # truncate value in interval
-            else:
-                push = lambda x: x * scale_est + loc_est
-        else:
-            if low != -jnp.inf or high != jnp.inf:
-                push = lambda x: trunc2std(x, loc_est, scale_est, low, high)
-            else:
-                push = lambda x: (x - loc_est) / scale_est
+                push = lambda x: (x - loc_fid) / scale_fid
 
         out[out_name] = push(value)
     return out
 
 
-def samp2base_mesh(init:dict, cosmo:Cosmology, box_shape, precond=False, 
-                   transfer=None, inv=False, temp=1.) -> dict:
+def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) -> dict:
     """
-    Transform sample mesh into base mesh, i.e. initial wavevectors at a=1.
+    Transform sample mesh into base mesh, i.e. initial wavevector amplitudes at a=1.
     """
     assert len(init) <= 1, "init dict should only have one or zero key"
     for in_name, mesh in init.items():
         out_name = in_name+'_' if inv else in_name[:-1]
-        mesh_shape = ch2rshape(mesh.shape) if inv else mesh.shape
+        transfer *= temp**.5
 
         # Reparametrize
         if not inv:
-            if precond in [0, 1, 2, 7]:
+            if precond=='direct':
+                # Sample in direct space
+                mesh = jnp.fft.rfftn(mesh)
 
-                if precond==0:
-                    # Sample in direct space
-                    mesh = jnp.fft.rfftn(mesh) # ~ G(0, I)
+            elif precond in ['fourier','kaiser']:
+                # Sample in fourier space
+                mesh = rg2cgh(mesh)
 
-                elif precond==1:
-                    # Sample in fourier space
-                    mesh = rg2cgh(mesh) # ~ G(0, I)
-
-                elif precond==2 or precond==7:
-                    # Sample in fourier space with
-                    # partial (and static) posterior preconditioning assuming Gaussian linear model and fiducial cosmology
-                    # as done in [Bayer+2023](http://arxiv.org/abs/2307.09504)
-                    mesh = rg2cgh(mesh) # ~ G(0, I + n * P_fid(a_obs))
-                    mesh *= transfer # ~ G(0, I) ; guide = (I + n * P_fid(a_obs))^-1/2
-                
-                # Compute linear matter power spectrum
-                pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
-                mesh *= pmeshk**.5 # ~ G(0, P)
-
-            elif 7>precond>=3:
-                # Sample in fourier space with
-                # complete (and dynamic) posterior preconditioning assuming Gaussian linear model
-                # means, stds = guide # sigma = (n * (bD)^2 + P^-1)^-1/2 ; mu = sigma^2 * nbD * delta_obs
-                # mesh = rg2cgh(mesh) # ~ G( -mu * sigma^-1, sigma^-2 * P) 
-                # mesh = stds * mesh + means # ~ G(0, P)
-
-                mesh = rg2cgh(mesh) # ~ G(0, I + n * (bD)^2 * P)
-                mesh *= transfer # ~ G(0, P) ; guide = (n * (bD)^2 + P^-1)^-1/2
-
-            mesh *= temp**.5
+            mesh *= transfer # ~ CN(0, P)
         else:
-            mesh /= temp**.5
-            if precond in [0, 1, 2, 7]:
+            mesh = safe_div(mesh, transfer)
+            
+            if precond=='direct':
+                mesh = jnp.fft.irfftn(mesh)
 
-                pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, a=1.)
-                mesh = safe_div(mesh, pmeshk**.5) # ~ G(0, I)
-
-                if precond==0:
-                    mesh = jnp.fft.irfftn(mesh)
-
-                elif precond==1:
-                    mesh = cgh2rg(mesh)
-
-                elif precond==2 or precond==7:
-                    mesh /= transfer # ~ G(0, I + n * P_fid(a_obs))
-                    mesh = cgh2rg(mesh)
-
-            elif 7>precond>=3:      
-                # means, stds = guide # sigma = (n * (bD)^2 + P^-1)^-1/2 ; mu = sigma^2 * nbD * delta_obs
-                # mesh = safe_div(mesh - means, stds) # ~ G( -mu * sigma^-1, sigma^-2 * P)
-                # mesh = cgh2rg(mesh)
-
-                mesh = safe_div(mesh, transfer) # ~ G(0, I + n * (bD)^2 * P) ; guide = (n * (bD)^2 + P^-1)^-1/2
+            elif precond in ['fourier','kaiser']:
                 mesh = cgh2rg(mesh)
 
         return {out_name:mesh}
@@ -323,58 +211,24 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def rsd_bf(cosmo:Cosmology, a, p, los:np.ndarray=None):
+def rsd(cosmo:Cosmology, a, vel, los:np.ndarray=None):
     """
-    Redshift-Space Distortion (RSD) displacement from cosmology and BullFrog momentum.
+    Redshift-Space Distortion (RSD) displacement from cosmology and Pi-Integrator velocity.
     Computed with respect to scale factor and line-of-sight.
 
     No RSD if los is None.
     """
     if los is None:
-        return jnp.zeros_like(p)
+        return jnp.zeros_like(vel)
     else:
         los = np.asarray(los)
         los /= jnp.linalg.norm(los)
-        # Pi-Integrator momentum p = dx/dg
-        dx_rsd = p * growth_factor(cosmo, a) * growth_rate(cosmo, a)
+        # Pi-Integrator velocity = dpos / dg = v / (H * g * f), so dpos_rsd := v / H = vel * g * f
+        # If vel is in comoving Mpc/h, so is dpos_rsd 
+        dpos = vel * growth_factor(cosmo, a) * growth_rate(cosmo, a)
         # Project velocity on line-of-sight
-        dx_rsd = dx_rsd * los
-        return dx_rsd
-
-
-def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
-    """
-    Redshift-Space Distortion (RSD) displacement from cosmology and FastPM momentum.
-    Computed with respect to scale factor and line-of-sight.
-    
-    No RSD if los is None.
-    """
-    if los is None:
-        return jnp.zeros_like(p)
-    else:
-        los = np.asarray(los)
-        los /= jnp.linalg.norm(los)
-        # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
-        dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
-        # Project velocity on line-of-sight
-        dx_rsd = dx_rsd * los
-        return dx_rsd
-
-
+        dpos = dpos * los
+        return dpos
 
 
 def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, los:np.ndarray=None):
@@ -400,7 +254,8 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los:np.ndarray=None):
     """
     Kaiser model, with linear growth, Eulerian linear bias, and RSD.
     """
-    init_mesh *= kaiser_boost(cosmo, a, bE, init_mesh.shape, los)
+    mesh_shape = ch2rshape(init_mesh.shape)
+    init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, los)
     return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
 
 
