@@ -187,11 +187,11 @@ def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[flo
 ##################
 # Power Spectrum #
 ##################
-def plot_pow(ks, pow, *args, i_ell=None, log=False, fill=None, **kwargs):
-    if i_ell is None:
+def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
+    if ell is None:
         sub = ""
     else:
-        ell = [0, 2, 4][i_ell]
+        i_ell = [0, None, 1, None, 2][ell]
         sub = f"_{ell}"
         pow = pow[i_ell]
 

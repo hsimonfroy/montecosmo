@@ -478,7 +478,7 @@ def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
         return jnp.zeros_like(p)
     else:
         los = np.asarray(los)
-        los /= jnp.linalg.norm(los)
+        los /= np.linalg.norm(los)
         # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
         dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
         # Project velocity on line-of-sight

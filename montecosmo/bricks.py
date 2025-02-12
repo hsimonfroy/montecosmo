@@ -53,8 +53,8 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     """
     pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
     kvec = rfftk(mesh_shape)
-    k_box = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
-    return pow_fn(k_box) * (mesh_shape / box_shape).prod() # NOTE: convert from (Mpc/h)^3 to cell units
+    kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+    return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
     
 
 def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, los=None):
@@ -222,7 +222,7 @@ def rsd(cosmo:Cosmology, a, vel, los:np.ndarray=None):
         return jnp.zeros_like(vel)
     else:
         los = np.asarray(los)
-        los /= jnp.linalg.norm(los)
+        los /= np.linalg.norm(los)
         # Pi-Integrator velocity = dpos / dg = v / (H * g * f), so dpos_rsd := v / H = vel * g * f
         # If vel is in comoving Mpc/h, so is dpos_rsd 
         dpos = vel * growth_factor(cosmo, a) * growth_rate(cosmo, a)
@@ -241,7 +241,7 @@ def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, los:np.ndarray=None):
         return growth_factor(cosmo, a) * bE
     else:
         los = np.asarray(los)
-        los /= jnp.linalg.norm(los)
+        los /= np.linalg.norm(los)
         kvec = rfftk(mesh_shape)
         kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
         mumesh = sum(ki * losi for ki, losi in zip(kvec, los))

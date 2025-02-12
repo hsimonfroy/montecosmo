@@ -4,7 +4,6 @@ from functools import partial
 from dataclasses import dataclass, asdict
 from IPython.display import display
 from pprint import pformat
-import os
 
 import numpyro.distributions as dist
 from numpyro import sample, deterministic, render_model
@@ -19,7 +18,7 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
 from montecosmo.nbody import lpt, nbody_bf
-from montecosmo.metrics import spectrum, powtranscoh
+from montecosmo.metrics import spectrum, spectrum2, powtranscoh
 from montecosmo.utils import pdump, pload
 
 from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
@@ -117,7 +116,7 @@ class Model():
 
     def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
         """
-        Run model conditionned on samples.
+        Run model conditioned on samples.
         * If samples is None, return a single prediction.
         * If samples is an int or tuple, return a prediction of such shape.
         * If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
@@ -325,7 +324,7 @@ class FieldLevelModel(Model):
         init = {}
         name_ = self.groups['init'][0]+'_'
 
-        scale, transfer = self.precond_scale_and_transfer(cosmology)
+        scale, transfer = self._precond_scale_and_transfer(cosmology)
         init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
@@ -423,7 +422,7 @@ class FieldLevelModel(Model):
         # Initial conditions
         if len(init) > 0:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            _, transfer = self.precond_scale_and_transfer(cosmology)
+            _, transfer = self._precond_scale_and_transfer(cosmology)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
@@ -437,48 +436,10 @@ class FieldLevelModel(Model):
     ###########
     # Getters #
     ###########   
-    def _sample(self, names:str|list):
-        dic = {}
-        names = np.atleast_1d(names)
-        for name in names:
-            conf = self.latents[name]
-            loc, scale = conf.get('loc', None), conf.get('scale', None)
-            low, high = conf.get('low', -jnp.inf), conf.get('high', jnp.inf)
-            loc_fid, scale_fid = conf['loc_fid'], conf['scale_fid']
-
-            if loc is None:
-                print(f"####### unif {name}")
-                dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
-            else:
-                if low != -jnp.inf or high != jnp.inf:
-                    print(f"####### truncnorm {name}")
-                    dic[name+'_'] = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
-                else:
-                    print(f"####### norm {name}")
-                    dic[name+'_'] = sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
-        return dic
-    
-
-    def precond_scale_and_transfer(self, cosmo:Cosmology):
-        pmeshk = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
-
-        if self.precond in ['direct', 'fourier']:
-            scale = jnp.ones(self.mesh_shape)
-            transfer = pmeshk**.5
-
-        elif self.precond=='kaiser':
-            cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
-            boost = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.los)
-            pmeshk_fid = lin_power_mesh(cosmo_fid, self.mesh_shape, self.box_shape)
-
-            scale = (1 + self.gxy_count * boost**2 * pmeshk_fid)**.5
-            transfer = pmeshk**.5 / scale
-            scale = cgh2rg(scale, amp=True)
-        
-        return scale, transfer
-            
-
     def _validate_latents(self):
+        """
+        Return a validated latents config.
+        """
         new = {}
         for name, conf in self.latents.items():
             new[name] = conf.copy()
@@ -508,6 +469,50 @@ class FieldLevelModel(Model):
                     new[name]['scale_fid'] = (high - low) / 12**.5
         return new
 
+    def _sample(self, names:str|list):
+        """
+        Sample latent variables from latents config.
+        """
+        dic = {}
+        names = np.atleast_1d(names)
+        for name in names:
+            conf = self.latents[name]
+            loc, scale = conf.get('loc', None), conf.get('scale', None)
+            low, high = conf.get('low', -jnp.inf), conf.get('high', jnp.inf)
+            loc_fid, scale_fid = conf['loc_fid'], conf['scale_fid']
+
+            if loc is not None:
+                if low == -jnp.inf and high == jnp.inf:
+                    dic[name+'_'] = sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
+                else:
+                    dic[name+'_'] = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
+            else:
+                dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
+        return dic            
+
+
+    def _precond_scale_and_transfer(self, cosmo:Cosmology):
+        """
+        Return scale and transfer fields for linear matter field preconditioning.
+        """
+        pmeshk = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
+
+        if self.precond in ['direct', 'fourier']:
+            scale = jnp.ones(self.mesh_shape)
+            transfer = pmeshk**.5
+
+        elif self.precond=='kaiser':
+            cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
+            boost = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.los)
+            pmeshk_fid = lin_power_mesh(cosmo_fid, self.mesh_shape, self.box_shape)
+
+            scale = (1 + self.gxy_count * boost**2 * pmeshk_fid)**.5
+            transfer = pmeshk**.5 / scale
+            scale = cgh2rg(scale, amp=True)
+        
+        return scale, transfer
+    
+
     def _groups(self, base=True):
         """
         Return groups from latents config.
@@ -521,6 +526,7 @@ class FieldLevelModel(Model):
             groups[group].append(name if base else name+'_')
         return groups
 
+
     def _labels(self):
         """
         Return labels from latents config
@@ -532,9 +538,10 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
     
+
     def _loc_fid(self):
         """
-        Return location values from latents config.
+        Return fiducial location values from latents config.
         """
         return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
     
@@ -544,6 +551,10 @@ class FieldLevelModel(Model):
     ###########
     def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
+                            kedges=kedges, comp=comp, poles=poles, los=self.los)
+    
+    def spectrum2(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0):
+        return spectrum2(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                             kedges=kedges, comp=comp, poles=poles, los=self.los)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(False, False)):

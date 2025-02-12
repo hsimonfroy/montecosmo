@@ -5,6 +5,8 @@ from functools import partial
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 from jaxpm.kernels import cic_compensation
+from montecosmo.nbody import rfftk
+from montecosmo.utils import safe_div
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size
@@ -13,9 +15,9 @@ from jax_cosmo import Cosmology
 
 
 
-##################
-# Power spectrum #
-##################
+############
+# Spectrum #
+############
 # def power_spectrum(mesh, box_shape, kmin, dk, los=[0,0,1], multipoles=0, kcount=False, galaxy_density=1):
 #     # Initialize values related to powerspectra (wavenumber bins and edges)
 #     mesh_shape = np.array(mesh.shape)
@@ -180,12 +182,150 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     # Normalization and conversion from cell units to [Mpc/h]^3
     pow = (pow / kcount)[:,1:-1] * (box_shape / mesh_shape).prod()
 
-    # pk = jnp.concatenate([kavg[None], pk])
+    # kpow = jnp.concatenate([kavg[None], pk])
     if los is None:
         return kavg, pow[0]
     else:
-        return kavg, pow
+        return (kavg, pow), (dig, kcount, kavg, mumesh)
   
+
+
+
+
+
+
+
+
+
+
+
+def _waves(mesh_shape, box_shape, kedges, los):
+    """
+    Parameters
+    ----------
+    mesh_shape : tuple of int
+        Shape of the mesh grid.
+    box_shape : tuple of float
+        Physical dimensions of the box.
+    kedges : None, int, float, or list
+        * If None, set dk to twice the minimum.
+        * If int, specifies number of edges.
+        * If float, specifies dk.
+    los : array_like
+        Line-of-sight vector.
+
+    Returns
+    -------
+    kedges : ndarray
+        Edges of the bins.
+    kmesh : ndarray
+        Wavenumber mesh.
+    mumesh : ndarray
+        Cosine mesh.
+    rfftw : ndarray
+        RFFT weights accounting for Hermitian symmetry.
+    """
+    kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
+
+    if isinstance(kedges, (type(None), int, float)):
+        if kedges is None:
+            dk = 2*np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
+        if isinstance(kedges, int):
+            dk = kmax / kedges # final number of bins will be kedges-1
+        elif isinstance(kedges, float):
+            dk = kedges
+        kedges = np.arange(0, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
+
+    kvec = rfftk(mesh_shape) # cell units
+    kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_shape)] # h/Mpc physical units
+    kmesh = sum(ki**2 for ki in kvec)**0.5
+
+    if los is None:
+        mumesh = 0.
+    else:
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+        mumesh = safe_div(mumesh, kmesh)
+
+    rfftw = np.full_like(kmesh, 2)
+    rfftw[..., 0] = 1
+    if mesh_shape[-1] % 2 == 0:
+        rfftw[..., -1] = 1
+
+    return kedges, kmesh, mumesh, rfftw
+
+
+def spectrum2(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
+             comp=(False, False), poles=0, los:np.ndarray=None):
+    """
+    Compute the auto and cross spectrum of 3D fields, with multipole.
+    """
+    # Initialize
+    mesh_shape = np.array(mesh.shape)
+    if box_shape is None:
+        box_shape = mesh_shape
+    else:
+        box_shape = np.asarray(box_shape)
+
+    if poles==0:
+        los = None
+    else:
+        los = np.asarray(los)
+        los /= np.linalg.norm(los)
+    poles = np.atleast_1d(poles)
+
+    # FFTs and compensations
+    if isinstance(comp, int):
+        comp = (comp, comp)
+
+    mesh = jnp.fft.rfftn(mesh, norm='ortho')
+    if comp[0]:
+        kvec = rfftk(mesh_shape) # cell units
+        mesh *= cic_compensation(kvec)
+
+    if mesh2 is None:
+        mmk = mesh.real**2 + mesh.imag**2
+    else:
+        mesh2 = jnp.fft.rfftn(mesh2, norm='ortho')
+        if comp[1]:
+            kvec = rfftk(mesh_shape) # cell units
+            mesh2 *= cic_compensation(kvec)
+        mmk = mesh * mesh2.conj()
+
+    # Binning
+    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_shape, kedges, los)
+    n_bins = len(kedges) + 1
+    dig = np.digitize(kmesh.reshape(-1), kedges)
+
+    # Count wavenumber in bins
+    kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)
+    kcount = kcount[1:-1]
+
+    # Average wavenumber values in bins
+    # kavg = (kedges[1:] + kedges[:-1]) / 2
+    kavg = np.bincount(dig, weights=(kmesh * rfftw).reshape(-1), minlength=n_bins)
+    kavg = kavg[1:-1] / kcount
+
+    # Average wavenumber power in bins
+    pow = jnp.empty((len(poles), n_bins))
+    for i_ell, ell in enumerate(poles):
+        weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
+        if mesh2 is None:
+            psum = jnp.bincount(dig, weights=weights, length=n_bins)
+        else: 
+            # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
+            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
+            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
+            psum = (psum_real**2 + psum_imag**2)**.5
+        pow = pow.at[i_ell].set(psum)
+    pow = pow[:,1:-1] / kcount * (box_shape / mesh_shape).prod() # from cell units to [Mpc/h]^3
+
+    # kpow = jnp.concatenate([kavg[None], pk])
+    if los is None:
+        return kavg, pow[0]
+    else:
+        return (kavg, pow), (dig, kcount, kavg, mumesh)
+
+
 
 def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
     if isinstance(comp, int):
@@ -224,13 +364,13 @@ def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False
 
 
 
-def kaiser_formula(cosmo:Cosmology, a, init_kpow, bE, poles=0):
+def kaiser_formula(cosmo:Cosmology, a, lin_kpow, bE, poles=0):
     """
     bE is the Eulerien linear bias
     """
     poles = jnp.atleast_1d(poles)
     beta = growth_rate(cosmo, a) / bE
-    k, pow = init_kpow
+    k, pow = lin_kpow
     pow *= growth_factor(cosmo, a)**2
 
     weights = np.ones(len(poles)) * bE**2
@@ -348,7 +488,6 @@ def wigner3j_square(ellout, ellin, prefactor=True):
 #################
 # Chain Metrics #
 #################
-
 def geomean(x, axis=None):
     return jnp.exp(jnp.mean(jnp.log(x), axis=axis))
 

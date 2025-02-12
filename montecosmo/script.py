@@ -57,7 +57,7 @@ class ParseSlurmId():
         dic = {}
         dic['mesh_length'] = [8,16,32,64,128,130]
         dic['evolution'] = ['kaiser','lpt','nbody']
-        dic['lpt_order'] = [1,2]
+        dic['lpt_order'] = [0,1,2]
         dic['rsdb'] = [0,1,2]
         dic['precond'] = ['direct','fourier','kaiser']
 
