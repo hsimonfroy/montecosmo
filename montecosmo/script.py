@@ -148,13 +148,18 @@ def get_init_mcmc(model, n_chains=8):
 from jax.flatten_util import ravel_pytree
 from jax import numpy as jnp
 
-def get_sqrt_diag_cov_from_numpyro(state, params):
+def get_sqrt_diag_cov_from_numpyro(state, params, all=False):
     mass_matrix_sqrt_inv = state.adapt_state.mass_matrix_sqrt_inv
     sqrt_diag_cov = {}
-    for k, v in params.items():
-        if k in ['init_mesh_']:
-            _, unravel_fn = ravel_pytree(v)
-            sqrt_diag_cov[k] = unravel_fn(mass_matrix_sqrt_inv[('init_mesh_',)])
-        else:
-            sqrt_diag_cov[k] = jnp.ones_like(v)
+
+    if all:
+        _, unravel_fn = ravel_pytree(params)
+        sqrt_diag_cov = unravel_fn(next(iter(mass_matrix_sqrt_inv.values())))
+    else:
+        for k, v in params.items():
+            if k in ['init_mesh_']:
+                _, unravel_fn = ravel_pytree(v)
+                sqrt_diag_cov[k] = unravel_fn(mass_matrix_sqrt_inv[('init_mesh_',)])
+            else:
+                sqrt_diag_cov[k] = jnp.ones_like(v)
     return sqrt_diag_cov

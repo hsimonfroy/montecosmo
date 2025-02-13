@@ -193,7 +193,7 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
     else:
         i_ell = [0, None, 1, None, 2][ell]
         sub = f"_{ell}"
-        pow = pow[i_ell]
+        pow = pow[...,i_ell,:]
 
     if log:
         if fill is None:

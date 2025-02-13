@@ -60,145 +60,6 @@ from jax_cosmo import Cosmology
 
 
 
-
-def _initialize_spectrum(mesh_shape, box_shape, kedges, los):
-    """
-    Parameters
-    ----------
-    mesh_shape : tuple of int
-        Shape of the mesh grid.
-    box_shape : tuple of float
-        Physical dimensions of the box.
-    kedges : None, int, float, or list
-        If None, set dk to twice the minimum.
-        If int, specifies number of edges.
-        If float, specifies dk.
-    los : array_like
-        Line-of-sight vector.
-
-    Returns
-    -------
-    dig : ndarray
-        Indices of the bins to which each value in input array belongs.
-    kcount : ndarray
-        Count of values in each bin.
-    kedges : ndarray
-        Edges of the bins.
-    mumesh : ndarray
-        Mu values for the mesh grid.
-    """
-    kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
-
-    if kedges is None or isinstance(kedges, (int, float)):
-        if kedges is None:
-            dk = 2*np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
-        if isinstance(kedges, int):
-            dk = kmax / kedges # final number of bins will be kedges-1
-        elif isinstance(kedges, float):
-            dk = kedges
-        kedges = np.arange(0, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
-
-    kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
-    kvec = [(2 * np.pi * m / l) * np.fft.fftfreq(m).reshape(kshape)
-            for m, l, kshape in zip(mesh_shape, box_shape, kshapes)] # h/Mpc physical units
-    kmesh = sum(ki**2 for ki in kvec)**0.5
-
-    dig = np.digitize(kmesh.reshape(-1), kedges)
-    kcount = np.bincount(dig, minlength=len(kedges)+1)
-
-    # Central value of each bin
-    # kavg = (kedges[1:] + kedges[:-1]) / 2
-    kavg = np.bincount(dig, weights=kmesh.reshape(-1), minlength=len(kedges)+1) / kcount
-    kavg = kavg[1:-1]
-
-    if los is None:
-        mumesh = 0.
-    else:
-        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
-        kmesh_nozeros = np.where(kmesh==0, 1, kmesh) 
-        mumesh = np.where(kmesh==0, 0, mumesh / kmesh_nozeros)
-
-    return dig, kcount, kavg, mumesh
-
-
-def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
-             comp=(False, False), poles=0, los:np.ndarray=None):
-    """
-    Compute the auto and cross spectrum of 3D fields, with multipole.
-    """
-    # Initialize
-    mesh_shape = np.array(mesh.shape)
-    if box_shape is None:
-        box_shape = mesh_shape
-    else:
-        box_shape = np.asarray(box_shape)
-
-    if poles==0:
-        los = None
-    else:
-        los = np.asarray(los)
-        los /= np.linalg.norm(los)
-    poles = np.atleast_1d(poles)
-
-    if isinstance(comp, int):
-        comp = (comp, comp)
-
-    dig, kcount, kavg, mumesh = _initialize_spectrum(mesh_shape, box_shape, kedges, los)
-    n_bins = len(kavg) + 2
-
-    # FFTs
-    mesh = jnp.fft.fftn(mesh, norm='ortho')
-    if comp[0]:
-        kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
-        kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
-            for m, kshape in zip(mesh_shape, kshapes)] # cell units
-        # kvec = fftk(mesh_shape)
-        mesh *= cic_compensation(kvec) # TODO: rfftn
-
-    if mesh2 is None:
-        mmk = mesh.real**2 + mesh.imag**2
-    else:
-        mesh2 = jnp.fft.fftn(mesh2, norm='ortho')
-        if comp[1]:
-            kshapes = np.eye(len(mesh_shape), dtype=np.int32) * -2 + 1
-            kvec = [2 * np.pi * np.fft.fftfreq(m).reshape(kshape)
-                for m, kshape in zip(mesh_shape, kshapes)] # cell units
-            # kvec = fftk(mesh_shape)
-            mesh2 *= cic_compensation(kvec)
-        mmk = mesh * mesh2.conj()
-
-    # Sum powers
-    pow = jnp.empty((len(poles), n_bins))
-    for i_ell, ell in enumerate(poles):
-        weights = (mmk * (2*ell+1) * legendre(ell)(mumesh)).reshape(-1)
-        if mesh2 is None:
-            psum = jnp.bincount(dig, weights=weights, length=n_bins)
-        else: # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
-            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
-            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
-            psum = (psum_real**2 + psum_imag**2)**.5
-        pow = pow.at[i_ell].set(psum)
-
-    # Normalization and conversion from cell units to [Mpc/h]^3
-    pow = (pow / kcount)[:,1:-1] * (box_shape / mesh_shape).prod()
-
-    # kpow = jnp.concatenate([kavg[None], pk])
-    if los is None:
-        return kavg, pow[0]
-    else:
-        return (kavg, pow), (dig, kcount, kavg, mumesh)
-  
-
-
-
-
-
-
-
-
-
-
-
 def _waves(mesh_shape, box_shape, kedges, los):
     """
     Parameters
@@ -254,7 +115,7 @@ def _waves(mesh_shape, box_shape, kedges, los):
     return kedges, kmesh, mumesh, rfftw
 
 
-def spectrum2(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
+def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
              comp=(False, False), poles=0, los:np.ndarray=None):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
@@ -323,7 +184,7 @@ def spectrum2(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     if los is None:
         return kavg, pow[0]
     else:
-        return (kavg, pow), (dig, kcount, kavg, mumesh)
+        return kavg, pow
 
 
 

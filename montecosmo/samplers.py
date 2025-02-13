@@ -280,7 +280,7 @@ def get_nutswg_warm(logdf, config, n_samples, progress_bar=True):
 # MCLMC #
 #########
 def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None, 
-              desired_energy_variance=5e-4, diagonal_preconditioning=False):
+              desired_energy_var=5e-4, diagonal_preconditioning=False):
     init_key, tune_key = jr.split(rng, 2)
 
     # Create an initial state for the sampler
@@ -290,21 +290,21 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
 
     if config is None:
         # Build the kernel
-        kernel = lambda sqrt_diag_cov : blackjax.mcmc.mclmc.build_kernel(
+        kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logdf,
             integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
-            sqrt_diag_cov=sqrt_diag_cov,
+            inverse_mass_matrix=inverse_mass_matrix,
         )
 
         # Find values for L and step_size
-        print("finding L, ss, mm")
-        state, config = blackjax.mclmc_find_L_and_step_size(
+        print("Adaptation start: finding L, ss, mm")
+        state, config, num_steps = blackjax.mclmc_find_L_and_step_size(
             mclmc_kernel=kernel,
             num_steps=n_samples,
             state=state,
             rng_key=tune_key,
             diagonal_preconditioning=diagonal_preconditioning,
-            desired_energy_var=desired_energy_variance,
+            desired_energy_var=desired_energy_var,
             # num_effective_samples=256, # NOTE: higher value implies slower averaging rate
             # frac_tune3=0.5
             )
@@ -312,8 +312,8 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
     elif isinstance(config, dict):
         L = config['L']
         step_size = config['step_size']
-        sqrt_diag_cov = config.get('sqrt_diag_cov', 1.0)
-        config = MCLMCAdaptationState(L=L, step_size=step_size, sqrt_diag_cov=sqrt_diag_cov)
+        inverse_mass_matrix = config.get('inverse_mass_matrix', 1.0)
+        config = MCLMCAdaptationState(L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
 
     else:
         assert isinstance(config, MCLMCAdaptationState), \
@@ -335,15 +335,15 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     if isinstance(config, dict):
         L = config['L']
         step_size = config['step_size']
-        sqrt_diag_cov = config.get('sqrt_diag_cov', 1.0)
+        inverse_mass_matrix = config.get('inverse_mass_matrix', 1.0)
 
     elif isinstance(config, MCLMCAdaptationState):
         L = config.L
         step_size = config.step_size
-        sqrt_diag_cov = config.sqrt_diag_cov
+        inverse_mass_matrix = config.inverse_mass_matrix
 
     # Use the quick wrapper to build a new kernel with the tuned parameters
-    sampler = blackjax.mclmc(logdf, L=L, step_size=step_size, sqrt_diag_cov=sqrt_diag_cov)
+    sampler = blackjax.mclmc(logdf, L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
 
     # Run the sampler
     if thinning==1:
@@ -386,12 +386,12 @@ def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=Tru
 
 
 def get_mclmc_warmup(logdf, n_samples, config=None,
-              desired_energy_variance=5e-4, diagonal_preconditioning=False):
+              desired_energy_var=5e-4, diagonal_preconditioning=False):
     return partial(mclmc_warmup,
                    logdf=logdf,
                    n_samples=n_samples,
                    config=config,
-                   desired_energy_variance=desired_energy_variance,
+                   desired_energy_var=desired_energy_var,
                    diagonal_preconditioning=diagonal_preconditioning)
 
 

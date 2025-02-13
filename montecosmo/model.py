@@ -18,7 +18,7 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
 from montecosmo.nbody import lpt, nbody_bf
-from montecosmo.metrics import spectrum, spectrum2, powtranscoh
+from montecosmo.metrics import spectrum, powtranscoh
 from montecosmo.utils import pdump, pload
 
 from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
@@ -551,10 +551,6 @@ class FieldLevelModel(Model):
     ###########
     def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                            kedges=kedges, comp=comp, poles=poles, los=self.los)
-    
-    def spectrum2(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0):
-        return spectrum2(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                             kedges=kedges, comp=comp, poles=poles, los=self.los)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(False, False)):
