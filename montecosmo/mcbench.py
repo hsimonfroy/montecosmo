@@ -616,8 +616,8 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
 
         # Print warmup last state infos
         print("mean_acc_prob:", mcmc.last_state.mean_accept_prob, 
-            "\nss:", mcmc.last_state.adapt_state.step_size, 
-            "\nmm_sqrt:", mcmc.last_state.adapt_state.mass_matrix_sqrt)
+            "\nstep_size:", mcmc.last_state.adapt_state.step_size, 
+            "\nsqrt_invmm:", mcmc.last_state.adapt_state.mass_matrix_sqrt_inv)
 
         # Handling rng key and destroy init_params
         rng_run = mcmc.post_warmup_state.rng_key
