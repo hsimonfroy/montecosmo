@@ -7,6 +7,8 @@ import blackjax
 from blackjax.progress_bar import gen_scan_fn # XXX: blackjax >= 1.2.3
 from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 from blackjax.util import run_inference_algorithm
+from blackjax.mcmc.integrators import isokinetic_mclachlan, isokinetic_velocity_verlet, isokinetic_yoshida, isokinetic_omelyan
+
 
 
 #########################
@@ -294,13 +296,12 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
         # Build the kernel
         kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logdf,
-            integrator=blackjax.mcmc.integrators.isokinetic_mclachlan,
+            integrator=isokinetic_mclachlan,
             inverse_mass_matrix=inverse_mass_matrix,
         )
 
         # Find values for L and step_size
-        print("Adaptation start: finding L, ss, mm")
-        print("fractune3=0.5")
+        print("Adaptation start: finding decoherence length, step size, mass matrix")
         state, config, num_steps = blackjax.mclmc_find_L_and_step_size(
             mclmc_kernel=kernel,
             num_steps=n_samples,
@@ -331,13 +332,13 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
 
 def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
               transform=None, thinning=1, progress_bar=True):
+    integrator = isokinetic_mclachlan
     
     if transform is None:
         n_dim = len(ravel_pytree(state.position)[0])
         # transform = lambda state, info: (state.position, info)
         transform = lambda state, info: (state.position, 
                                     {'mse_per_dim': jnp.mean(info.energy_change**2) / n_dim})
-        # TODO: map_with_path to get mean logd and Kchange
 
     if isinstance(config, dict):
         L = config['L']
@@ -350,7 +351,9 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
         inverse_mass_matrix = config.inverse_mass_matrix
 
     # Use the quick wrapper to build a new kernel with the tuned parameters
-    sampler = blackjax.mclmc(logdf, L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
+    sampler = blackjax.mclmc(logdf, L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix,
+                                integrator=integrator,
+                                )
 
     # Run the sampler
     if thinning==1:
@@ -375,9 +378,16 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     samples, infos = history
     
     # Register number of evaluations
-    n_eval_per_steps = 2 # NOTE: 1 for velocity_verlet, 2 for mclachlan
-    infos |= {"n_evals": n_eval_per_steps * thinning * jnp.ones(n_samples)}
+    if integrator == isokinetic_velocity_verlet:
+        n_eval_per_steps = 1
+    elif integrator == isokinetic_mclachlan:
+        n_eval_per_steps = 2 
+    elif integrator == isokinetic_yoshida:
+        n_eval_per_steps = 3
+    elif integrator == isokinetic_omelyan:
+        n_eval_per_steps = 5
 
+    infos |= {"n_evals": n_eval_per_steps * thinning * jnp.ones(n_samples)}
     return state, samples|infos
 
 
@@ -391,7 +401,7 @@ def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=Tru
                    progress_bar=progress_bar)
 
 
-def get_mclmc_warmup(logdf, n_samples, config=None,
+def get_mclmc_warmup(logdf, n_samples=None, config=None,
               desired_energy_var=5e-4, diagonal_preconditioning=False):
     return partial(mclmc_warmup,
                    logdf=logdf,
@@ -538,6 +548,8 @@ def run_with_thinning(
         A transformation of the trace of states to be returned. This is useful for
         computing determinstic variables, or returning a subset of the states.
         By default, the states are returned as is.
+    thinning
+        The thinning factor, meaning a state is returned every `thinning` steps.
     """
 
     if initial_state is None and initial_position is None:
@@ -569,10 +581,6 @@ def run_with_thinning(
     
     scan_fn = gen_scan_fn(num_steps, progress_bar)
     final_state, history = scan_fn(one_step, initial_state, xs)
-    debug.print("{x}", x=final_state)
-
-    final_state, history = lax.scan(one_step, initial_state, xs)
-    debug.print("{x}", x=final_state)
 
     return final_state, history
 

@@ -157,67 +157,74 @@ def trunc2std(y, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
 class DetruncTruncNorm(Distribution):
     """
     Detruncated Truncated Normal distribution.
-    Detruncation is such that a truncated normal with estimated parameters is transformed into a standard normal.
+    Detruncation is such that a truncated normal with fiducial parameters is transformed into a standard normal.
 
-    This means `std2trunc(DetruncTruncNorm(loc, scale, low, high, loc_est, scale_est), loc_est, scale_est, low, high)` 
+    This means `std2trunc(DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid), loc_fid, scale_fid, low, high)` 
     is distributed as `TruncNorm(loc, scale, low, high)`.
     """
     arg_constraints = {'loc': constraints.real, 'scale': constraints.positive, 
                        'low': constraints.real, 'high': constraints.real,
-                       'loc_est': constraints.real, 'scale_est': constraints.positive, 
+                       'loc_fid': constraints.real, 'scale_fid': constraints.positive, 
                        }
     support = constraints.real
-    def __init__(self, loc, scale, low=-jnp.inf, high=jnp.inf, loc_est=None, scale_est=None, *, validate_args=None):
+    def __init__(self, loc=0., scale=1., 
+                 low=-jnp.inf, high=jnp.inf, 
+                 loc_fid:float=None, scale_fid:float=None, 
+                 *, validate_args=None):
         self.loc = loc
         self.scale = scale
         self.low = low
         self.high = high
   
-        self.loc_est = loc if loc_est is None else loc_est
-        self.scale_est = scale if scale_est is None else scale_est
+        self.loc_fid = loc if loc_fid is None else loc_fid
+        self.scale_fid = scale if scale_fid is None else scale_fid
 
         batch_shape = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale), jnp.shape(low), jnp.shape(high))
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
     def sample(self, key, sample_shape=()):
         trunc = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).sample(key, sample_shape)
-        return trunc2std(trunc, self.loc_est, self.scale_est, self.low, self.high)
+        return trunc2std(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
 
     def log_prob(self, value):
-        fn = partial(std2trunc, loc=self.loc_est, scale=self.scale_est, low=self.low, high=self.high)
+        fn = partial(std2trunc, loc=self.loc_fid, scale=self.scale_fid, low=self.low, high=self.high)
         log_abs_det_jac = lambda x: jnp.log(jnp.abs(grad(fn)(x)))
+        # log_abs_det_jac = lambda x: analyt_log_abs_det_jac(x, self.loc_fid, self.scale_fid, self.low, self.high)
         log_pdf = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).log_prob
         return log_pdf(fn(value)) + log_abs_det_jac(value)
 
 class DetruncUnif(Distribution):
     """
     Detruncated Uniform distribution.
-    Detruncation is such that a truncated normal with estimated parameters is transformed into a standard normal.
+    Detruncation is such that a truncated normal with fiducial parameters is transformed into a standard normal.
 
-    This means `std2trunc(DetruncUnif(low, high, loc_est, scale_est), loc_est, scale_est, low, high)` 
+    This means `std2trunc(DetruncUnif(low, high, loc_fid, scale_fid), loc_fid, scale_fid, low, high)` 
     is distributed as `Unif(low, high)`.
     """
     arg_constraints = {'low': constraints.real, 'high': constraints.real,
-                       'loc_est': constraints.real, 'scale_est': constraints.positive, 
+                       'loc_fid': constraints.real, 'scale_fid': constraints.positive, 
                        }
     support = constraints.real
-    def __init__(self, low, high, loc_est=None, scale_est=None, *, validate_args=None):
+    def __init__(self, low=0., high=1., 
+                 loc_fid:float=None, scale_fid:float=None, 
+                 *, validate_args=None):
         self.low = low
         self.high = high
         
-        self.loc_est = (high + low) / 2 if loc_est is None else loc_est
-        self.scale_est = (high - low) / 12**.5 if scale_est is None else scale_est
+        self.loc_fid = (high + low) / 2 if loc_fid is None else loc_fid
+        self.scale_fid = (high - low) / 12**.5 if scale_fid is None else scale_fid
 
         batch_shape = lax.broadcast_shapes(jnp.shape(low), jnp.shape(high))
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
     def sample(self, key, sample_shape=()):
         trunc = Uniform(self.low, self.high).sample(key, sample_shape)
-        return trunc2std(trunc, self.loc_est, self.scale_est, self.low, self.high)
+        return trunc2std(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
 
     def log_prob(self, value):
-        fn = partial(std2trunc, loc=self.loc_est, scale=self.scale_est, low=self.low, high=self.high)
+        fn = partial(std2trunc, loc=self.loc_fid, scale=self.scale_fid, low=self.low, high=self.high)
         log_abs_det_jac = lambda x: jnp.log(jnp.abs(grad(fn)(x)))
+        # log_abs_det_jac = lambda x: analyt_log_abs_det_jac(x, self.loc_fid, self.scale_fid, self.low, self.high)
         log_pdf = Uniform(self.low, self.high).log_prob
         return log_pdf(fn(value)) + log_abs_det_jac(value)
 
@@ -346,67 +353,6 @@ def r2chshape(shape):
 
 
 
-
-
-# def thin_array(a, thinning=None, moment:int|list=None, axis=0):
-#     """
-#     If moment is array-like, moment dimension is added as a last dimension.
-#     If thinning is None, return last values.
-#     """
-#     a = jnp.moveaxis(a, axis, -1)
-#     shape = a.shape
-#     if thinning is None:
-#         thinning = shape[-1]
-#     n_split = max(np.rint(shape[-1]/thinning), 1)
-#     a = jnp.array_split(a, n_split, axis=-1)
-
-#     if moment is None:
-#         fn = lambda x: x[...,-1]
-#     else:
-#         if isinstance(moment, int):
-#             fn = lambda x: jnp.sum(x**moment, axis=-1)
-#         else:
-#             moment = jnp.asarray(moment)
-#             fn = lambda x: jnp.sum(x[...,None]**moment, axis=-2)
-
-#     a = tree.map(fn, a)
-#     a = jnp.stack(a, axis=-1)
-#     return jnp.moveaxis(a, -1, axis)
-
-
-# def cumfn_array(a, fn, n, *args, axis=0):
-#     """
-#     Compute function on cumulative slices along given axis, with results along the first dimension.
-#     """
-#     filt_ends = jnp.rint(jnp.arange(1,n+1) / n * a.shape[axis]).astype(int)
-#     filt_fn = lambda end: fn(a[axis*(slice(None),) + (slice(None,end),)], *args)
-#     out = ()
-#     for end in filt_ends:
-#         out += (filt_fn(end),)
-#     return jnp.stack(out) # stack on first dim since fn can destroy some dims
-
-
-
-
-
-
-
-# def choice_array(rng_key, a, n, axis):
-#     """
-#     Chose n random coordinates from last axis, obtained by flatenning given axes. 
-#     Ensure reproducibilty independently of ungiven axes.
-#     """
-#     # Move given axes at the end
-#     axis = jnp.atleast_1d(axis)
-#     dest = -1-jnp.arange(len(axis)) 
-#     a = jnp.moveaxis(a, axis, dest)
-
-#     # Remove axes to flatten from shape
-#     shape = list(a.shape)
-#     for ax in axis:
-#         shape.pop(ax) 
-
-#     return jr.choice(rng_key, a.reshape((*shape,-1)), shape=(n,), replace=False, axis=-1)
 
 
 # def get_noise_fn(t0, t1, noises, steps=False):
