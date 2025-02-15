@@ -38,7 +38,7 @@ default_config={
             'lpt_order':2,
             # Observables
             'gxy_density':1e-3, # in galaxy / (Mpc/h)^3
-            'obs':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
+            'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
             'los':(0.,0.,1.),
             'poles':(0,2,4),
             # Latents
@@ -47,36 +47,36 @@ default_config={
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
                                     'scale':0.5,
-                                    'scale_fid':0.05,
+                                    'scale_fid':0.02,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
                                     'label':'{\\sigma}_8',
                                     'loc':0.8102,
                                     'scale':0.5,
-                                    'scale_fid':0.05,
+                                    'scale_fid':0.02,
                                     'low': 0.,
                                     'high':jnp.inf,},
                         'b1': {'group':'bias',
                                     'label':'{b}_1',
                                     'loc':1.,
                                     'scale':0.5,
-                                    'scale_fid':0.1,},
+                                    'scale_fid':0.04,},
                         'b2': {'group':'bias',
                                     'label':'{b}_2',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.05,},
+                                    'scale_fid':0.02,},
                         'bs2': {'group':'bias',
                                     'label':'{b}_{s^2}',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.3,},
+                                    'scale_fid':0.08,},
                         'bn2': {'group':'bias',
                                     'label':'{b}_{\\nabla^2}',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.5,},
+                                    'scale_fid':0.2,},
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},},
             }
@@ -215,11 +215,13 @@ class Model():
     # Save and load #
     #################
     def save(self, path): # with pickle because not array-like
-        pdump(asdict(self), path)
+        # pdump(asdict(self), path)
+        pdump(self, path)
 
     @classmethod
     def load(cls, path):
-        return cls(**pload(path))
+        # return cls(**pload(path))
+        return pload(path)
 
 
 
@@ -241,15 +243,33 @@ class FieldLevelModel(Model):
     mesh_shape : array_like of int
         Shape of the mesh.
     box_shape : array_like
-        Shape of the box in Mpc/h. Typically aim for cell lengths between 1 and 10 Mpc/h.
-    a_lpt : float
-        Scale factor to which compute Lagrangian Perturbation Theory (LPT) displacement.
-        If equal to a_obs, no Particule Mesh (PM) step is computed.
+        Shape of the box in Mpc/h. Typically such that cell lengths would be between 1 and 10 Mpc/h.
+    evolution : str
+        Evolution model: 'kaiser', 'lpt', 'nbody'.
     a_obs : float
         Scale factor of observations.
-        If equal to a_lpt, no Particule Mesh (PM) step is computed.
+    nbody_steps : int
+        Number of N-body steps.
+        Only used for 'nbody' evolution.
+    nbody_snapshots : int or list
+        Number or list of N-body snapshots to save. If None, only save last.
+        Only used for 'nbody' evolution.
+    lpt_order : int
+        Order of LPT displacement. 
+        Only used for 'lpt' evolution.
+    observable : str
+        Observable: 'field', 'powspec'.
     gxy_density : float
         Galaxy density in galaxy / (Mpc/h)^3
+    los : array_like
+        Line-of-sight direction. If None, no Redshift Space Distorsion is applied.
+    poles : array_like of int
+        Power spectrum poles to compute.
+        Only used for 'powspec' observable.
+    precond : str
+        Preconditioning method: 'direct', 'fourier', 'kaiser'.
+    latents : dict
+        Latent variables configuration.
     """
     # Mesh and box parameters
     mesh_shape:np.ndarray
@@ -261,7 +281,7 @@ class FieldLevelModel(Model):
     nbody_snapshots:int|list
     lpt_order:int
     # Observable
-    obs:str
+    observable:str
     gxy_density:float
     los:tuple
     poles:tuple
@@ -287,7 +307,7 @@ class FieldLevelModel(Model):
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
         # 2*pi factors because of Fourier transform definition
-        self.gxy_count = self.gxy_density * (self.box_shape / self.mesh_shape).prod()
+        self.gxy_count = self.gxy_density * self.cell_shape.prod()
 
     def __str__(self):
         out = ""
@@ -328,7 +348,8 @@ class FieldLevelModel(Model):
         init = {}
         name_ = self.groups['init'][0]+'_'
 
-        scale, transfer = self._precond_scale_and_transfer(cosmology)
+        bE = 1 + bias['b1']
+        scale, transfer = self._precond_scale_and_transfer(cosmology, bE)
         init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
@@ -389,7 +410,7 @@ class FieldLevelModel(Model):
         Return an observed mesh sampled from a location mesh with observational variance.
         """
 
-        if self.obs == 'field':
+        if self.observable == 'field':
             # Gaussian noise
             obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5))
             return obs_mesh # NOTE: mesh is 1+delta_obs
@@ -426,7 +447,8 @@ class FieldLevelModel(Model):
         # Initial conditions
         if len(init) > 0:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            _, transfer = self._precond_scale_and_transfer(cosmology)
+            bE = 1 + (bias_['b1'] if inv else bias['b1'])
+            _, transfer = self._precond_scale_and_transfer(cosmology, bE)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
@@ -473,6 +495,7 @@ class FieldLevelModel(Model):
                     new[name]['scale_fid'] = (high - low) / 12**.5
         return new
 
+
     def _sample(self, names:str|list):
         """
         Sample latent variables from latents config.
@@ -495,7 +518,7 @@ class FieldLevelModel(Model):
         return dic            
 
 
-    def _precond_scale_and_transfer(self, cosmo:Cosmology):
+    def _precond_scale_and_transfer(self, cosmo:Cosmology, bE):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
@@ -507,10 +530,17 @@ class FieldLevelModel(Model):
 
         elif self.precond=='kaiser':
             cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
-            boost = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.los)
+            boost_fid = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.los)
             pmeshk_fid = lin_power_mesh(cosmo_fid, self.mesh_shape, self.box_shape)
 
-            scale = (1 + self.gxy_count * boost**2 * pmeshk_fid)**.5
+            scale = (1 + self.gxy_count * boost_fid**2 * pmeshk_fid)**.5
+            transfer = pmeshk**.5 / scale
+            scale = cgh2rg(scale, amp=True)
+        
+        elif self.precond=='kaiser_dyn':
+            boost = kaiser_boost(cosmo, self.a_obs, bE, self.mesh_shape, self.los)
+
+            scale = (1 + self.gxy_count * boost**2 * pmeshk)**.5
             transfer = pmeshk**.5 / scale
             scale = cgh2rg(scale, amp=True)
         
@@ -580,7 +610,7 @@ class FieldLevelModel(Model):
         chains.data['kptc'] = fn(chains.data[name])
         return chains
     
-    def init_model(self, rng, delta_obs, base=False, temp=1.):
+    def kaiser_post(self, rng, delta_obs, base=False, temp=1.):
         if jnp.isrealobj(delta_obs):
             delta_obs = jnp.fft.rfftn(delta_obs)
 

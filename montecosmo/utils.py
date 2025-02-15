@@ -232,9 +232,9 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
     # NOTE: this analytical logabsdetjac for std2trunc fails after 12sigma for float32
     low, high = (low - loc) / scale, (high - loc) / scale
     cdf_low, cdf_high = norm.cdf(low), norm.cdf(high)
-    # return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(std2trunc(x, 0., 1., low, high)))
-    cdf_y = cdf_low + (cdf_high - cdf_low) * norm.cdf(x)
-    return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(norm.ppf(cdf_y)))
+    return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(std2trunc(x, 0., 1., low, high)))
+    # cdf_y = cdf_low + (cdf_high - cdf_low) * norm.cdf(x)
+    # return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(norm.ppf(cdf_y)))
 
 
 #############################

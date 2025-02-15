@@ -283,7 +283,7 @@ def get_nutswg_warm(logdf, config, n_samples, progress_bar=True):
 #########
 # MCLMC #
 #########
-def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None, 
+def mclmc_warmup(rng, init_pos, logdf, n_steps, config=None, 
               desired_energy_var=5e-4, diagonal_preconditioning=False):
     init_key, tune_key = jr.split(rng, 2)
 
@@ -296,24 +296,29 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
         # Build the kernel
         kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logdf,
-            # integrator=isokinetic_mclachlan,
-            integrator=isokinetic_velocity_verlet,
+            integrator=isokinetic_mclachlan,
             inverse_mass_matrix=inverse_mass_matrix,
         )
 
         # Find values for L and step_size
-        print("Adaptation start: finding decoherence length, step size, mass matrix")
-        state, config, num_steps = blackjax.mclmc_find_L_and_step_size(
+        print(f"Perform {n_steps} adaptation steps")
+        frac_tune1 = 0.5
+        frac_tune2 = 0.5
+        frac_tune3 = 0. 
+        # NOTE: can't afford to save every samples to estimate effective sample size, so estimate optimal L a posteriori
+        num_steps = int(n_steps / (frac_tune1 + frac_tune2 * (1 + diagonal_preconditioning / 3) + frac_tune3))
+        # NOTE: num_steps to pass to mclmc_find_L_and_step_size to actually perform n_steps adaptation steps
+
+        state, config, num_steps_est = blackjax.mclmc_find_L_and_step_size(
             mclmc_kernel=kernel,
-            num_steps=n_samples,
+            num_steps=num_steps,
             state=state,
             rng_key=tune_key,
             desired_energy_var=desired_energy_var,
             diagonal_preconditioning=diagonal_preconditioning,
-
-            frac_tune1=0.5,
-            frac_tune2=0.5,
-            frac_tune3=0.,
+            frac_tune1=frac_tune1,
+            frac_tune2=frac_tune2,
+            frac_tune3=frac_tune3,
             # num_effective_samples=150, # NOTE: higher value implies slower averaging rate
             )
 
@@ -333,12 +338,19 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
 
 def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
               transform=None, thinning=1, progress_bar=True):
-    # integrator = isokinetic_mclachlan
-    integrator = isokinetic_velocity_verlet
+    integrator = isokinetic_mclachlan
+
+    if integrator == isokinetic_velocity_verlet:
+        n_eval_per_steps = 1
+    elif integrator == isokinetic_mclachlan:
+        n_eval_per_steps = 2 
+    elif integrator == isokinetic_yoshida:
+        n_eval_per_steps = 3
+    elif integrator == isokinetic_omelyan:
+        n_eval_per_steps = 5
     
     if transform is None:
         n_dim = len(ravel_pytree(state.position)[0])
-        # transform = lambda state, info: (state.position, info)
         transform = lambda state, info: (state.position, 
                                     {'mse_per_dim': jnp.mean(info.energy_change**2) / n_dim})
 
@@ -353,9 +365,9 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
         inverse_mass_matrix = config.inverse_mass_matrix
 
     # Use the quick wrapper to build a new kernel with the tuned parameters
-    sampler = blackjax.mclmc(logdf, L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix,
-                                integrator=integrator,
-                                )
+    sampler = blackjax.mclmc(logdf, L=L, step_size=step_size, 
+                            inverse_mass_matrix=inverse_mass_matrix,
+                            integrator=integrator,)
 
     # Run the sampler
     if thinning==1:
@@ -380,18 +392,18 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     samples, infos = history
     
     # Register number of evaluations
-    if integrator == isokinetic_velocity_verlet:
-        n_eval_per_steps = 1
-    elif integrator == isokinetic_mclachlan:
-        n_eval_per_steps = 2 
-    elif integrator == isokinetic_yoshida:
-        n_eval_per_steps = 3
-    elif integrator == isokinetic_omelyan:
-        n_eval_per_steps = 5
-
     infos |= {"n_evals": n_eval_per_steps * thinning * jnp.ones(n_samples)}
     return state, samples|infos
 
+
+def get_mclmc_warmup(logdf, n_steps=None, config=None,
+              desired_energy_var=5e-4, diagonal_preconditioning=False):
+    return partial(mclmc_warmup,
+                   logdf=logdf,
+                   n_steps=n_steps,
+                   config=config,
+                   desired_energy_var=desired_energy_var,
+                   diagonal_preconditioning=diagonal_preconditioning)
 
 
 def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True):
@@ -402,15 +414,6 @@ def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=Tru
                    thinning=thinning,    
                    progress_bar=progress_bar)
 
-
-def get_mclmc_warmup(logdf, n_samples=None, config=None,
-              desired_energy_var=5e-4, diagonal_preconditioning=False):
-    return partial(mclmc_warmup,
-                   logdf=logdf,
-                   n_samples=n_samples,
-                   config=config,
-                   desired_energy_var=desired_energy_var,
-                   diagonal_preconditioning=diagonal_preconditioning)
 
 
 ##################

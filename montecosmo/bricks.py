@@ -67,9 +67,8 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, lo
     pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
 
-    # stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
     stds = (pmeshk / (1 + gxy_count * boost**2 * pmeshk))**.5
-    # NOTE: gradient safe version of stds = (gxy_count * evolve**2 + pmeshk**-1)**-.5
+    # Also: stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
     means = stds**2 * gxy_count * boost * delta_obs
     return means, stds
 
@@ -114,7 +113,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
 
 def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) -> dict:
     """
-    Transform sample mesh into base mesh, i.e. initial wavevector amplitudes at a=1.
+    Transform sample mesh into base mesh, i.e. initial wavevector coefficients at a=1.
     """
     assert len(init) <= 1, "init dict should only have one or zero key"
     for in_name, mesh in init.items():
@@ -127,7 +126,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
                 # Sample in direct space
                 mesh = jnp.fft.rfftn(mesh)
 
-            elif precond in ['fourier','kaiser']:
+            elif precond in ['fourier','kaiser','kaiser_dyn']:
                 # Sample in fourier space
                 mesh = rg2cgh(mesh)
 
@@ -138,7 +137,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
             if precond=='direct':
                 mesh = jnp.fft.irfftn(mesh)
 
-            elif precond in ['fourier','kaiser']:
+            elif precond in ['fourier','kaiser','kaiser_dyn']:
                 mesh = cgh2rg(mesh)
 
         return {out_name:mesh}

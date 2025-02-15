@@ -8,7 +8,7 @@ def get_save_dir(**kwargs):
     # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}_ao{kwargs['a_obs']:.1f}"
-    dir += f"_ev{kwargs['evolution']}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']}_ob{kwargs['obs']}/"
+    dir += f"_ev{kwargs['evolution']}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']}_ob{kwargs['observable']}/"
     return dir
 
 def from_id(id):
@@ -20,11 +20,17 @@ def from_id(id):
           'lpt_order':args.lpt_order,
           'evolution':args.evolution,
           'precond':args.precond,
-          'obs':args.obs,
+          'observable':args.obs,
           'nbody_steps':5,
           }
+
     save_dir = get_save_dir(**config)
-    model = FieldLevelModel(**default_config | config)
+    from copy import deepcopy
+    config = deepcopy(default_config | config)
+    model = FieldLevelModel(**config)
+    for k, v in model.latents.items():
+        if 'scale_fid' in v:
+            model.latents[k]['scale_fid'] = v['scale_fid'] * (64 / args.mesh_length)**(3/2)
     
     mcmc_config = {
         'sampler':args.sampler,
@@ -59,7 +65,7 @@ class ParseSlurmId():
         dic['evolution'] = ['kaiser','lpt','nbody']
         dic['lpt_order'] = [0,1,2]
         dic['rsdb'] = [0,1,2]
-        dic['precond'] = ['direct','fourier','kaiser']
+        dic['precond'] = ['direct','fourier','kaiser','kaiser_dyn']
 
         dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
         dic['mm'] = [0,1]
