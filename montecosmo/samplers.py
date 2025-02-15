@@ -296,7 +296,8 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
         # Build the kernel
         kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logdf,
-            integrator=isokinetic_mclachlan,
+            # integrator=isokinetic_mclachlan,
+            integrator=isokinetic_velocity_verlet,
             inverse_mass_matrix=inverse_mass_matrix,
         )
 
@@ -307,12 +308,12 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
             num_steps=n_samples,
             state=state,
             rng_key=tune_key,
-            diagonal_preconditioning=diagonal_preconditioning,
             desired_energy_var=desired_energy_var,
+            diagonal_preconditioning=diagonal_preconditioning,
 
             frac_tune1=0.5,
             frac_tune2=0.5,
-            frac_tune3=0.5,
+            frac_tune3=0.,
             # num_effective_samples=150, # NOTE: higher value implies slower averaging rate
             )
 
@@ -332,7 +333,8 @@ def mclmc_warmup(rng, init_pos, logdf, n_samples, config=None,
 
 def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
               transform=None, thinning=1, progress_bar=True):
-    integrator = isokinetic_mclachlan
+    # integrator = isokinetic_mclachlan
+    integrator = isokinetic_velocity_verlet
     
     if transform is None:
         n_dim = len(ravel_pytree(state.position)[0])
