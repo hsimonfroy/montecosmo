@@ -130,7 +130,6 @@ def mwg_kernel_general(rng_key, state, logdf, step_fn, init_fn, config):
 
 def sampling_loop_general(rng_key, initial_state, logdf, step_fn, init_fn, config, n_samples, progress_bar=True):
     
-    # @blackjax.progress_bar.progress_bar_scan(n_samples)
     def one_step(state, xs):
         _, rng_key = xs
         state, infos = mwg_kernel_general(

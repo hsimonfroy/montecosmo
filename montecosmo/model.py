@@ -498,7 +498,7 @@ class FieldLevelModel(Model):
 
     def _sample(self, names:str|list):
         """
-        Sample latent variables from latents config.
+        Sample latent parameters from latents config.
         """
         dic = {}
         names = np.atleast_1d(names)
