@@ -3,9 +3,9 @@ from montecosmo.model import FieldLevelModel, default_config
 from numpyro import infer
 
 def get_save_dir(**kwargs):
-    dir = os.path.expanduser("~/scratch/pickles/")
+    # dir = os.path.expanduser("~/scratch/pickles/")
     # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
-    # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
+    dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}_ao{kwargs['a_obs']:.1f}"
     dir += f"_ev{kwargs['evolution']}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']}_ob{kwargs['observable']}/"
@@ -35,10 +35,10 @@ def from_id(id):
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':64 if args.mesh_length < 128 else 64, ######
+        'n_samples':128 if args.mesh_length < 128 else 64, ######
         'max_tree_depth':10,
         'n_runs':20,
-        'n_chains':4 if args.mesh_length < 128 else 4, ######
+        'n_chains':8 if args.mesh_length < 128 else 4, ######
         'mm':args.mm,
     }
     if args.rsdb==0:
@@ -59,7 +59,7 @@ def from_id(id):
 class ParseSlurmId():
     def __init__(self, id):
         self.id = str(id)
-        # self.id = '311' + self.id
+        self.id = '311' + self.id
         print("True id:", self.id) #####
 
         dic = {}
@@ -69,7 +69,7 @@ class ParseSlurmId():
         dic['rsdb'] = [0,1,2]
         dic['precond'] = ['direct','fourier','kaiser','kaiser_dyn']
 
-        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC', 'AdjMCLMC']
+        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'NUTSwG2', 'MCLMC', 'aMCLMC']
         dic['mm'] = [0,1]
 
         dic['box_length'] = [None]
@@ -109,7 +109,7 @@ def get_mcmc(model, config):
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
             step_size=1e-3, 
             # Heuristic mean_n_steps_NUTS*step_size_NUTS/(2 to 4), compare with default 2pi.
-            trajectory_length=350 * 2e-2 / 4, 
+            trajectory_length=4.4 / 2, 
             target_accept_prob=target_accept_prob,
             # adapt_step_size=False,
             adapt_mass_matrix=mm,

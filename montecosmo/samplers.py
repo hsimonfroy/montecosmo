@@ -318,7 +318,7 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             frac_tune1=frac_tune1,
             frac_tune2=frac_tune2,
             frac_tune3=frac_tune3,
-            # num_effective_samples=150, # NOTE: higher value implies slower averaging rate
+            num_effective_samples=256, # NOTE: higher value implies slower averaging rate
             )
     else:
         if config is None:
