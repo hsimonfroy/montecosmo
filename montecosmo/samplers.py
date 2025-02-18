@@ -283,7 +283,7 @@ def get_nutswg_warm(logdf, config, n_samples, progress_bar=True):
 #########
 # MCLMC #
 #########
-def mclmc_warmup(rng, init_pos, logdf, n_steps, config=None, 
+def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None, 
               desired_energy_var=5e-4, diagonal_preconditioning=False):
     init_key, tune_key = jr.split(rng, 2)
 
@@ -292,7 +292,7 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps, config=None,
         position=init_pos, logdensity_fn=logdf, rng_key=init_key
     )
 
-    if config is None:
+    if n_steps > 0:
         # Build the kernel
         kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
             logdensity_fn=logdf,
@@ -305,11 +305,11 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps, config=None,
         frac_tune1 = 0.5
         frac_tune2 = 0.5
         frac_tune3 = 0. 
-        # NOTE: can't afford to save every samples to estimate effective sample size, so estimate optimal L a posteriori
-        num_steps = int(n_steps / (frac_tune1 + frac_tune2 * (1 + diagonal_preconditioning / 3) + frac_tune3))
+        # NOTE: can't afford to save every samples to estimate effective sample size, so adapt L afterwards
+        num_steps = round(n_steps / (frac_tune1 + frac_tune2 * (1 + diagonal_preconditioning / 3) + frac_tune3))
         # NOTE: num_steps to pass to mclmc_find_L_and_step_size to actually perform n_steps adaptation steps
 
-        state, config, num_steps_est = blackjax.mclmc_find_L_and_step_size(
+        state, config, n_steps_tot = blackjax.mclmc_find_L_and_step_size(
             mclmc_kernel=kernel,
             num_steps=num_steps,
             state=state,
@@ -321,16 +321,21 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps, config=None,
             frac_tune3=frac_tune3,
             # num_effective_samples=150, # NOTE: higher value implies slower averaging rate
             )
-
-    elif isinstance(config, dict):
-        L = config['L']
-        step_size = config['step_size']
-        inverse_mass_matrix = config.get('inverse_mass_matrix', 1.0)
-        config = MCLMCAdaptationState(L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
-
     else:
-        assert isinstance(config, MCLMCAdaptationState), \
-        "config must be either None, a dict, or a MCLMCAdaptationState"
+        if config is None:
+            n_dim = len(ravel_pytree(state.position)[0])
+            config = MCLMCAdaptationState(
+                n_dim**.5, n_dim**.5 / 4, inverse_mass_matrix=jnp.ones(n_dim))
+            
+        elif isinstance(config, dict):
+            L = config['L']
+            step_size = config['step_size']
+            inverse_mass_matrix = config.get('inverse_mass_matrix', 1.0)
+            config = MCLMCAdaptationState(L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
+
+        else:
+            assert isinstance(config, MCLMCAdaptationState), \
+            "config must be either None, a dict, or a MCLMCAdaptationState"
 
     return state, config
 
@@ -416,11 +421,154 @@ def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=Tru
 
 
 
+
+
 ##################
 # Adjusted MCLMC #
 ##################
 from blackjax.mcmc.adjusted_mclmc_dynamic import rescale
 from blackjax.util import run_inference_algorithm
+
+def adj_mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None, 
+              diagonal_preconditioning=False, 
+              random_trajectory_length=True,
+                L_proposal_factor=jnp.inf):
+    init_key, tune_key = jr.split(rng, 2)
+
+    # Create an initial state for the sampler
+    state = blackjax.mcmc.adjusted_mclmc_dynamic.init(
+        position=init_pos, logdensity_fn=logdf, random_generator_arg=init_key
+    )
+
+    if n_steps > 0:
+        # Build the kernel
+        kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
+            logdensity_fn=logdf,
+            integrator=isokinetic_mclachlan,
+            inverse_mass_matrix=inverse_mass_matrix,
+        )
+
+        if random_trajectory_length:
+            integration_steps_fn = lambda avg_num_integration_steps: lambda k: jnp.ceil(
+                jr.uniform(k) * rescale(avg_num_integration_steps))
+        else:
+            integration_steps_fn = lambda avg_num_integration_steps: lambda _: jnp.ceil(avg_num_integration_steps)
+
+        kernel = lambda rng_key, state, avg_num_integration_steps, step_size, inverse_mass_matrix: blackjax.mcmc.adjusted_mclmc_dynamic.build_kernel(
+            integration_steps_fn=integration_steps_fn(avg_num_integration_steps),
+            inverse_mass_matrix=inverse_mass_matrix,
+        )(
+            rng_key=rng_key,
+            state=state,
+            step_size=step_size,
+            logdensity_fn=logdf,
+            L_proposal_factor=L_proposal_factor,
+        )
+
+        target_acc_rate = 0.9 # our recommendation
+
+        print(f"Perform {n_steps} adaptation steps?")
+        state, config, n_steps_tot = blackjax.adjusted_mclmc_find_L_and_step_size(
+            mclmc_kernel=kernel,
+            num_steps=n_steps,
+            state=state,
+            rng_key=tune_key,
+            target=target_acc_rate,
+            frac_tune1=0.1,
+            frac_tune2=0.1,
+            frac_tune3=0.1, # our recommendation
+            diagonal_preconditioning=diagonal_preconditioning,
+            )
+    else:
+        if config is None:
+            n_dim = len(ravel_pytree(state.position)[0])
+            config = MCLMCAdaptationState(
+                n_dim**.5, n_dim**.5 / 5, inverse_mass_matrix=jnp.ones(n_dim))
+            
+        elif isinstance(config, dict):
+            L = config['L']
+            step_size = config['step_size']
+            inverse_mass_matrix = config.get('inverse_mass_matrix', 1.0)
+            config = MCLMCAdaptationState(L=L, step_size=step_size, inverse_mass_matrix=inverse_mass_matrix)
+
+        else:
+            assert isinstance(config, MCLMCAdaptationState), \
+            "config must be either None, a dict, or a MCLMCAdaptationState"
+
+    return state, config
+
+
+def adj_mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
+              transform=None, thinning=1, progress_bar=True, L_proposal_factor=jnp.inf):
+    
+    if transform is None:
+        # transform = lambda state, info: (state.position, infos)
+        transform = lambda state, info: state.position
+
+    if isinstance(config, dict):
+        L = config['L']
+        step_size = config['step_size']
+        inverse_mass_matrix = config.get('inverse_mass_matrix', 1.0)
+
+    elif isinstance(config, MCLMCAdaptationState):
+        L = config.L
+        step_size = config.step_size
+        inverse_mass_matrix = config.inverse_mass_matrix
+
+    sampler = blackjax.adjusted_mclmc_dynamic(
+        logdensity_fn=logdf,
+        step_size=step_size,
+        integration_steps_fn=lambda key: jnp.ceil(
+            jr.uniform(key) * rescale(L / step_size)
+        ),
+        inverse_mass_matrix=inverse_mass_matrix,
+        L_proposal_factor=L_proposal_factor,
+    )
+
+     # Run the sampler
+    if thinning==1:
+        state, history = run_inference_algorithm(
+            rng_key=rng,
+            initial_state=state,
+            inference_algorithm=sampler,
+            num_steps=n_samples,
+            transform=transform,
+            progress_bar=progress_bar,
+        )
+    else:
+        state, history = run_with_thinning(
+            rng_key=rng,
+            inference_algorithm=sampler,
+            num_steps=n_samples,
+            initial_state=state,
+            transform=transform,
+            progress_bar=progress_bar,
+            thinning=thinning
+        )
+    samples, infos = history
+
+    return state, samples, infos
+
+
+
+def get_adj_mclmc_warmup(logdf, n_steps=None, config=None,
+              diagonal_preconditioning=False):
+    return partial(adj_mclmc_warmup,
+                   logdf=logdf,
+                   n_steps=n_steps,
+                   config=config,
+                   diagonal_preconditioning=diagonal_preconditioning)
+
+
+def get_adj_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True):
+    return partial(adj_mclmc_run, 
+                   logdf=logdf,
+                   n_samples=n_samples,
+                   transform=transform,
+                   thinning=thinning,    
+                   progress_bar=progress_bar)
+
+
 
 def run_adjusted_mclmc_dynamic(
     logdensity_fn,

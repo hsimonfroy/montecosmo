@@ -35,9 +35,9 @@ def from_id(id):
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':64 if args.mesh_length < 128 else 32, ######
+        'n_samples':64 if args.mesh_length < 128 else 64, ######
         'max_tree_depth':10,
-        'n_runs':15,
+        'n_runs':20,
         'n_chains':4 if args.mesh_length < 128 else 4, ######
         'mm':args.mm,
     }
@@ -59,15 +59,17 @@ def from_id(id):
 class ParseSlurmId():
     def __init__(self, id):
         self.id = str(id)
+        # self.id = '311' + self.id
+        print("True id:", self.id) #####
 
         dic = {}
-        dic['mesh_length'] = [8,16,32,64,128,130]
+        dic['mesh_length'] = [8,16,32,64,128,256]
         dic['evolution'] = ['kaiser','lpt','nbody']
         dic['lpt_order'] = [0,1,2]
         dic['rsdb'] = [0,1,2]
         dic['precond'] = ['direct','fourier','kaiser','kaiser_dyn']
 
-        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC']
+        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'MCLMC', 'AdjMCLMC']
         dic['mm'] = [0,1]
 
         dic['box_length'] = [None]
@@ -97,7 +99,7 @@ def get_mcmc(model, config):
             step_size=3.8e-2, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,
-            adapt_step_size=False,
+            # adapt_step_size=False,
             adapt_mass_matrix=mm,
             )
         
@@ -115,7 +117,7 @@ def get_mcmc(model, config):
 
     mcmc = infer.MCMC(
         sampler=kernel,
-        num_warmup=n_samples,
+        num_warmup=2*n_samples,
         num_samples=n_samples, # for each run
         num_chains=n_chains,
         chain_method="vectorized",
@@ -151,21 +153,21 @@ def get_init_mcmc(model, n_chains=8):
 
 
 
-from jax.flatten_util import ravel_pytree
-from jax import numpy as jnp
+# from jax.flatten_util import ravel_pytree
+# from jax import numpy as jnp
 
-def get_sqrt_diag_cov_from_numpyro(state, params, all=False):
-    mass_matrix_sqrt_inv = state.adapt_state.mass_matrix_sqrt_inv
-    sqrt_diag_cov = {}
+# def get_sqrt_diag_cov_from_numpyro(state, params, all=False):
+#     mass_matrix_sqrt_inv = state.adapt_state.mass_matrix_sqrt_inv
+#     sqrt_diag_cov = {}
 
-    if all:
-        _, unravel_fn = ravel_pytree(params)
-        sqrt_diag_cov = unravel_fn(next(iter(mass_matrix_sqrt_inv.values())))
-    else:
-        for k, v in params.items():
-            if k in ['init_mesh_']:
-                _, unravel_fn = ravel_pytree(v)
-                sqrt_diag_cov[k] = unravel_fn(mass_matrix_sqrt_inv[('init_mesh_',)])
-            else:
-                sqrt_diag_cov[k] = jnp.ones_like(v)
-    return sqrt_diag_cov
+#     if all:
+#         _, unravel_fn = ravel_pytree(params)
+#         sqrt_diag_cov = unravel_fn(next(iter(mass_matrix_sqrt_inv.values())))
+#     else:
+#         for k, v in params.items():
+#             if k in ['init_mesh_']:
+#                 _, unravel_fn = ravel_pytree(v)
+#                 sqrt_diag_cov[k] = unravel_fn(mass_matrix_sqrt_inv[('init_mesh_',)])
+#             else:
+#                 sqrt_diag_cov[k] = jnp.ones_like(v)
+#     return sqrt_diag_cov
