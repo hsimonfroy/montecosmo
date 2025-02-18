@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "montecosmo"
 version = "0.0.1"
-authors = [{name="Hugo Simonfroy"}] # email=""
+authors = [{name="Hugo Simon-Onfroy"}] # email=""
 description = "A differentiable cosmological pipeline for galaxy density field inference."
 dependencies = ["numpy"]
 readme = "README.md"
