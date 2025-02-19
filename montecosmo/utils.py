@@ -242,7 +242,7 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
 #############################
 def id_cgh(shape, part="real", norm="backward"):
     """
-    Return indices and weights to permute a real Gaussian tensor of shape ``mesh_shape`` (3D)
+    Return indices and weights to permute a real Gaussian tensor of given shape (3D)
     into a complex Gaussian Hermitian tensor. 
     Handle the Hermitian symmetry, specificaly at border faces, edges, and vertices.
     """
@@ -343,9 +343,17 @@ def cgh2rg(meshk, amp:bool=False, norm="backward"):
 
 
 def ch2rshape(kshape):
+    """
+    Complex Hermitian shape to real shape.
+    
+    Assume last real shape is even to lift the ambiguity.
+    """
     return (*kshape[:2], 2*(kshape[2]-1))
 
 def r2chshape(shape):
+    """
+    Real shape to complex Hermitian shape.
+    """
     return (*shape[:2], shape[2]//2+1)
 
 

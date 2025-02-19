@@ -14,8 +14,8 @@ dependencies:
   - ffmpeg
   - scikit-image
   - pip: 
-    - numpyro[cuda] 
-    - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    - numpyro[cuda]
+    - -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     - graphviz # with pip, not the same in conda-forges
     - jax-cosmo
     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
@@ -27,7 +27,7 @@ dependencies:
     - tensorflow-probability
     # - tensorflow-datasets
     # Editable package
-    - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
+    - -e git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
     # JAX
     # pip install -U "jax[cuda12_pip]" --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     # or

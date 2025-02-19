@@ -6,6 +6,7 @@ def get_save_dir(**kwargs):
     # dir = os.path.expanduser("~/scratch/pickles/")
     # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
     dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
+    # dir = os.path.expanduser("/pscratch/sd/h/hsimfroy/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}_ao{kwargs['a_obs']:.1f}"
     dir += f"_ev{kwargs['evolution']}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']}_ob{kwargs['observable']}/"
@@ -60,6 +61,7 @@ class ParseSlurmId():
     def __init__(self, id):
         self.id = str(id)
         self.id = '311' + self.id
+        # self.id = self.id + '341'
         print("True id:", self.id) #####
 
         dic = {}

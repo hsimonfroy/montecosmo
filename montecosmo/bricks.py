@@ -157,13 +157,13 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
         w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
     """    
     # Get init_mesh at observation scale factor
-    init_mesh = init_mesh * growth_factor(cosmo, a)
-    if jnp.isrealobj(init_mesh):
-        delta = init_mesh
-        delta_k = jnp.fft.rfftn(delta)
-    else:
-        delta_k = init_mesh
-        delta = jnp.fft.irfftn(delta_k)
+    init_mesh *= growth_factor(cosmo, a)
+    # if jnp.isrealobj(init_mesh):
+    #     delta = init_mesh
+    #     delta_k = jnp.fft.rfftn(delta)
+    # else:
+    delta_k = init_mesh
+    delta = jnp.fft.irfftn(delta_k)
     # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases
     # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
     # delta_k = delta_k * jnp.exp( - kk_box / k_nyquist**2)
@@ -223,7 +223,7 @@ def rsd(cosmo:Cosmology, a, vel, los:np.ndarray=None):
         los = np.asarray(los)
         los /= np.linalg.norm(los)
         # Pi-Integrator velocity = dpos / dg = v / (H * g * f), so dpos_rsd := v / H = vel * g * f
-        # If vel is in comoving Mpc/h, so is dpos_rsd 
+        # If vel is in comoving Mpc/h/s, dpos_rsd is in Mpc/h
         dpos = vel * growth_factor(cosmo, a) * growth_rate(cosmo, a)
         # Project velocity on line-of-sight
         dpos = dpos * los

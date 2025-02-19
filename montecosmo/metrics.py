@@ -4,9 +4,8 @@ from functools import partial
 
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
-from jaxpm.kernels import cic_compensation
-from montecosmo.nbody import rfftk
-from montecosmo.utils import safe_div
+from montecosmo.nbody import rfftk, paint_kernel
+from montecosmo.utils import safe_div, ch2rshape
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size
@@ -116,7 +115,7 @@ def _waves(mesh_shape, box_shape, kedges, los):
 
 
 def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
-             comp=(False, False), poles=0, los:np.ndarray=None):
+             comp=(0, 0), poles=0, los:np.ndarray=None):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
@@ -127,29 +126,24 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     else:
         box_shape = np.asarray(box_shape)
 
-    if poles==0:
-        los = None
-    else:
+    if los is not None:
         los = np.asarray(los)
         los /= np.linalg.norm(los)
-    poles = np.atleast_1d(poles)
+    pls = np.atleast_1d(poles)
 
-    # FFTs and compensations
+    # FFTs and deconvolution
     if isinstance(comp, int):
         comp = (comp, comp)
 
     mesh = jnp.fft.rfftn(mesh, norm='ortho')
-    if comp[0]:
-        kvec = rfftk(mesh_shape) # cell units
-        mesh *= cic_compensation(kvec)
+    kvec = rfftk(mesh_shape) # cell units
+    mesh /= paint_kernel(kvec, order=comp[0])
 
     if mesh2 is None:
         mmk = mesh.real**2 + mesh.imag**2
     else:
         mesh2 = jnp.fft.rfftn(mesh2, norm='ortho')
-        if comp[1]:
-            kvec = rfftk(mesh_shape) # cell units
-            mesh2 *= cic_compensation(kvec)
+        mesh2 /= paint_kernel(kvec, order=comp[1])
         mmk = mesh * mesh2.conj()
 
     # Binning
@@ -167,8 +161,8 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     kavg = kavg[1:-1] / kcount
 
     # Average wavenumber power in bins
-    pow = jnp.empty((len(poles), n_bins))
-    for i_ell, ell in enumerate(poles):
+    pow = jnp.empty((len(pls), n_bins))
+    for i_ell, ell in enumerate(pls):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
         if mesh2 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)
@@ -181,7 +175,7 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     pow = pow[:,1:-1] / kcount * (box_shape / mesh_shape).prod() # from cell units to [Mpc/h]^3
 
     # kpow = jnp.concatenate([kavg[None], pk])
-    if los is None:
+    if poles==0:
         return kavg, pow[0]
     else:
         return kavg, pow
@@ -219,6 +213,20 @@ def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False
 
 
 
+
+def deconv_paint(mesh, order=2):
+    """
+    Deconvolve the mesh by the paint kernel of given order.
+    """
+    if jnp.isrealobj(mesh):
+        kvec = rfftk(mesh.shape)
+        mesh = jnp.fft.rfftn(mesh)
+        mesh /= paint_kernel(kvec, order)
+        mesh = jnp.fft.irfftn(mesh)
+    else:
+        kvec = rfftk(ch2rshape(mesh.shape))
+        mesh /= paint_kernel(kvec, order)
+    return mesh
 
 
 
@@ -360,8 +368,8 @@ def multi_ess(x, axis=None):
 
 def multi_gr(x, axis=None):
     """
-    In the order of (1+nc/MESS)^(1/2), with nc the number of chains.
-    cf. https://arxiv.org/pdf/1812.09384 and MultiESS := HarMean(ESS)
+    In the order of (1+nc/mESS)^(1/2), with nc the number of chains.
+    cf. https://arxiv.org/pdf/1812.09384 and mESS := HarMean(ESS)
     """
     return jnp.mean(gelman_rubin(x)**2, axis=axis)**.5
 

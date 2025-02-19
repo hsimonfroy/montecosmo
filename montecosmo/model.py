@@ -18,7 +18,7 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
 from montecosmo.nbody import lpt, nbody_bf
-from montecosmo.metrics import spectrum, powtranscoh
+from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import pdump, pload
 
 from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
@@ -395,7 +395,10 @@ class FieldLevelModel(Model):
         # CIC paint weighted by Lagrangian bias expansion weights
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
         biased_mesh = deterministic('bias_mesh', biased_mesh)
-        # TODO: should deconv CIC here?
+        # TODO: should deconv paint here?
+        print("deconv")
+        biased_mesh = deconv_paint(biased_mesh, order=2)
+
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
@@ -583,11 +586,11 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(False, False), poles=0):
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(0, 0), poles=0):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                             kedges=kedges, comp=comp, poles=poles, los=self.los)
 
-    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(False, False)):
+    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(0, 0)):
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
 
 
@@ -604,7 +607,7 @@ class FieldLevelModel(Model):
         return chains
     
     def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
-                           kedges:int|float|list=None, comp=(False, False), batch_ndim=2) -> Chains:
+                           kedges:int|float|list=None, comp=(0, 0), batch_ndim=2) -> Chains:
         chains = chains.copy()
         fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges, comp=comp), batch_ndim)
         chains.data['kptc'] = fn(chains.data[name])

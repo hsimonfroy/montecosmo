@@ -320,6 +320,7 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             frac_tune3=frac_tune3,
             num_effective_samples=256, # NOTE: higher value implies slower averaging rate
             )
+        debug.print("Performed {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)
     else:
         if config is None:
             n_dim = len(ravel_pytree(state.position)[0])
@@ -441,12 +442,6 @@ def adj_mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
 
     if n_steps > 0:
         # Build the kernel
-        kernel = lambda inverse_mass_matrix : blackjax.mcmc.mclmc.build_kernel(
-            logdensity_fn=logdf,
-            integrator=isokinetic_mclachlan,
-            inverse_mass_matrix=inverse_mass_matrix,
-        )
-
         if random_trajectory_length:
             integration_steps_fn = lambda avg_num_integration_steps: lambda k: jnp.ceil(
                 jr.uniform(k) * rescale(avg_num_integration_steps))
@@ -466,7 +461,6 @@ def adj_mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
 
         target_acc_rate = 0.9 # our recommendation
 
-        print(f"Perform {n_steps} adaptation steps?")
         state, config, n_steps_tot = blackjax.adjusted_mclmc_find_L_and_step_size(
             mclmc_kernel=kernel,
             num_steps=n_steps,
@@ -478,6 +472,7 @@ def adj_mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             frac_tune3=0.1, # our recommendation
             diagonal_preconditioning=diagonal_preconditioning,
             )
+        debug.print("Performed {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)
     else:
         if config is None:
             n_dim = len(ravel_pytree(state.position)[0])

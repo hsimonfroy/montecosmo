@@ -37,13 +37,13 @@ def invlaplace_kernel(kvec, fd=False):
     Parameters
     -----------
     kvec: list
-        List of wave-vectors
+        List of wavevectors
     fd: bool
         Finite difference kernel
 
     Returns
     --------
-    wts: array
+    weights: array
         Complex kernel values
     """
     if fd:
@@ -55,12 +55,12 @@ def invlaplace_kernel(kvec, fd=False):
 
 def gradient_kernel(kvec, direction, fd=False):
     """
-    Computes the gradient kernel in the requested direction
+    Compute the gradient kernel in the requested direction
     
     Parameters
     -----------
     kvec: list
-        List of wave-vectors in Fourier space
+        List of wavevectors
     direction: int
         Index of the direction in which to take the gradient
     fd: bool
@@ -68,7 +68,7 @@ def gradient_kernel(kvec, direction, fd=False):
 
     Returns
     --------
-    wts: array
+    weights: array
         Complex kernel values
     """
     ki = kvec[direction]
@@ -77,27 +77,54 @@ def gradient_kernel(kvec, direction, fd=False):
     return 1j * ki
 
 
+def paint_kernel(kvec, order=2):
+    """
+    Compute painting kernel of given order.
+
+    Parameters
+    ----------
+    kvec: list
+        List of wavevectors
+    order: int
+        order of the kernel
+        * 1: NGP
+        * 2: CIC
+        * 3: TSC
+        * 4: PCS
+
+        cf. [List and Hahn, 2024](https://arxiv.org/abs/2309.10865)
+
+    Returns
+    -------
+    weights: array
+        Complex kernel values
+    """
+    wts = [np.sinc(kvec[i] / (2 * np.pi)) for i in range(3)]
+    wts = (wts[0] * wts[1] * wts[2])**order
+    return wts
+
+
 def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0):
     """
-    Computes gravitational forces on particles using a PM scheme
+    Compute gravitational forces on particles using a PM scheme
     """
     if mesh is None:
         delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), pos))
-    elif jnp.isrealobj(mesh):
-        delta_k = jnp.fft.rfftn(mesh)
+    # elif jnp.isrealobj(mesh):
+    #     delta_k = jnp.fft.rfftn(mesh)
     else:
         delta_k = mesh
 
-    # Computes gravitational potential
+    # Compute gravitational potential
     kvec = rfftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
 
     # If painted field, double deconvolution to account for both painting and reading 
     # if mesh is None:
-    #     pot_k *= cic_compensation(kvec)**2
+    #     pot_k /= paint_kernel(kvec, order=2)**2
     #     print("deconv")
 
-    # Computes gravitational forces
+    # Compute gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), pos) 
                       for i in range(3)], axis=-1)
 
@@ -107,16 +134,16 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0)
 
 def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False):
     """
-    Computes first and second order LPT displacement, 
-    e.g. Eq 3.5 and 3.7 [List and Hahn](http://arxiv.org/abs/2409.19049)
+    Compute first and second order LPT displacement, 
+    e.g. Eq 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
     or Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
-    if jnp.isrealobj(init_mesh):
-        delta_k = jnp.fft.rfftn(init_mesh)
-        mesh_shape = init_mesh.shape
-    else:
-        delta_k = init_mesh
-        mesh_shape = ch2rshape(init_mesh.shape)
+    # if jnp.isrealobj(init_mesh):
+    #     delta_k = jnp.fft.rfftn(init_mesh)
+    #     mesh_shape = init_mesh.shape
+    # else:
+    delta_k = init_mesh
+    mesh_shape = ch2rshape(init_mesh.shape)
 
     force1 = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
