@@ -119,10 +119,10 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0)
     kvec = rfftk(mesh_shape)
     pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
 
-    # If painted field, double deconvolution to account for both painting and reading 
+    # # If painted field, double deconvolution to account for both painting and reading 
     # if mesh is None:
-    #     pot_k /= paint_kernel(kvec, order=2)**2
     #     print("deconv")
+    #     pot_k /= paint_kernel(kvec, order=2)**2
 
     # Compute gravitational forces
     return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), pos) 
@@ -277,7 +277,13 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
         state = drift(state, dg)
         return tree.map(lambda new, old: (new - old) / dg, state, old)
     
-    return vector_field
+    def step(state, g0):
+        state = drift(state, dg)
+        state = kick(state, g0, cosmo, dg)
+        state = drift(state, dg)
+        return state, None
+    
+    return step
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
@@ -289,6 +295,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     n_steps = int(n_steps)
     g = a2g(cosmo, a)
     dg = g / n_steps
+    print(f"dg={dg}")
     
     mesh_shape = ch2rshape(init_mesh.shape)
     terms = ODETerm(bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd))
@@ -306,7 +313,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 
     sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat) # cosmo as args may leak
     states = sol.ys
-    # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
+    debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
     return states
 
 
@@ -321,17 +328,19 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     gs = jnp.arange(n_steps) * dg
 
     mesh_shape = ch2rshape(init_mesh.shape)
-    vector_field = bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
+    # vector_field = bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
 
-    def step_fn(state, g0):
-        vf = vector_field(g0, state, None)
-        state = tree.map(lambda x, y: x + dg * y, state, vf)
-        return state, None
+    # def step(state, g0):
+    #     vf = vector_field(g0, state, None)
+    #     state = tree.map(lambda x, y: x + dg * y, state, vf)
+    #     return state, None
+    
+    step = bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
     
     vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
     state = pos, vel
 
-    state, _ = lax.scan(step_fn, state, gs)
+    state, _ = lax.scan(step, state, gs)
     return tree.map(lambda x: x[None], state)
 
 
@@ -444,10 +453,10 @@ def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2,
             saveat = SaveAt(ts=jnp.asarray(snapshots))   
 
         sol = diffeqsolve(terms, solver, a_lpt, a_obs, dt0=None, y0=particles,
-                                stepsize_controller=controller, max_steps=20, saveat=saveat)
-        # NOTE: if max_steps > 20 for dopri5/tsit5, just quit :')
+                                stepsize_controller=controller, max_steps=1000, saveat=saveat)
+        # NOTE: if max_steps > 50 for dopri5/tsit5, just quit :')
         particles = sol.ys
-        # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
+        debug.print("tsit5 n_steps: {n}", n=sol.stats['num_steps'])
         return particles
 
 

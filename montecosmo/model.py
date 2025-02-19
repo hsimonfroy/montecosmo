@@ -396,8 +396,8 @@ class FieldLevelModel(Model):
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
         biased_mesh = deterministic('bias_mesh', biased_mesh)
         # TODO: should deconv paint here?
-        print("deconv")
-        biased_mesh = deconv_paint(biased_mesh, order=2)
+        # print("fin deconv")
+        # biased_mesh = deconv_paint(biased_mesh, order=2)
 
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))

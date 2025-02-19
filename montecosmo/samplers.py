@@ -496,8 +496,8 @@ def adj_mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples
               transform=None, thinning=1, progress_bar=True, L_proposal_factor=jnp.inf):
     
     if transform is None:
-        # transform = lambda state, info: (state.position, infos)
-        transform = lambda state, info: state.position
+        transform = lambda state, info: (state.position, infos)
+        # transform = lambda state, info: state.position
 
     if isinstance(config, dict):
         L = config['L']
