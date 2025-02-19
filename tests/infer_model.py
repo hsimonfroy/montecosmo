@@ -84,12 +84,12 @@ if not os.path.exists(save_dir+"truth.p"):
     pdump(truth, save_dir+"truth.p")
 
 elif not os.path.exists(save_dir+"model.p"):
-    print(f"Loading truth from {save_dir}")
+    print(f"Loading truth from {save_dir} and saving model")
     model.save(save_dir+"model.p") 
     truth = pload(save_dir+"truth.p")
 
 else:   
-    print(f"Loading truth from {save_dir} and saving model")
+    print(f"Loading truth from {save_dir}")
     truth = pload(save_dir+"truth.p")
 
 model.reset()
@@ -255,8 +255,8 @@ elif mcmc_config['sampler'] == 'MCLMC':
     n_samples, n_runs, n_chains = mcmc_config['n_samples'], mcmc_config['n_runs'], mcmc_config['n_chains']
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
-    desvar = 2e-6
-    evpess = 5e2
+    desvar = 3e-6
+    evpess = 2e2
     n_steps = 2**13
     print(f"### {model.precond=}, {desvar=}, {evpess=}, {n_steps=}")
     warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None, 

@@ -37,7 +37,7 @@ def from_id(id):
         'target_accept_prob':0.65,
         'n_samples':128 if args.mesh_length < 128 else 64, ######
         'max_tree_depth':10,
-        'n_runs':20,
+        'n_runs':30 if args.sampler in ['MCLMC', 'aMCLMC'] else 15,
         'n_chains':8 if args.mesh_length < 128 else 4, ######
         'mm':args.mm,
     }
@@ -96,7 +96,7 @@ def get_mcmc(model, config):
         kernel = infer.NUTS(
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-            step_size=3.8e-2, 
+            step_size=1e-3, 
             max_tree_depth=max_tree_depth,
             target_accept_prob=target_accept_prob,
             # adapt_step_size=False,
@@ -108,7 +108,7 @@ def get_mcmc(model, config):
             model=model,
             # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
             step_size=1e-3, 
-            # Heuristic mean_n_steps_NUTS*step_size_NUTS/(2 to 4), compare with default 2pi.
+            # Heuristic mean_length_steps_NUTS / 2, compare with gaussian pi.
             trajectory_length=4.4 / 2, 
             target_accept_prob=target_accept_prob,
             # adapt_step_size=False,
@@ -117,7 +117,7 @@ def get_mcmc(model, config):
 
     mcmc = infer.MCMC(
         sampler=kernel,
-        num_warmup=2*n_samples,
+        num_warmup=n_samples,
         num_samples=n_samples, # for each run
         num_chains=n_chains,
         chain_method="vectorized",
