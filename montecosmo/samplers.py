@@ -398,7 +398,7 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     
     # Register number of evaluations
     infos |= {"n_evals": n_eval_per_steps * thinning * jnp.ones(n_samples)}
-    return state, samples|infos
+    return state, samples | infos
 
 
 def get_mclmc_warmup(logdf, n_steps=None, config=None,
@@ -495,10 +495,10 @@ def adj_mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
 
 def adj_mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
               transform=None, thinning=1, progress_bar=True, L_proposal_factor=jnp.inf):
-    
+
     if transform is None:
-        transform = lambda state, info: (state.position, info)
-        # transform = lambda state, info: state.position
+        transform = lambda state, info: (state.position, 
+                                    {'n_evals': jnp.sum(info.num_integration_steps)})
 
     if isinstance(config, dict):
         L = config['L']
@@ -542,7 +542,7 @@ def adj_mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples
         )
     samples, infos = history
 
-    return state, samples, infos
+    return state, samples | infos
 
 
 
@@ -574,7 +574,7 @@ def run_adjusted_mclmc_dynamic(
     diagonal_preconditioning=True,
     random_trajectory_length=True,
     L_proposal_factor=jnp.inf
-):
+    ):
 
     init_key, tune_key, run_key = jr.split(key, 3)
 

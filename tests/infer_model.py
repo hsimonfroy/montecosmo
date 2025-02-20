@@ -10,7 +10,7 @@
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
 import matplotlib.pyplot as plt
 import numpy as np
-from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree, pmap
+from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree
 jconfig.update("jax_enable_x64", True)
 print(jdevices())
 
@@ -37,11 +37,6 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 # ## Config and fiduc
 
 # In[ ]:
-def truc(x):
-    return (x+1)**2
-
-aaa = pmap(truc)(jnp.ones(len(jdevices())))
-print("######################:", aaa)
 
 
 ################## TO SET #######################
@@ -335,7 +330,7 @@ elif mcmc_config['sampler'] == 'aMCLMC':
     pdump(config, save_path+f"_conf.p")
     
     print(config)
-    thinning = 16
+    thinning = 1
     run_fn = jit(vmap(get_adj_mclmc_run(model.logpdf, n_samples, thinning=thinning, progress_bar=False)))
 
     start = 1 ######
