@@ -339,10 +339,9 @@ elif mcmc_config['sampler'] == 'aMCLMC':
     for i_run in tqdm(range(start, n_runs + start)):
         print(f"run {i_run}/{end}")
         key, run_key = jr.split(key, 2)
-        state, samples, infos = run_fn(jr.split(run_key, n_chains), state, config)
+        state, samples = run_fn(jr.split(run_key, n_chains), state, config)
         
-        # print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
-        print("infos:", infos, '\n')
+        print("n_evals:", jnp.mean(samples['n_evals'], 1), '\n')
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
         pdump(state, save_path+f"_last_state.p")
 

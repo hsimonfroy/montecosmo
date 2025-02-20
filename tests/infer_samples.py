@@ -40,7 +40,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 from montecosmo.mcbench import Chains
 from montecosmo.plot import plot_pow, plot_powtranscoh, plot_coh, theme, SetDark2
-theme(usetex=False, font_size=14)
+# theme(usetex=False, font_size=14)
 groups = ['cosmo','bias','init']
 # groups = ['cosmo_','bias_','init_']
 # groups = ['cosmo','init']
@@ -48,8 +48,8 @@ groups = ['cosmo','bias','init']
 group_names = ['cosmology', 'galaxy bias', 'linear field']
 # group_names = ['cosmology', 'linear field']
 
-pfx = 'precond_m64_1lpt_'
-sli = slice(None, None)
+# pfx = 'precond_m64_1lpt_'
+sli = slice(0, None)
 tids = [
         2040,2041,
         2140,2141,
