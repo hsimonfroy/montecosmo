@@ -53,9 +53,9 @@ def invlaplace_kernel(kvec, fd=False):
     return - safe_div(1, kk)
 
 
-def gradient_kernel(kvec, direction, fd=False):
+def gradient_kernel(kvec, direction:int, fd=False):
     """
-    Compute the gradient kernel in the requested direction
+    Compute the gradient kernel in the given direction
     
     Parameters
     -----------
@@ -77,7 +77,7 @@ def gradient_kernel(kvec, direction, fd=False):
     return 1j * ki
 
 
-def paint_kernel(kvec, order=2):
+def paint_kernel(kvec, order:int=2):
     """
     Compute painting kernel of given order.
 
@@ -87,10 +87,11 @@ def paint_kernel(kvec, order=2):
         List of wavevectors
     order: int
         order of the kernel
-        * 1: NGP
-        * 2: CIC
-        * 3: TSC
-        * 4: PCS
+        * 0: Dirac
+        * 1: Nearest Grid Point (NGP)
+        * 2: Cloud-In-Cell (CIC)
+        * 3: Triangular-Shape Cloud (TSC)
+        * 4: Piecewise-Cubic Spline (PCS)
 
         cf. [List and Hahn, 2024](https://arxiv.org/abs/2309.10865)
 
@@ -104,7 +105,7 @@ def paint_kernel(kvec, order=2):
     return wts
 
 
-def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0):
+def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, r_split=0):
     """
     Compute gravitational forces on particles using a PM scheme
     """
@@ -132,7 +133,7 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=True, lap_fd=False, r_split=0)
 
 
 
-def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False):
+def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=False, lap_fd=False):
     """
     Compute first and second order LPT displacement, 
     e.g. Eq 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
@@ -178,29 +179,32 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False)
 ###########
 # Growths #
 ###########
+log10_amin: int = -4
+steps: int = 256
+
 # Growth from scale factor
 def a2g(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["g"])
 
 def a2gg(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
     return jnp.interp(a, cache["a"], cache["g2"]) * -3/7
 
 def a2f(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["f"])
 
 def a2ff(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["f2"])
 
@@ -212,26 +216,26 @@ def a2dggdg(cosmo, a):
 # Growth from growth factor
 def g2a(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["a"])
 
 def g2gg(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
     return jnp.interp(g, cache["g"], cache["g2"]) * -3/7
 
 def g2f(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f"])
 
 def g2ff(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0))
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f2"])
 
@@ -277,13 +281,13 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
         state = drift(state, dg)
         return tree.map(lambda new, old: (new - old) / dg, state, old)
     
-    def step(state, g0):
-        state = drift(state, dg)
-        state = kick(state, g0, cosmo, dg)
-        state = drift(state, dg)
-        return state, None
+    # def step(state, g0):
+    #     state = drift(state, dg)
+    #     state = kick(state, g0, cosmo, dg)
+    #     state = drift(state, dg)
+    #     return state, None
     
-    return step
+    return vector_field
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
