@@ -17,7 +17,7 @@ from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
-from montecosmo.nbody import lpt, nbody_bf
+from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import pdump, pload
 

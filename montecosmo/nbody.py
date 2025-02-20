@@ -179,8 +179,8 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=False, lap_fd=False
 ###########
 # Growths #
 ###########
-log10_amin: int = -4
-steps: int = 256
+log10_amin: int = -3
+steps: int = 128
 
 # Growth from scale factor
 def a2g(cosmo, a):
@@ -252,8 +252,12 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
     """
     BullFrog vector field.
     """
-    def alpha(cosmo, g0, dg):
-        '''See Eq. 2.3 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)'''
+    def alpha_bf(cosmo, g0, dg):
+        '''
+        BullFrog growth-time integrator coefficient.
+        
+        See Eq. 2.3 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)
+        '''
         g1 = g0 + dg / 2
         g2 = g0 + dg
 
@@ -261,14 +265,27 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
         lin_ratio = (g2gg(cosmo, g0) + dggdg0 * dg / 2) / g1 - g1
         # NOTE: linearization of ratio (gg - g^2)/g aroung g0, evaluated at g1
         return (dggdg2 - lin_ratio) / (dggdg0 - lin_ratio)
+    
+    def alpha_fpm(cosmo, g0, dg):
+        '''
+        FastPM growth-time integrator coefficient.
+
+        See Eq. 3.16 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)
+        '''
+        g2 = g0 + dg
+        a0, a2 = g2a(cosmo, g0), g2a(cosmo, g2)
+        coeff0 = jc.background.Esqr(cosmo, a0)**.5 * g0 * g2f(cosmo, g0) * a0**2
+        coeff2 = jc.background.Esqr(cosmo, a2)**.5 * g2 * g2f(cosmo, g2) * a2**2
+        return coeff0 / coeff2
 
     def kick(state, g0, cosmo, dg):
         pos, vel = state
         g1 = g0 + dg / 2
         forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
-        alph = alpha(cosmo, g0, dg)
-        return pos, alph * vel + (1 - alph) * forces / g1
-        # return pos, vel + (1 - alph) * (forces / g1 - vel) # equivalent
+        alpha = alpha_bf(cosmo, g0, dg)
+        return pos, alpha * vel + (1 - alpha) * forces / g1
+        # return pos, vel + (1 - alpha) * (forces / g1 - vel) # equivalent
+        # return pos, vel + dg * forces
 
     def drift(state, dg):
         pos, vel = state
@@ -288,6 +305,7 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
     #     return state, None
     
     return vector_field
+    # return step
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
@@ -299,7 +317,6 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     n_steps = int(n_steps)
     g = a2g(cosmo, a)
     dg = g / n_steps
-    print(f"dg={dg}")
     
     mesh_shape = ch2rshape(init_mesh.shape)
     terms = ODETerm(bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd))
@@ -317,7 +334,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 
     sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat) # cosmo as args may leak
     states = sol.ys
-    debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
+    # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
     return states
 
 
