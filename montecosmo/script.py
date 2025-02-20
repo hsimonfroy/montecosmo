@@ -36,9 +36,9 @@ def from_id(id):
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':128 if args.mesh_length < 128 else 64, ######
+        'n_samples':64, ######
         'max_tree_depth':10,
-        'n_runs':30 if args.sampler in ['MCLMC', 'aMCLMC'] else 15,
+        'n_runs':30 if args.sampler in ['MCLMC'] else 15,
         'n_chains':8 if args.mesh_length < 128 else 4, ######
         'mm':args.mm,
     }

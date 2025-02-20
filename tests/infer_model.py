@@ -10,8 +10,9 @@
 import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
 import matplotlib.pyplot as plt
 import numpy as np
-from jax import numpy as jnp, random as jr, config as jconfig, jit, vmap, grad, debug, tree
+from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree, pmap
 jconfig.update("jax_enable_x64", True)
+print(jdevices())
 
 from functools import partial
 from getdist import plots
@@ -36,6 +37,11 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 # ## Config and fiduc
 
 # In[ ]:
+def truc(x):
+    return (x+1)**2
+
+aaa = pmap(truc)(jnp.ones(len(jdevices())))
+print("######################:", aaa)
 
 
 ################## TO SET #######################
@@ -130,7 +136,7 @@ else:
 
         from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
 
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**10, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**12, config=None, 
                                     desired_energy_var=1e-5, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), init_mesh_)
         pdump(state, save_path+f"_init_last_state.p")
@@ -255,11 +261,22 @@ elif mcmc_config['sampler'] == 'MCLMC':
     n_samples, n_runs, n_chains = mcmc_config['n_samples'], mcmc_config['n_runs'], mcmc_config['n_chains']
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
-    desvar = 3e-6
-    evpess = 2e2
-    n_steps = 2**13
+    if model.precond=='direct':
+        desvar = 1e-7
+        evpess = 1e3
+    elif model.precond=='fourier':
+        desvar = 3e-7
+        evpess = 1e3
+    elif model.precond=='kaiser':
+        desvar = 1e-6
+        evpess = 1e3
+    elif model.precond=='kaiser_dyn':
+        desvar = 3e-6
+        evpess = 1e3
+    n_steps = 2**14
+    logdf = jit(model.logpdf)
     print(f"### {model.precond=}, {desvar=}, {evpess=}, {n_steps=}")
-    warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None, 
+    warmup_fn = jit(vmap(get_mclmc_warmup(logdf, n_steps=n_steps, config=None, 
                                         desired_energy_var=desvar, diagonal_preconditioning=mcmc_config['mm'])))
     state, config = warmup_fn(jr.split(jr.key(43), n_chains), init_params_)
     # state = pload(save_path+f"_last_state.p")
@@ -298,9 +315,10 @@ elif mcmc_config['sampler'] == 'aMCLMC':
     n_samples, n_runs, n_chains = mcmc_config['n_samples'], mcmc_config['n_runs'], mcmc_config['n_chains']
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
-    n_steps = 2**13
+    n_steps = 2**6
+    logdf = jit(model.logpdf)
     print(f"### {model.precond=}, {n_steps=}")
-    warmup_fn = jit(vmap(get_adj_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None, 
+    warmup_fn = jit(vmap(get_adj_mclmc_warmup(logdf, n_steps=n_steps, config=None, 
                                             diagonal_preconditioning=mcmc_config['mm'])))
     state, config = warmup_fn(jr.split(jr.key(43), n_chains), init_params_)
     # state = pload(save_path+f"_last_state.p")

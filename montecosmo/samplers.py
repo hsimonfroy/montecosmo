@@ -469,8 +469,9 @@ def adj_mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             target=target_acc_rate,
             frac_tune1=0.1,
             frac_tune2=0.1,
-            frac_tune3=0.1, # our recommendation
+            frac_tune3=0., # our recommendation
             diagonal_preconditioning=diagonal_preconditioning,
+            params=config,
             )
         debug.print("Performed {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)
     else:
@@ -496,7 +497,7 @@ def adj_mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples
               transform=None, thinning=1, progress_bar=True, L_proposal_factor=jnp.inf):
     
     if transform is None:
-        transform = lambda state, info: (state.position, infos)
+        transform = lambda state, info: (state.position, info)
         # transform = lambda state, info: state.position
 
     if isinstance(config, dict):
