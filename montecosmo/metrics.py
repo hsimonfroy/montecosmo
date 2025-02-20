@@ -57,6 +57,148 @@ from jax_cosmo import Cosmology
 #     else:
 #         return pk
 
+def fftk(shape):
+    """
+    Return wavevectors in cell units for rfftn.
+    """
+    kx = np.fft.fftfreq(shape[0]) * 2 * np.pi
+    ky = np.fft.fftfreq(shape[1]) * 2 * np.pi
+    kz = np.fft.fftfreq(shape[2]) * 2 * np.pi
+
+    kx = kx.reshape([-1, 1, 1])
+    ky = ky.reshape([1, -1, 1])
+    kz = kz.reshape([1, 1, -1])
+
+    return kx, ky, kz
+
+
+
+
+def _waves2(mesh_shape, box_shape, kedges, los):
+    """
+    Parameters
+    ----------
+    mesh_shape : tuple of int
+        Shape of the mesh grid.
+    box_shape : tuple of float
+        Physical dimensions of the box.
+    kedges : None, int, float, or list
+        * If None, set dk to twice the minimum.
+        * If int, specifies number of edges.
+        * If float, specifies dk.
+    los : array_like
+        Line-of-sight vector.
+
+    Returns
+    -------
+    kedges : ndarray
+        Edges of the bins.
+    kmesh : ndarray
+        Wavenumber mesh.
+    mumesh : ndarray
+        Cosine mesh.
+    rfftw : ndarray
+        RFFT weights accounting for Hermitian symmetry.
+    """
+    kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
+
+    if isinstance(kedges, (type(None), int, float)):
+        if kedges is None:
+            dk = 2*np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
+        if isinstance(kedges, int):
+            dk = kmax / kedges # final number of bins will be kedges-1
+        elif isinstance(kedges, float):
+            dk = kedges
+        kedges = np.arange(0, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
+
+    kvec = fftk(mesh_shape) # cell units
+    kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_shape)] # h/Mpc physical units
+    kmesh = sum(ki**2 for ki in kvec)**0.5
+
+    if los is None:
+        mumesh = 0.
+    else:
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+        mumesh = safe_div(mumesh, kmesh)
+
+    fftw = np.full_like(kmesh, 1)
+    fftw[..., 0] = 1
+    if mesh_shape[-1] % 2 == 0:
+        fftw[..., -1] = 1
+
+    return kedges, kmesh, mumesh, fftw
+
+
+def spectrum2(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
+             comp=(0, 0), poles=0, los:np.ndarray=None):
+    """
+    Compute the auto and cross spectrum of 3D fields, with multipole.
+    """
+    # Initialize
+    mesh_shape = np.array(mesh.shape)
+    if box_shape is None:
+        box_shape = mesh_shape
+    else:
+        box_shape = np.asarray(box_shape)
+
+    if los is not None:
+        los = np.asarray(los)
+        los /= np.linalg.norm(los)
+    pls = np.atleast_1d(poles)
+
+    # FFTs and deconvolution
+    if isinstance(comp, int):
+        comp = (comp, comp)
+
+    mesh = jnp.fft.fftn(mesh, norm='ortho')
+    kvec = fftk(mesh_shape) # cell units
+    mesh /= paint_kernel(kvec, order=comp[0])
+
+    if mesh2 is None:
+        mmk = mesh.real**2 + mesh.imag**2
+    else:
+        mesh2 = jnp.fft.fftn(mesh2, norm='ortho')
+        mesh2 /= paint_kernel(kvec, order=comp[1])
+        mmk = mesh * mesh2.conj()
+
+    # Binning
+    kedges, kmesh, mumesh, rfftw = _waves2(mesh_shape, box_shape, kedges, los)
+    n_bins = len(kedges) + 1
+    dig = np.digitize(kmesh.reshape(-1), kedges)
+
+    # Count wavenumber in bins
+    kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)
+    kcount = kcount[1:-1]
+
+    # Average wavenumber values in bins
+    # kavg = (kedges[1:] + kedges[:-1]) / 2
+    kavg = np.bincount(dig, weights=(kmesh * rfftw).reshape(-1), minlength=n_bins)
+    kavg = kavg[1:-1] / kcount
+
+    # Average wavenumber power in bins
+    pow = jnp.empty((len(pls), n_bins))
+    for i_ell, ell in enumerate(pls):
+        weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
+        if mesh2 is None:
+            psum = jnp.bincount(dig, weights=weights, length=n_bins)
+        else: 
+            # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
+            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
+            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
+            psum = (psum_real**2 + psum_imag**2)**.5
+        pow = pow.at[i_ell].set(psum)
+    pow = pow[:,1:-1] / kcount * (box_shape / mesh_shape).prod() # from cell units to [Mpc/h]^3
+
+    # kpow = jnp.concatenate([kavg[None], pk])
+    if poles==0:
+        return kavg, pow[0]
+    else:
+        return kavg, pow
+    
+
+
+
+    
 
 
 def _waves(mesh_shape, box_shape, kedges, los):
@@ -106,7 +248,8 @@ def _waves(mesh_shape, box_shape, kedges, los):
         mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
         mumesh = safe_div(mumesh, kmesh)
 
-    rfftw = np.full_like(kmesh, 2)
+    # rfftw = np.full_like(kmesh, 2)
+    rfftw = np.full_like(kmesh, 1)
     rfftw[..., 0] = 1
     if mesh_shape[-1] % 2 == 0:
         rfftw[..., -1] = 1

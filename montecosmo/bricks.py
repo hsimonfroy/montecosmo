@@ -222,7 +222,7 @@ def rsd(cosmo:Cosmology, a, vel, los:np.ndarray=None):
     else:
         los = np.asarray(los)
         los /= np.linalg.norm(los)
-        # Pi-Integrator velocity = dpos / dg = v / (H * g * f), so dpos_rsd := v / H = vel * g * f
+        # growth-time integrator velocity = dpos / dg = v / (H * g * f), so dpos_rsd := v / H = vel * g * f
         # If vel is in comoving Mpc/h/s, dpos_rsd is in Mpc/h
         dpos = vel * growth_factor(cosmo, a) * growth_rate(cosmo, a)
         # Project velocity on line-of-sight
