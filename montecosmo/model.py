@@ -17,7 +17,7 @@ from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
-from montecosmo.nbody import lpt, nbody_bf
+from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import pdump, pload
 
@@ -394,10 +394,10 @@ class FieldLevelModel(Model):
 
         # CIC paint weighted by Lagrangian bias expansion weights
         biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
-        biased_mesh = deterministic('bias_mesh', biased_mesh)
         # TODO: should deconv paint here?
-        # print("fin deconv")
-        # biased_mesh = deconv_paint(biased_mesh, order=2)
+        print("fin deconv")
+        biased_mesh = deconv_paint(biased_mesh, order=2)
+        biased_mesh = deterministic('bias_mesh', biased_mesh)
 
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))

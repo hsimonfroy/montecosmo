@@ -212,7 +212,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 def rsd(cosmo:Cosmology, a, vel, los:np.ndarray=None):
     """
-    Redshift-Space Distortion (RSD) displacement from cosmology and Pi-Integrator velocity.
+    Redshift-Space Distortion (RSD) displacement from cosmology and growth-time integrator velocity.
     Computed with respect to scale factor and line-of-sight.
 
     No RSD if los is None.
