@@ -455,7 +455,9 @@ class FieldLevelModel(Model):
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
+
             init = samp2base_mesh(init, self.precond, transfer=transfer, inv=inv, temp=temp)
+            
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
 

@@ -13,7 +13,6 @@ from montecosmo.bdec import credint
 ###########
 # General #
 ###########
-# TODO: needs to return surf/p3d to add colorbar?
 # TODO: create another function to plot 3d scatter
 def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
     """
@@ -35,7 +34,7 @@ def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
     xs, ys = np.linspace(*box[0], n), np.linspace(*box[1], n)
     xx, yy = np.meshgrid(xs, ys)
     # zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
-    zz = fn(np.stack((xx, yy), -1))
+    zz = fn(np.stack((xx, yy), -1).reshape(-1, 2)).reshape(n, n)
 
     if type=='surf':
         out = plt.gca().plot_surface(xx, yy, zz, **kwargs)
@@ -197,67 +196,77 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
 
     if log:
         if fill is None:
-            plt.loglog(ks, pow, *args, **kwargs)
+            out = plt.loglog(ks, pow, *args, **kwargs)
         else:
             scis = credint(pow, fill, axis=0)
-            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
         plt.ylabel("$P"+sub+"(k)$ [Mpc/$h$]$^3$")
     else:
         if fill is None:
-            plt.plot(ks, ks * pow, *args, **kwargs)
+            out = plt.plot(ks, ks * pow, *args, **kwargs)
         else:
             scis = credint(pow, fill, axis=0)
-            plt.fill_between(ks[0], *(ks[0] * scis.T), *args, alpha=(1-fill)**.5, **kwargs)
+            out = plt.fill_between(ks[0], *(ks[0] * scis.T), *args, alpha=(1-fill)**.5, **kwargs)
         plt.ylabel("$k P"+sub+"(k)$ [Mpc/$h$]$^2$")
     plt.xlabel("$k$ [$h$/Mpc]")
+    return out
 
 
 def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
     if log:
         if fill is None:
-            plt.loglog(ks, trans, *args, **kwargs)
+            out = plt.loglog(ks, trans, *args, **kwargs)
         else:
             scis = credint(trans, fill, axis=0)
-            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
     else:
         if fill is None:
-            plt.semilogy(ks, trans, *args, **kwargs)
+            out = plt.semilogy(ks, trans, *args, **kwargs)
         else:
             scis = credint(trans, fill, axis=0)
-            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.yscale('log')
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
+    return out
 
 
 def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
     if log:
         if fill is None:
-            plt.loglog(ks, coh, *args, **kwargs)
+            out = plt.loglog(ks, coh, *args, **kwargs)
         else:
             scis = credint(coh, fill, axis=0)
-            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.xscale('log'), plt.yscale('log')
     else:
         if fill is None:
-            plt.semilogy(ks, coh, *args, **kwargs)
+            out = plt.semilogy(ks, coh, *args, **kwargs)
         else:
             scis = credint(coh, fill, axis=0)
-            plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
+            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
             plt.yscale('log')
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
+    return out
 
 
-def plot_powtranscoh(ks, pow1, trans, coh, *args, log=False, fill=None, **kwargs):
-    plt.subplot(131)
-    plot_pow(ks, pow1, *args, log=log, fill=fill, **kwargs)
+def plot_powtranscoh(ks, pow1, trans, coh, *args, 
+                     log=False, fill:float=None, axes:list=None, **kwargs):
+    outs = []
 
-    plt.subplot(132)
-    plot_trans(ks, trans, *args, log=log, fill=fill, **kwargs)
+    plt.subplot(131) if axes is None else plt.sca(axes[0])
+    out = plot_pow(ks, pow1, *args, log=log, fill=fill, **kwargs)
+    outs.append(out)
+    
+    plt.subplot(132) if axes is None else plt.sca(axes[1])
+    out = plot_trans(ks, trans, *args, log=log, fill=fill, **kwargs)
+    outs.append(out)
 
-    plt.subplot(133)
-    plot_coh(ks, coh, *args, log=log, fill=fill, **kwargs)
+    plt.subplot(133) if axes is None else plt.sca(axes[2])
+    out = plot_coh(ks, coh, *args, log=log, fill=fill, **kwargs)
+    outs.append(out)
+    return outs
 
 
 

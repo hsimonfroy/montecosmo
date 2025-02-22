@@ -57,10 +57,10 @@ tids = [
         2340,2341,
         ][sli]
 labels = [
-        "direct nomm", "direct mm"
-        "fourier nomm", "fourier mm"
-        "static nomm", "static mm"
-        "dynamic nomm", "dynamic mm"
+        "direct nomm", "direct mm",
+        "fourier nomm", "fourier mm",
+        "static nomm", "static mm",
+        "dynamic nomm", "dynamic mm",
            ][sli]
 ends = 10*[100]
 # starts = [1,1,1,1,1,1,1,1,1,1,1,1][sli]
@@ -88,6 +88,7 @@ def from_id_(i_s, tid):
 
 moms = []
 for i_s, (start, end, tid, lab) in enumerate(zip(starts, ends, tids, labels)):
+    print()
     model, mcmc_config, save_dir, save_path = from_id_(i_s, tid)
 
     # Load truth
@@ -108,7 +109,7 @@ for i_s, (start, end, tid, lab) in enumerate(zip(starts, ends, tids, labels)):
                 ]
     chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
     print(chains.shape)
-    pdump(chains, save_path+'chains.p')
+    pdump(chains, save_path+'_chains.p')
 
     # Load chains
     thinning = 1
@@ -119,5 +120,5 @@ for i_s, (start, end, tid, lab) in enumerate(zip(starts, ends, tids, labels)):
                 ]
     chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
     print(chains.shape)
-    pdump(chains, save_path+'chains_.p')
+    pdump(chains, save_path+'_chains_.p')
 

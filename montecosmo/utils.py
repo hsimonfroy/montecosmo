@@ -25,19 +25,14 @@ def pload(path):
 
 
 
-def get_vlim(level=1., scale=1., axis=0):
+def vlim(a, level=1., scale=1., axis=0):
     """
-    Return function computing robust inferior and superior limit values of an array, 
+    Return robust inferior and superior limit values of an array,
     i.e. discard quantiles bilateraly on some level, and scale the margins.
     """
-    def vlim(a):
-        """
-        Return robust inferior and superior limit values of an array.
-        """
-        vmin, vmax = jnp.quantile(a, (1-level)/2, axis=axis), jnp.quantile(a, (1+level)/2, axis=axis)
-        vmean, vdiff = (vmax+vmin)/2, scale*(vmax-vmin)/2
-        return jnp.stack((vmean-vdiff, vmean+vdiff), axis=-1)
-    return vlim
+    vmin, vmax = jnp.quantile(a, (1 - level) / 2, axis=axis), jnp.quantile(a, (1 + level) / 2, axis=axis)
+    vmean, vdiff = (vmax + vmin) / 2, scale*(vmax - vmin) / 2
+    return jnp.stack((vmean - vdiff, vmean + vdiff), axis=-1)
 
 
 def get_jit(*args, **kwargs):
@@ -262,7 +257,7 @@ def id_cgh(shape, part="real", norm="backward"):
         assert norm=="ortho", "norm must be either 'backward', 'forward', or 'ortho'."
 
     id = np.zeros((3, *kshape), dtype=int)
-    xyz = np.indices(shape)
+    xyz = np.indices(shape, dtype=int)
 
     if part == "imag":
         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)

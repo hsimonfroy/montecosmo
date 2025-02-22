@@ -3,9 +3,9 @@ from montecosmo.model import FieldLevelModel, default_config
 from numpyro import infer
 
 def get_save_dir(**kwargs):
-    # dir = os.path.expanduser("~/scratch/pickles/")
+    dir = os.path.expanduser("~/scratch/pickles/")
     # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
-    dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
+    # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
     # dir = os.path.expanduser("/pscratch/sd/h/hsimfroy/pickles/")
 
     dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}_ao{kwargs['a_obs']:.1f}"
@@ -36,10 +36,10 @@ def from_id(id):
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':128, ######
+        'n_samples':128 if args.mesh_length < 128 else 32, ######
         'max_tree_depth':10,
-        'n_runs':30 if args.sampler in ['MCLMC'] else 15,
-        'n_chains':8 if args.mesh_length < 128 else 4, ######
+        'n_runs':30 if args.mesh_length < 128 else 60,
+        'n_chains':8, ######
         'mm':args.mm,
     }
     if args.rsdb==0:
