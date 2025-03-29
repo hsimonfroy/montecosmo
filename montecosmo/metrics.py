@@ -8,7 +8,7 @@ from montecosmo.nbody import rfftk, paint_kernel
 from montecosmo.utils import safe_div, ch2rshape
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
-from blackjax.diagnostics import effective_sample_size as effective_sample_size2
+# from blackjax.diagnostics import effective_sample_size as effective_sample_size2
 from jax_cosmo import Cosmology
 
 
@@ -364,11 +364,6 @@ def harmean(x, axis=None):
 
 def multi_ess(x, axis=None):
     return harmean(effective_sample_size(x), axis=axis)
-
-from jax import vmap
-def multi_ess2(x, axis=None):
-    ess = jnp.sum(vmap(effective_sample_size2)(x[:,None]), 0)
-    return harmean(ess, axis=axis)
 
 def multi_gr(x, axis=None):
     """

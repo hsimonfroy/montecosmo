@@ -40,6 +40,7 @@ default_config={
             'gxy_density':1e-3, # in galaxy / (Mpc/h)^3
             'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
             'los':(0.,0.,1.),
+            'center':None,
             'poles':(0,2,4),
             # Latents
             'precond':'kaiser', # direct, fourier, kaiser
@@ -48,6 +49,7 @@ default_config={
                                     'loc':0.3111, 
                                     'scale':0.5,
                                     'scale_fid':0.02,
+                                    # 'scale_fid':5e-3,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
@@ -55,28 +57,37 @@ default_config={
                                     'loc':0.8102,
                                     'scale':0.5,
                                     'scale_fid':0.02,
+                                    # 'scale_fid':3e-3,
                                     'low': 0.,
                                     'high':jnp.inf,},
                         'b1': {'group':'bias',
                                     'label':'{b}_1',
                                     'loc':1.,
                                     'scale':0.5,
-                                    'scale_fid':0.04,},
+                                    'scale_fid':0.04,
+                                    # 'scale_fid':6e-3,
+                                    },
                         'b2': {'group':'bias',
                                     'label':'{b}_2',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.02,},
+                                    'scale_fid':0.02,
+                                    # 'scale_fid':4e-3,
+                                    },
                         'bs2': {'group':'bias',
                                     'label':'{b}_{s^2}',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.08,},
+                                    'scale_fid':0.08,
+                                    # 'scale_fid':2e-2,
+                                    },
                         'bn2': {'group':'bias',
                                     'label':'{b}_{\\nabla^2}',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.2,},
+                                    'scale_fid':0.2,
+                                    # 'scale_fid':2e-2,
+                                    },
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},},
             }
@@ -262,7 +273,11 @@ class FieldLevelModel(Model):
     gxy_density : float
         Galaxy density in galaxy / (Mpc/h)^3
     los : array_like
-        Line-of-sight direction. If None, no Redshift Space Distorsion is applied.
+        Line-of-sight direction for flat-sky simulation. 
+        If None, no Redshift Space Distorsion is applied.
+    center : array_like
+        Center of the box, i.e. observer position, in Mpc/h for curved-sky simulation.
+        If None, no Redshift Space Distorsion is applied.
     poles : array_like of int
         Power spectrum poles to compute.
         Only used for 'powspec' observable.
@@ -283,7 +298,8 @@ class FieldLevelModel(Model):
     # Observable
     observable:str
     gxy_density:float
-    los:tuple
+    los:tuple=None
+    center:tuple=None
     poles:tuple
     # Latents
     precond:str
@@ -298,8 +314,11 @@ class FieldLevelModel(Model):
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float32 to avoid int32 overflow when computing products
-        self.box_shape = np.asarray(self.box_shape).astype(float)
+        self.box_shape = np.asarray(self.box_shape, dtype=float)
         self.cell_shape = self.box_shape / self.mesh_shape
+        
+        assert self.los is None or self.center is None, \
+            "Cannot provide both line-of-sight and box center: choose flat-sky or curved-sky simulation"
         if self.los is not None:
             self.los = np.asarray(self.los)
             self.los = self.los / np.linalg.norm(self.los)
@@ -362,9 +381,9 @@ class FieldLevelModel(Model):
 
         if self.evolution=='kaiser':
             # Kaiser model
-            biased_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
-            biased_mesh = deterministic('bias_mesh', biased_mesh)
-            return biased_mesh
+            gxy_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
+            gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
+            return gxy_mesh
                     
         # Create regular grid of particles
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
@@ -393,17 +412,14 @@ class FieldLevelModel(Model):
         pos, vel = deterministic('rsd_part', (pos, vel))
 
         # CIC paint weighted by Lagrangian bias expansion weights
-        biased_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
-        # TODO: should deconv paint here?
-        print("fin deconv")
-        biased_mesh = deconv_paint(biased_mesh, order=2)
-        biased_mesh = deterministic('bias_mesh', biased_mesh)
-
+        gxy_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
+        gxy_mesh = deconv_paint(gxy_mesh, order=2)
+        gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
-        return biased_mesh
+        return gxy_mesh
 
 
     def likelihood(self, mesh, temp=1.):
@@ -540,14 +556,14 @@ class FieldLevelModel(Model):
 
             scale = (1 + self.gxy_count * boost_fid**2 * pmeshk_fid)**.5
             transfer = pmeshk**.5 / scale
-            scale = cgh2rg(scale, amp=True)
+            scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
             boost = kaiser_boost(cosmo, self.a_obs, bE, self.mesh_shape, self.los)
 
             scale = (1 + self.gxy_count * boost**2 * pmeshk)**.5
             transfer = pmeshk**.5 / scale
-            scale = cgh2rg(scale, amp=True)
+            scale = cgh2rg(scale, norm="amp")
         
         return scale, transfer
     
@@ -622,8 +638,8 @@ class FieldLevelModel(Model):
         cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
         means, stds = kaiser_posterior(delta_obs, cosmo_fid, bE_fid, self.a_obs, 
                                        self.box_shape, self.gxy_count, self.los)
-        means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, amp=True)
-        post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
+        post_mesh = rg2cgh(jr.normal(rng, means.shape))
+        post_mesh = temp**.5 * stds * post_mesh + means 
 
         init_params = self.loc_fid | {'init_mesh': post_mesh}
         if base:
