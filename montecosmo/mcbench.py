@@ -435,7 +435,6 @@ class Chains(Samples):
     def last(self, axis=1):
         return self.metric(lambda x: jnp.take(x, -1, axis), axis=axis)
     
-
     def moment(self, m:int|list=(0,1,2), axis=1):
         if isinstance(m, int):
             fn = lambda x: jnp.sum(x**m, axis)
@@ -482,7 +481,6 @@ class Chains(Samples):
         name = "n_evals" 
         infos, rest = mse_mom[[name], ['*~'+name]]
         return infos | tree.map(lambda x: infos[name] * x, rest)
-
 
     def multi_ess(self, axis=None):
         return self.metric(lambda x: multi_ess(x, axis=axis))

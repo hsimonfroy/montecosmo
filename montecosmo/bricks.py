@@ -11,7 +11,7 @@ from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2
 from montecosmo.nbody import rfftk, invlaplace_kernel
 
 
-# Planck 2015 paper XIII Table 4 final column (best fit)
+# [Planck2015 XIII](https://arxiv.org/abs/1502.01589) Table 4 final column (best fit)
 Planck15 = partial(Cosmology,
     Omega_c=0.2589,
     Omega_b=0.04860,
@@ -22,7 +22,7 @@ Planck15 = partial(Cosmology,
     w0=-1.0,
     wa=0.0,)
 
-# Planck 2018 paper VI Table 2 final column (best fit)
+# [Planck 2018 VI](https://arxiv.org/abs/1807.06209) Table 2 final column (best fit)
 Planck18 = partial(Cosmology,
     # Omega_m = 0.3111
     Omega_c=0.2607,
