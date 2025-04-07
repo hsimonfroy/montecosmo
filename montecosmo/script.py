@@ -17,6 +17,7 @@ def from_id(id):
     config = {
           'mesh_shape':3 * (args.mesh_length,),
           'box_shape':3 * (args.box_length if args.box_length is not None else 5. * args.mesh_length,), 
+        #   'box_shape':3 * (320.,), 
           'a_obs':args.a_obs,
           'lpt_order':args.lpt_order,
           'evolution':args.evolution,
@@ -29,16 +30,18 @@ def from_id(id):
     from copy import deepcopy
     config = deepcopy(default_config | config)
     model = FieldLevelModel(**config)
-    for k, v in model.latents.items():
-        if 'scale_fid' in v:
-            model.latents[k]['scale_fid'] = v['scale_fid'] * (64 / args.mesh_length)**(3/2)
+    # for k, v in model.latents.items():
+    #     if 'scale_fid' in v:
+    #         # model.latents[k]['scale_fid'] = v['scale_fid'] * (64 / args.mesh_length)**(3/2)
+    #         model.latents[k]['scale_fid'] = v['scale_fid'] * (640. / model.box_shape[0])**(3/2)
     
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':128 if args.mesh_length < 128 else 32, ######
+        'n_samples':128 if args.mesh_length < 128 else 32 if args.mesh_length==128 else 16, ######
+        # 'n_samples':128 if args.sampler in ['MCLMC','aMCLMC'] else 64, ######
         'max_tree_depth':10,
-        'n_runs':30 if args.mesh_length < 128 else 60,
+        'n_runs':30 if args.mesh_length < 128 else 60 if args.mesh_length==128 else 120,
         'n_chains':8, ######
         'mm':args.mm,
     }
@@ -60,20 +63,22 @@ def from_id(id):
 class ParseSlurmId():
     def __init__(self, id):
         self.id = str(id)
-        self.id = '311' + self.id
-        # self.id = self.id + '341'
+        # self.id = '31' + self.id
+        self.id = '422' + self.id
+        # self.id = self.id + '41'
         print("True id:", self.id) #####
 
         dic = {}
         dic['mesh_length'] = [8,16,32,64,128,256]
         dic['evolution'] = ['kaiser','lpt','nbody']
         dic['lpt_order'] = [0,1,2]
-        dic['rsdb'] = [0,1,2]
+        dic['rsdb'] = [0,1,2] #########################
         dic['precond'] = ['direct','fourier','kaiser','kaiser_dyn']
 
         dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'NUTSwG2', 'MCLMC', 'aMCLMC']
         dic['mm'] = [0,1]
 
+        # dic['rsdb'] = [2]
         dic['box_length'] = [None]
         dic['a_obs'] = [0.5]
         dic['obs'] = ['field']

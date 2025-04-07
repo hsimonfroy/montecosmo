@@ -21,7 +21,7 @@ from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import pdump, pload
 
-from montecosmo.utils import cgh2rg, rg2cgh, r2chshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
+from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
 from montecosmo.mcbench import Chains
 
 
@@ -43,7 +43,7 @@ default_config={
             'center':None,
             'poles':(0,2,4),
             # Latents
-            'precond':'kaiser', # direct, fourier, kaiser
+            'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
             'latents': {'Omega_m': {'group':'cosmo', 
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
@@ -226,13 +226,13 @@ class Model():
     # Save and load #
     #################
     def save(self, path): # with pickle because not array-like
-        # pdump(asdict(self), path)
-        pdump(self, path)
+        pdump(asdict(self), path)
+        # pdump(self, path)
 
     @classmethod
     def load(cls, path):
-        # return cls(**pload(path))
-        return pload(path)
+        return cls(**pload(path))
+        # return pload(path)
 
 
 
@@ -298,8 +298,8 @@ class FieldLevelModel(Model):
     # Observable
     observable:str
     gxy_density:float
-    los:tuple=None
-    center:tuple=None
+    los:tuple
+    center:tuple
     poles:tuple
     # Latents
     precond:str
@@ -638,7 +638,7 @@ class FieldLevelModel(Model):
         cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
         means, stds = kaiser_posterior(delta_obs, cosmo_fid, bE_fid, self.a_obs, 
                                        self.box_shape, self.gxy_count, self.los)
-        post_mesh = rg2cgh(jr.normal(rng, means.shape))
+        post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
 
         init_params = self.loc_fid | {'init_mesh': post_mesh}

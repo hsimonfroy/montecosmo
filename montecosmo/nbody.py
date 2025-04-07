@@ -7,7 +7,6 @@ from jax_cosmo import Cosmology
 from montecosmo.utils import ch2rshape, safe_div
 
 # from jaxpm.pm import pm_forces
-import jax_cosmo as jc
 from jaxpm.growth import (growth_factor, growth_rate, 
                           growth_factor_second, growth_rate_second,
                           _growth_factor_ODE)
@@ -130,10 +129,32 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, r_split=0
                       for i in range(3)], axis=-1)
 
 
+def pm_force2(delta_k, pos, mesh_shape, lap_fd=False, grad_fd=False):
+    """
+    Return 2LPT source term.
+    """
+    kvec = rfftk(mesh_shape)
+    pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
+
+    delta2 = 0
+    shear_acc = 0
+    for i in range(3):
+        # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
+        shear_ii = gradient_kernel(kvec, i, grad_fd)**2
+        shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
+        delta2 += shear_ii * shear_acc 
+        shear_acc += shear_ii
+
+        for j in range(i+1, 3):
+            # Substract squared strict-up-triangle terms
+            hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
+            delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
+
+    force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
+    return force2
 
 
-
-def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=False, lap_fd=False):
+def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False, lc2=False, model=None):
     """
     Compute first and second order LPT displacement, 
     e.g. Eq 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
@@ -150,29 +171,19 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=False, lap_fd=False
     dpos = a2g(cosmo, a) * force1
     vel = force1
 
+    if lc2:
+        rad = jnp.linalg.norm((pos + dpos) * (model.box_shape / mesh_shape) - jnp.asarray(model.center), axis=1)
+        a2 = chi2a(cosmo, rad)[:,None]
+        print((jnp.abs(a2 - a)).mean())
+        a = a2
+
     if order == 2:
-        kvec = rfftk(mesh_shape)
-        pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
-
-        delta2 = 0
-        shear_acc = 0
-        for i in range(3):
-            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            shear_ii = gradient_kernel(kvec, i, grad_fd)**2
-            shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
-            delta2 += shear_ii * shear_acc 
-            shear_acc += shear_ii
-
-            for j in range(i+1, 3):
-                # Substract squared strict-up-triangle terms
-                hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
-                delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
-
-        force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
+        force2 = pm_force2(delta_k, pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
         dpos -= a2gg(cosmo, a) * force2
         vel  -= a2dggdg(cosmo, a) * force2
 
     return dpos, vel
+
 
 
 
@@ -244,6 +255,81 @@ def g2dggdg(cosmo, g):
     return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
 
 
+#############
+# Distances #
+#############
+from jax_cosmo.scipy.ode import odeint
+from jax_cosmo.background import dchioverda
+def a2chi(cosmo, a, log10_amin=-3, steps=256):
+    r"""Radial comoving distance in [Mpc/h] for a given scale factor.
+
+    Parameters
+    ----------
+    a : array_like
+        Scale factor
+
+    Returns
+    -------
+    chi : ndarray, or float if input scalar
+        Radial comoving distance corresponding to the specified scale
+        factor.
+
+    Notes
+    -----
+    The radial comoving distance is computed by performing the following
+    integration:
+
+    .. math::
+
+        \chi(a) =  R_H \int_a^1 \frac{da^\prime}{{a^\prime}^2 E(a^\prime)}
+    """
+    # Check if distances have already been computed
+    if not "background.radial_comoving_distance" in cosmo._workspace.keys():
+        # Compute tabulated array
+        atab = jnp.logspace(log10_amin, 0.0, steps)
+
+        def dchioverdlna(y, x):
+            xa = jnp.exp(x)
+            return dchioverda(cosmo, xa) * xa
+
+        chitab = odeint(dchioverdlna, 0.0, jnp.log(atab))
+        chitab = chitab[-1] - chitab
+
+        cache = {"a": atab, "chi": chitab}
+        cosmo._workspace["background.radial_comoving_distance"] = cache
+    else:
+        cache = cosmo._workspace["background.radial_comoving_distance"]
+
+    # Return the results as an interpolation of the table
+    return jnp.clip(jnp.interp(a, cache["a"], cache["chi"]), 0.0)
+
+
+def chi2a(cosmo, chi):
+    r"""Computes the scale factor for corresponding (array) of radial comoving
+    distance by reverse linear interpolation.
+
+    Parameters:
+    -----------
+    cosmo: Cosmology
+      Cosmological parameters
+
+    chi: array-like
+      radial comoving distance to query.
+
+    Returns:
+    --------
+    a : array-like
+      Scale factors corresponding to requested distances
+    """
+    # Check if distances have already been computed, force computation otherwise
+    if not "background.radial_comoving_distance" in cosmo._workspace.keys():
+        a2chi(cosmo, 1.0)
+    cache = cosmo._workspace["background.radial_comoving_distance"]
+    return jnp.interp(chi, cache["chi"][::-1], cache["a"][::-1])
+
+
+
+
 
 ###########
 # Solvers #
@@ -289,19 +375,19 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
 
     def drift(state, dg):
         pos, vel = state
-        return pos + vel * dg / 2, vel
+        return pos + vel * dg, vel
     
     def vector_field(g0, state, args):
         old = state
-        state = drift(state, dg)
+        state = drift(state, dg / 2)
         state = kick(state, g0, cosmo, dg)
-        state = drift(state, dg)
+        state = drift(state, dg / 2)
         return tree.map(lambda new, old: (new - old) / dg, state, old)
     
     # def step(state, g0):
-    #     state = drift(state, dg)
+    #     state = drift(state, dg / 2)
     #     state = kick(state, g0, cosmo, dg)
-    #     state = drift(state, dg)
+    #     state = drift(state, dg / 2)
     #     return state, None
     
     return vector_field

@@ -39,11 +39,13 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
     """
-    k = jnp.logspace(-4, 1, n_interp)
-    logpk = jnp.log(jc.power.linear_matter_power(cosmo, k, a=a))
+    ks = jnp.logspace(-4, 1, n_interp)
+    logpows = jnp.log(jc.power.linear_matter_power(cosmo, ks, a=a))
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
     # as interpolation in loglog space can produce nan gradients
-    pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), k, logpk, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), ks, logpows, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    # pows = jc.power.linear_matter_power(cosmo, ks, a=a)
+    # pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
     return pow_fn
 
 
