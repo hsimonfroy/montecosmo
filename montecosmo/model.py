@@ -29,7 +29,7 @@ from montecosmo.mcbench import Chains
 default_config={
             # Mesh and box parameters
             'mesh_shape':3 * (64,), # int
-            'box_shape':3 * (320.,), # in Mpc/h (aim for cell lengths between 1 and 10 Mpc/h)
+            'box_shape':3 * (320.,), # in Mpc/h (typical cell lengths between 1 and 20 Mpc/h)
             # Evolution
             'a_obs':0.5,
             'evolution':'lpt', # kaiser, lpt, nbody
@@ -205,6 +205,8 @@ class Model():
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
         """
+        Selectively hides parameters in the model.
+        
         Precedence is given according to the order: hide_fn, hide, expose_types, expose, (hide_base, hide_det).
         Only the set of parameters with the precedence is considered.
         The default call thus hides base and other deterministic sites, for sampling purposes.
