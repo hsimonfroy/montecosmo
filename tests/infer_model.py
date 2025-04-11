@@ -20,7 +20,7 @@ from numpyro import infer
 
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload
-from montecosmo.mcbench import sample_and_save
+from montecosmo.samplers import sample_and_save
 from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 # import mlflow

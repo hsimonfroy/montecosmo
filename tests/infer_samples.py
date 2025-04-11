@@ -20,7 +20,7 @@ from numpyro import infer
 
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload
-from montecosmo.mcbench import sample_and_save
+from montecosmo.samplers import sample_and_save
 from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 # import mlflow
@@ -38,7 +38,7 @@ from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
 # In[ ]:
 
-from montecosmo.mcbench import Chains
+from montecosmo.chains import Chains
 from montecosmo.plot import plot_pow, plot_powtranscoh, plot_coh, theme, SetDark2
 # theme(usetex=False, font_size=14)
 groups = ['cosmo','bias','init']
