@@ -58,7 +58,29 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
     
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, los=None):
+def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, box_center=(0,0,0)):
+    """
+    Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, and RSD.
+    """
+    los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
+    kvec = rfftk(mesh_shape)
+    kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
+    mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+    mumesh = safe_div(mumesh, kmesh)
+
+    return a2g(cosmo, a) * (bE + a2f(cosmo, a) * mumesh**2)
+
+
+def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, box_center=(0,0,0)):
+    """
+    Kaiser model, with linear growth, Eulerian linear bias, and RSD.
+    """
+    mesh_shape = ch2rshape(init_mesh.shape)
+    init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
+    return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
+
+
+def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, box_center=(0,0,0)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -66,12 +88,18 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, lo
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
     pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
-    boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
+    boost = kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
 
     stds = (pmeshk / (1 + gxy_count * boost**2 * pmeshk))**.5
     # Also: stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
     means = stds**2 * gxy_count * boost * delta_obs
     return means, stds
+
+
+
+
+
+
 
 
 def get_cosmology(**cosmo) -> Cosmology:
@@ -211,51 +239,83 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-def rsd(cosmo:Cosmology, a, vel, los:np.ndarray=None):
+def rsd(cosmo:Cosmology, a, vel, los):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and growth-time integrator velocity.
-    Computed with respect to scale factor and line-of-sight.
-
-    No RSD if los is None.
+    Computed with respect to scale factor(s) and line-of-sight(s).
     """
-    if los is None:
-        return jnp.zeros_like(vel)
+    # growth-time integrator velocity vel = dq / dg = v / (H * g * f), so dpos := v / H = vel * g * f
+    # If v is in comoving Mpc/h/s, dpos is in comoving Mpc/h
+    a = jnp.expand_dims(a, -1)
+    dpos = vel * a2g(cosmo, a) * a2f(cosmo, a)
+    # Project velocity on line-of-sight(s)
+    dpos = (dpos * los).sum(-1, keepdims=True) * los
+    return dpos
+    
+
+
+def radius_mesh(box_center, box_shape, mesh_shape, curved_sky=True):
+    """
+    Return distances from center of the mesh cells.
+    """
+    rx = np.arange(mesh_shape[0]) + .5
+    ry = np.arange(mesh_shape[1]) + .5
+    rz = np.arange(mesh_shape[2]) + .5
+
+    rx = rx.reshape([-1, 1, 1])
+    ry = ry.reshape([1, -1, 1])
+    rz = rz.reshape([1, 1, -1])
+    rvec = rx, ry, rz
+
+    if curved_sky:
+        rvec = [(r / m - .5) * b + c for r, m, b, c in zip(rvec, mesh_shape, box_shape, box_center)]
+        rmesh = sum(ri**2 for ri in rvec)**0.5
     else:
-        los = np.asarray(los)
-        los /= np.linalg.norm(los)
-        # growth-time integrator velocity = dpos / dg = v / (H * g * f), so dpos_rsd := v / H = vel * g * f
-        # If vel is in comoving Mpc/h/s, dpos_rsd is in Mpc/h
-        dpos = vel * a2g(cosmo, a) * a2f(cosmo, a)
-        # Project velocity on line-of-sight
-        dpos = dpos * los
-        return dpos
+        los = safe_div(box_center, np.linalg.norm(box_center))
+        rvec = [((r / m - .5) * b + c) * l for r, m, b, c, l in zip(rvec, mesh_shape, box_shape, box_center, los)]
+        rmesh = sum(ri for ri in rvec)
+    return rmesh
 
-
-def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, los:np.ndarray=None):
+def radius_pos(pos, box_center, box_shape, mesh_shape, curved_sky=True):
     """
-    Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, and RSD.
-
-    No RSD if los is None.
+    Return distances from center of the positions.
     """
-    if los is None:
-        return a2g(cosmo, a) * bE
+    pos = (pos / mesh_shape - .5) * box_shape + box_center
+    # pos = pos * (box_shape / mesh_shape) + (box_center - .5 * box_shape)
+    if curved_sky:
+        rpos = jnp.linalg.norm(pos, axis=-1)
     else:
-        los = np.asarray(los)
-        los /= np.linalg.norm(los)
-        kvec = rfftk(mesh_shape)
-        kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
-        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
-        mumesh = safe_div(mumesh, kmesh)
-
-        return a2g(cosmo, a) * (bE + a2f(cosmo, a) * mumesh**2)
-
-
-def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los:np.ndarray=None):
+        los = safe_div(box_center, np.linalg.norm(box_center))
+        rpos = (pos * los).sum(-1)
+    return rpos
+    
+def los_pos(pos, box_center, box_shape, mesh_shape, curved_sky=True):
     """
-    Kaiser model, with linear growth, Eulerian linear bias, and RSD.
+    Return line-of-sight(s) of the positions.
     """
-    mesh_shape = ch2rshape(init_mesh.shape)
-    init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, los)
-    return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
+    if curved_sky:
+        pos = (pos / mesh_shape - .5) * box_shape + box_center
+        los = safe_div(pos, jnp.linalg.norm(pos, axis=-1, keepdims=True))
+    else:
+        los = safe_div(box_center, np.linalg.norm(box_center))
+    return los
 
 
+
+
+
+def parperp2isoap(alpha_par, alpha_perp):
+    """
+    Convert parallel and perpendical scaling into isotropic and anisotropic scaling.
+    """
+    alpha_iso = (alpha_par * alpha_perp**2)**(1/3)
+    alpha_ap = alpha_par / alpha_perp
+    return alpha_iso, alpha_ap
+
+def isoap2parperp(alpha_iso, alpha_ap):
+    """
+    Convert isotropic and anisotropic scaling into parallel and perpendical scaling.
+    """
+    alpha_par = alpha_iso * alpha_ap**(2/3)
+    alpha_perp = alpha_iso * alpha_ap**(-1/3)
+    return alpha_par, alpha_perp

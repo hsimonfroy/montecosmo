@@ -153,10 +153,10 @@ def pm_forces2(delta_k, pos, mesh_shape, lap_fd=False, grad_fd=False):
     return force2
 
 
-def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False, lc2=False, model=None):
+def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False):
     """
-    Compute first and second order LPT displacement, 
-    e.g. Eq 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
+    Compute first or second order LPT displacement, at given scale factor(s).
+    See e.g. Eq. 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
     or Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
     # if jnp.isrealobj(init_mesh):
@@ -165,16 +165,11 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False
     # else:
     delta_k = init_mesh
     mesh_shape = ch2rshape(init_mesh.shape)
+    a = jnp.expand_dims(a, -1)
 
     force1 = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
     vel = force1
-
-    if lc2:
-        rad = jnp.linalg.norm((pos + dpos) * (model.box_shape / mesh_shape) - jnp.asarray(model.center), axis=1)
-        a2 = chi2a(cosmo, rad)[:,None]
-        print((jnp.abs(a2 - a)).mean())
-        a = a2
 
     if order == 2:
         force2 = pm_forces2(delta_k, pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
@@ -410,10 +405,10 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
     state = pos, vel
 
-    if snapshots is None or (isinstance(snapshots, int) and snapshots < 2): 
+    if snapshots is None or (isinstance(snapshots, int) and snapshots <= 1): 
         saveat = SaveAt(t1=True)
     elif isinstance(snapshots, int): 
-        saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(0, a, snapshots)))  
+        saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(0., a, snapshots)))  
     else: 
         saveat = SaveAt(ts=a2g(cosmo, jnp.asarray(snapshots)))   
 
@@ -609,21 +604,15 @@ def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5,
 
 
 
-def rsd_fpm(cosmo:Cosmology, a, p, los:np.ndarray=None):
+def rsd_fpm(cosmo:Cosmology, a, vel, los:np.ndarray):
     """
     Redshift-Space Distortion (RSD) displacement from cosmology and FastPM momentum.
-    Computed with respect to scale factor and line-of-sight.
-    
-    No RSD if los is None.
+    Computed with respect to scale factor(s) and line-of-sight(s).
     """
-    if los is None:
-        return jnp.zeros_like(p)
-    else:
-        los = np.asarray(los)
-        los /= np.linalg.norm(los)
-        # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
-        dx_rsd = p / (jc.background.Esqr(cosmo, a)**.5 * a**2)
-        # Project velocity on line-of-sight
-        dx_rsd = dx_rsd * los
-        return dx_rsd
+    # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
+    a = jnp.expand_dims(a, -1)
+    dpos = vel / (jc.background.Esqr(cosmo, a)**.5 * a**2)
+    # Project velocity on line-of-sight
+    dpos = (dpos * los).sum(-1, keepdims=True) * los
+    return dpos
 

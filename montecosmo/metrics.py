@@ -67,9 +67,10 @@ def _waves(mesh_shape, box_shape, kedges, los):
     box_shape : tuple of float
         Physical dimensions of the box.
     kedges : None, int, float, or list
-        * If None, set dk to twice the minimum.
+        * If None, set dk to twice the fundamental wavenumber.
         * If int, specifies number of edges.
         * If float, specifies dk.
+        * If list, specifies kedges.
     los : array_like
         Line-of-sight vector.
 
@@ -99,11 +100,8 @@ def _waves(mesh_shape, box_shape, kedges, los):
     kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_shape)] # h/Mpc physical units
     kmesh = sum(ki**2 for ki in kvec)**0.5
 
-    if los is None:
-        mumesh = 0.
-    else:
-        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
-        mumesh = safe_div(mumesh, kmesh)
+    mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+    mumesh = safe_div(mumesh, kmesh)
 
     rfftw = np.full_like(kmesh, 2)
     rfftw[..., 0] = 1
@@ -114,7 +112,7 @@ def _waves(mesh_shape, box_shape, kedges, los):
 
 
 def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
-             comp=(0, 0), poles=0, los:np.ndarray=None):
+             comp:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
@@ -125,10 +123,8 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     else:
         box_shape = np.asarray(box_shape)
 
-    if los is not None:
-        los = np.asarray(los)
-        los /= np.linalg.norm(los)
-    pls = np.atleast_1d(poles)
+    los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
+    ells = np.atleast_1d(poles)
 
     # FFTs and deconvolution
     if isinstance(comp, int):
@@ -160,8 +156,8 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     kavg = kavg[1:-1] / kcount
 
     # Average wavenumber power in bins
-    pow = jnp.empty((len(pls), n_bins))
-    for i_ell, ell in enumerate(pls):
+    pow = jnp.empty((len(ells), n_bins))
+    for i_ell, ell in enumerate(ells):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
         if mesh2 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)
@@ -181,7 +177,7 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
 
 
 
-def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
+def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(0, 0)):
     if isinstance(comp, int):
         comp = (comp, comp)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
@@ -190,7 +186,7 @@ def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, F
     return ks, (pow1 / pow0)**.5
 
 
-def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
+def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(0, 0)):
     if isinstance(comp, int):
         comp = (comp, comp)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
@@ -200,7 +196,7 @@ def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, 
     return ks, pow01 / (pow0 * pow1)**.5
 
 
-def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(False, False)):
+def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(0, 0)):
     if isinstance(comp, int):
         comp = (comp, comp)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)

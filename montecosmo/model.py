@@ -16,8 +16,9 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
-                               lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior)
-from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan
+                               lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior,
+                               radius_mesh, radius_pos, los_pos,)
+from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2g, a2f
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import ysafe_dump, ysafe_load
 
@@ -29,9 +30,8 @@ from montecosmo.chains import Chains
 default_config={
             # Mesh and box parameters
             'mesh_shape':3 * (64,), # int
-            'box_shape':3 * (320.,), # in Mpc/h (typical cell lengths between 1 and 20 Mpc/h)
+            'box_shape':3 * (320.,), # in Mpc/h
             # Evolution
-            'a_obs':0.5,
             'evolution':'lpt', # kaiser, lpt, nbody
             'nbody_steps':5,
             'nbody_snapshots':None,
@@ -39,9 +39,11 @@ default_config={
             # Observables
             'gxy_density':1e-3, # in galaxy / (Mpc/h)^3
             'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
-            'los':(0.,0.,1.),
-            'center':None,
             'poles':(0,2,4),
+            'a_obs':None, # light-cone if None
+            'curved_sky':True,
+            'box_center':(0.,0.,0.), # in Mpc/h
+            'mask':None, # if float, mask fraction, if str or Path, path to mask file
             # Latents
             'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
             'latents': {'Omega_m': {'group':'cosmo', 
@@ -89,7 +91,8 @@ default_config={
                                     # 'scale_fid':2e-2,
                                     },
                         'init_mesh': {'group':'init',
-                                      'label':'{\\delta}_L',},},
+                                      'label':'{\\delta}_L',},
+                        },
             }
 
 
@@ -275,14 +278,14 @@ class FieldLevelModel(Model):
     los : array_like
         Line-of-sight direction for flat-sky simulation. 
         If None, no Redshift Space Distorsion is applied.
-    center : array_like
+    box_center : array_like
         Center of the box, i.e. observer position, in Mpc/h for curved-sky simulation.
         If None, no Redshift Space Distorsion is applied.
     poles : array_like of int
         Power spectrum poles to compute.
         Only used for 'powspec' observable.
     precond : str
-        Preconditioning method: 'direct', 'fourier', 'kaiser'.
+        Preconditioning method: 'direct', 'fourier', 'kaiser', 'kaiser_dyn'.
     latents : dict
         Latent variables configuration.
     """
@@ -291,15 +294,16 @@ class FieldLevelModel(Model):
     box_shape:np.ndarray
     # Evolution
     evolution:str
-    a_obs:float
     nbody_steps:int
     nbody_snapshots:int|list
     lpt_order:int
     # Observable
     observable:str
     gxy_density:float
-    los:tuple
-    center:tuple
+    a_obs:float
+    curved_sky:bool
+    box_center:np.ndarray
+    mask:float|str
     poles:tuple
     # Latents
     precond:str
@@ -313,15 +317,10 @@ class FieldLevelModel(Model):
         self.loc_fid = self._loc_fid()
 
         self.mesh_shape = np.asarray(self.mesh_shape)
-        # NOTE: if x32, cast mesh_shape into float32 to avoid int32 overflow when computing products
+        # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
         self.box_shape = np.asarray(self.box_shape, dtype=float)
         self.cell_shape = self.box_shape / self.mesh_shape
-        
-        assert self.los is None or self.center is None, \
-            "Cannot provide both line-of-sight and box center: choose flat-sky or curved-sky simulation"
-        if self.los is not None:
-            self.los = np.asarray(self.los)
-            self.los = self.los / np.linalg.norm(self.los)
+        self.box_center = np.asarray(self.box_center)
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
@@ -380,35 +379,50 @@ class FieldLevelModel(Model):
         cosmology, bias, init = params
 
         if self.evolution=='kaiser':
-            # Kaiser model
-            gxy_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, los=self.los)
+            assert not self.curved_sky, "Kaiser model is defined for flat-sky only"
+
+            gxy_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, box_center=self.box_center)
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
             return gxy_mesh
                     
         # Create regular grid of particles
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
 
+        if self.a_obs is None:
+            rpos = radius_pos(pos, self.box_center, self.box_shape, self.mesh_shape, self.curved_sky)
+            a = chi2a(cosmology, rpos)
+        else:
+            a = self.a_obs
+
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, self.a_obs, pos, self.box_shape, **bias, **init)
+        lbe_weights = lagrangian_weights(cosmology, jnp.mean(a), pos, self.box_shape, **bias, **init)
         # TODO: gaussian lagrangian weights
+        # TODO: light-cone weights?
 
         if self.evolution=='lpt':
-            # LPT displacement at a_lpt
             # NOTE: lpt assumes given mesh follows linear spectral power at a=1, and then correct by growth factor for target a_lpt
             cosmology._workspace = {}  # HACK: temporary fix
-            dpos, vel = lpt(cosmology, **init, pos=pos, a=self.a_obs, order=self.lpt_order, grad_fd=False, lap_fd=False)
+            dpos, vel = lpt(cosmology, **init, pos=pos, a=a, order=self.lpt_order, grad_fd=False, lap_fd=False)
             pos += dpos
             pos, vel = deterministic('lpt_part', (pos, vel))
 
         elif self.evolution=='nbody':
             cosmology._workspace = {}  # HACK: temporary fix
-            part = nbody_bf(cosmology, **init, pos=pos, a=self.a_obs, n_steps=self.nbody_steps, 
+            part = nbody_bf(cosmology, **init, pos=pos, a=a, n_steps=self.nbody_steps, 
                                  grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
             part = deterministic('nbody_part', part)
             pos, vel = tree.map(lambda x: x[-1], part)
 
-        # RSD displacement at a_obs
-        pos += rsd(cosmology, self.a_obs, vel, self.los)
+        los = los_pos(pos, self.box_center, self.box_shape, self.mesh_shape, self.curved_sky)
+
+        if self.a_obs is None:
+            rpos = radius_pos(pos, self.box_center, self.box_shape, self.mesh_shape, self.curved_sky)
+            a = chi2a(cosmology, rpos)
+        else:
+            a = self.a_obs
+
+        # RSD displacement
+        pos += rsd(cosmology, a, vel, los)
         pos, vel = deterministic('rsd_part', (pos, vel))
 
         # CIC paint weighted by Lagrangian bias expansion weights
@@ -551,7 +565,7 @@ class FieldLevelModel(Model):
 
         elif self.precond=='kaiser':
             cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
-            boost_fid = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.los)
+            boost_fid = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.box_center)
             pmeshk_fid = lin_power_mesh(cosmo_fid, self.mesh_shape, self.box_shape)
 
             scale = (1 + self.gxy_count * boost_fid**2 * pmeshk_fid)**.5
@@ -559,7 +573,7 @@ class FieldLevelModel(Model):
             scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
-            boost = kaiser_boost(cosmo, self.a_obs, bE, self.mesh_shape, self.los)
+            boost = kaiser_boost(cosmo, self.a_obs, bE, self.mesh_shape, self.box_center)
 
             scale = (1 + self.gxy_count * boost**2 * pmeshk)**.5
             transfer = pmeshk**.5 / scale
@@ -604,9 +618,9 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp=(0, 0), poles=0):
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp:int|tuple=(0, 0), poles:int|tuple=0):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                            kedges=kedges, comp=comp, poles=poles, los=self.los)
+                            kedges=kedges, comp=comp, poles=poles, box_center=self.box_center)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(0, 0)):
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
@@ -637,7 +651,7 @@ class FieldLevelModel(Model):
 
         cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
         means, stds = kaiser_posterior(delta_obs, cosmo_fid, bE_fid, self.a_obs, 
-                                       self.box_shape, self.gxy_count, self.los)
+                                       self.box_shape, self.gxy_count, self.box_center)
         post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
 
