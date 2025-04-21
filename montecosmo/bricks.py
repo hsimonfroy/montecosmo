@@ -7,9 +7,11 @@ from jax_cosmo import Cosmology
 from jaxpm.painting import cic_read
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
-from montecosmo.nbody import rfftk, invlaplace_kernel, a2g, a2f
+from montecosmo.nbody import rfftk, invlaplace_kernel, a2g, a2f, a2chi, chi2a
 
-
+#############
+# Cosmology #
+#############
 # [Planck2015 XIII](https://arxiv.org/abs/1502.01589) Table 4 final column (best fit)
 Planck15 = partial(Cosmology,
     Omega_c=0.2589,
@@ -34,6 +36,18 @@ Planck18 = partial(Cosmology,
     wa=0.0,)
 
 
+def get_cosmology(**cosmo) -> Cosmology:
+    """
+    Return full cosmology object from cosmological params.
+    """
+    return Planck18(Omega_c=cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
+                    sigma8=cosmo['sigma8'])
+
+
+
+#########
+# Power #
+#########
 def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     """
     Return a light emulation of the linear matter power spectrum.
@@ -56,8 +70,11 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     kvec = rfftk(mesh_shape)
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
-    
 
+
+##########
+# Kaiser #
+##########
 def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, box_center=(0,0,0)):
     """
     Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, and RSD.
@@ -98,18 +115,9 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, bo
 
 
 
-
-
-
-
-def get_cosmology(**cosmo) -> Cosmology:
-    """
-    Return full cosmology object from cosmological params.
-    """
-    return Planck18(Omega_c=cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
-                    sigma8=cosmo['sigma8'])
-
-
+#####################
+# Reparametrization #
+#####################
 def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     """
     Transform sample params into base params.
@@ -174,9 +182,9 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 
 
 
-
-
-
+########
+# Bias #
+########
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
                        b1, b2, bs2, bn2, init_mesh):
     """
@@ -238,6 +246,9 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
+####################
+# Alcock-Paczynski #
+####################
 
 def rsd(cosmo:Cosmology, a, vel, los):
     """
@@ -248,6 +259,22 @@ def rsd(cosmo:Cosmology, a, vel, los):
     # If v is in comoving Mpc/h/s, dpos is in comoving Mpc/h
     a = jnp.expand_dims(a, -1)
     dpos = vel * a2g(cosmo, a) * a2f(cosmo, a)
+    # Project velocity on line-of-sight(s)
+    dpos = (dpos * los).sum(-1, keepdims=True) * los
+    return dpos
+
+
+import jax_cosmo.constants as const
+def rsd2(cosmo:Cosmology, a, vel, los):
+    """
+    Redshift-Space Distortion (RSD) displacement from cosmology and growth-time integrator velocity.
+    Computed with respect to scale factor(s) and line-of-sight(s).
+    """
+    # growth-time integrator velocity vel = dq / dg = v / (H * g * f), so dpos := v / H = vel * g * f
+    # If v is in comoving Mpc/h/s, dpos is in comoving Mpc/h
+    a = jnp.expand_dims(a, -1)
+    a = (1 / a + vel * a2g(cosmo, a) * a2f(cosmo, a) * jc.background.Esqr(cosmo, a)**.5 / const.rh)**-1
+    chi = a2chi(cosmo, a)
     # Project velocity on line-of-sight(s)
     dpos = (dpos * los).sum(-1, keepdims=True) * los
     return dpos
@@ -303,7 +330,6 @@ def los_pos(pos, box_center, box_shape, mesh_shape, curved_sky=True):
 
 
 
-
 def parperp2isoap(alpha_par, alpha_perp):
     """
     Convert parallel and perpendical scaling into isotropic and anisotropic scaling.
@@ -319,3 +345,46 @@ def isoap2parperp(alpha_iso, alpha_ap):
     alpha_par = alpha_iso * alpha_ap**(2/3)
     alpha_perp = alpha_iso * alpha_ap**(-1/3)
     return alpha_par, alpha_perp
+
+
+
+
+
+
+
+
+
+########
+# Mask #
+########
+def mesh2masked(mesh, mask):
+    return mesh[mask]
+
+def masked2mesh(masked, mask):
+    mesh = jnp.zeros(mask.shape)
+    mesh = mesh.at[mask].set(masked)
+    return mesh
+
+def simple_mask(mesh_shape, frac=.5, ord:float=np.inf):
+    """
+    Return a simple mask obtained by cropping a fraction of the mesh as an ord-norm ball.
+    """
+    ord = float(ord)
+    rx = jnp.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
+    ry = jnp.abs((np.arange(mesh_shape[1]) + .5) * 2 / mesh_shape[1] - 1)
+    rz = jnp.abs((np.arange(mesh_shape[2]) + .5) * 2 / mesh_shape[2] - 1)
+
+    rx = rx.reshape([-1, 1, 1])
+    ry = ry.reshape([1, -1, 1])
+    rz = rz.reshape([1, 1, -1])
+    rvec = rx, ry, rz
+
+    if ord == np.inf:
+        rmesh = np.maximum(np.maximum(rvec[0], rvec[1]), rvec[2])
+    elif ord == -np.inf:
+        rmesh = np.minimum(np.minimum(rvec[0], rvec[1]), rvec[2])
+    else:
+        rmesh = sum(ri**ord for ri in rvec)**(1/ord)
+
+    mask = rmesh < frac**(1/3)
+    return mask

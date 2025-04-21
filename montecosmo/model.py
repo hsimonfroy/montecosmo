@@ -17,10 +17,11 @@ from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior,
-                               radius_mesh, radius_pos, los_pos,)
+                               radius_mesh, radius_pos, los_pos,
+                               simple_mask, mesh2masked, masked2mesh)
 from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2g, a2f
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
-from montecosmo.utils import ysafe_dump, ysafe_load
+from montecosmo.utils import ysafe_dump, ysafe_load, Path
 
 from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
 from montecosmo.chains import Chains
@@ -30,7 +31,8 @@ from montecosmo.chains import Chains
 default_config={
             # Mesh and box parameters
             'mesh_shape':3 * (64,), # int
-            'box_shape':3 * (320.,), # in Mpc/h
+            'cell_length': 5., # in Mpc/h
+            # 'box_shape':3 * (320.,), # in Mpc/h
             # Evolution
             'evolution':'lpt', # kaiser, lpt, nbody
             'nbody_steps':5,
@@ -291,7 +293,7 @@ class FieldLevelModel(Model):
     """
     # Mesh and box parameters
     mesh_shape:np.ndarray
-    box_shape:np.ndarray
+    cell_length:float
     # Evolution
     evolution:str
     nbody_steps:int
@@ -318,21 +320,20 @@ class FieldLevelModel(Model):
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
-        self.box_shape = np.asarray(self.box_shape, dtype=float)
-        self.cell_shape = self.box_shape / self.mesh_shape
+        self.box_shape = self.mesh_shape * self.cell_length
         self.box_center = np.asarray(self.box_center)
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
         # 2*pi factors because of Fourier transform definition
-        self.gxy_count = self.gxy_density * self.cell_shape.prod()
+        self.gxy_count = self.gxy_density * self.cell_length**3
 
     def __str__(self):
         out = ""
         out += f"# CONFIG\n"
         out += pformat(asdict(self), width=1)
         out += "\n\n# INFOS\n"
-        out += f"cell_shape:     {list(self.cell_shape)} Mpc/h\n"
+        out += f"box_shape:     {list(self.box_shape)} Mpc/h\n"
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
         out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n"
@@ -421,6 +422,10 @@ class FieldLevelModel(Model):
         else:
             a = self.a_obs
 
+        velp = vel * self.box_shape / self.mesh_shape * a2g(cosmology, a) * a2f(cosmology, a)
+        velp = jnp.linalg.norm(velp, axis=-1)
+        debug.print("vel: {i}", i=(velp.mean(), velp.std(), velp.min(), velp.max()))
+
         # RSD displacement
         pos += rsd(cosmology, a, vel, los)
         pos, vel = deterministic('rsd_part', (pos, vel))
@@ -433,7 +438,7 @@ class FieldLevelModel(Model):
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
-        return gxy_mesh
+        return gxy_mesh # NOTE: mesh is 1+delta_obs
 
 
     def likelihood(self, mesh, temp=1.):
@@ -444,9 +449,17 @@ class FieldLevelModel(Model):
         """
 
         if self.observable == 'field':
+            if self.mask is None:
+                obs = mesh
+            elif isinstance(self.mask, float):
+                mask = simple_mask(self.mesh_shape, self.mask, ord=np.inf) 
+                obs = mesh2masked(mesh, mask)
+            elif isinstance(self.mask, (str, Path)):
+                raise NotImplementedError("Mask loading not implemented yet")
+
             # Gaussian noise
-            obs_mesh = sample('obs', dist.Normal(mesh, (temp / self.gxy_count)**.5))
-            return obs_mesh # NOTE: mesh is 1+delta_obs
+            obs = sample('obs', dist.Normal(obs, (temp / self.gxy_count)**.5))
+            return obs 
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
@@ -618,12 +631,12 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, comp:int|tuple=(0, 0), poles:int|tuple=0):
+    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, deconv:int|tuple=(0, 0), poles:int|tuple=0):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
-                            kedges=kedges, comp=comp, poles=poles, box_center=self.box_center)
+                            kedges=kedges, deconv=deconv, poles=poles, box_center=self.box_center)
 
-    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, comp=(0, 0)):
-        return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, comp=comp)
+    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
+        return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv)
 
 
     ########################
@@ -639,9 +652,9 @@ class FieldLevelModel(Model):
         return chains
     
     def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
-                           kedges:int|float|list=None, comp=(0, 0), batch_ndim=2) -> Chains:
+                           kedges:int|float|list=None, deconv=(0, 0), batch_ndim=2) -> Chains:
         chains = chains.copy()
-        fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges, comp=comp), batch_ndim)
+        fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges, deconv=deconv), batch_ndim)
         chains.data['kptc'] = fn(chains.data[name])
         return chains
     

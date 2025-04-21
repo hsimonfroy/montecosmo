@@ -112,7 +112,7 @@ def _waves(mesh_shape, box_shape, kedges, los):
 
 
 def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
-             comp:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
+             deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
@@ -127,18 +127,18 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     ells = np.atleast_1d(poles)
 
     # FFTs and deconvolution
-    if isinstance(comp, int):
-        comp = (comp, comp)
+    if isinstance(deconv, int):
+        deconv = (deconv, deconv)
 
     mesh = jnp.fft.rfftn(mesh, norm='ortho')
     kvec = rfftk(mesh_shape) # cell units
-    mesh /= paint_kernel(kvec, order=comp[0])
+    mesh /= paint_kernel(kvec, order=deconv[0])
 
     if mesh2 is None:
         mmk = mesh.real**2 + mesh.imag**2
     else:
         mesh2 = jnp.fft.rfftn(mesh2, norm='ortho')
-        mesh2 /= paint_kernel(kvec, order=comp[1])
+        mesh2 /= paint_kernel(kvec, order=deconv[1])
         mmk = mesh * mesh2.conj()
 
     # Binning
@@ -177,32 +177,32 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
 
 
 
-def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(0, 0)):
-    if isinstance(comp, int):
-        comp = (comp, comp)
+def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+    if isinstance(deconv, int):
+        deconv = (deconv, deconv)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pow0 = pow_fn(mesh0, comp=comp[0])
-    ks, pow1 = pow_fn(mesh1, comp=comp[1])
+    ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
+    ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, (pow1 / pow0)**.5
 
 
-def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(0, 0)):
-    if isinstance(comp, int):
-        comp = (comp, comp)
+def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+    if isinstance(deconv, int):
+        deconv = (deconv, deconv)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pow01 = pow_fn(mesh0, mesh1, comp=comp)  
-    ks, pow0 = pow_fn(mesh0, comp=comp[0])
-    ks, pow1 = pow_fn(mesh1, comp=comp[1])
+    ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
+    ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
+    ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, pow01 / (pow0 * pow1)**.5
 
 
-def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, comp=(0, 0)):
-    if isinstance(comp, int):
-        comp = (comp, comp)
+def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+    if isinstance(deconv, int):
+        deconv = (deconv, deconv)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
-    ks, pow01 = pow_fn(mesh0, mesh1, comp=comp)  
-    ks, pow0 = pow_fn(mesh0, comp=comp[0])
-    ks, pow1 = pow_fn(mesh1, comp=comp[1])
+    ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
+    ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
+    ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, pow1, (pow1 / pow0)**.5, pow01 / (pow0 * pow1)**.5
     
 
