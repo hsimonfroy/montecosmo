@@ -10,6 +10,7 @@ from numpyro import sample, deterministic, render_model
 from numpyro.handlers import seed, condition, block, trace
 from numpyro.infer.util import log_density
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 
@@ -23,7 +24,7 @@ from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2g, a2f
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import ysafe_dump, ysafe_load, Path
 
-from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif
+from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, cgh2rg2, rg2cgh2
 from montecosmo.chains import Chains
 
 
@@ -45,6 +46,7 @@ default_config={
             'a_obs':None, # light-cone if None
             'curved_sky':True,
             'box_center':(0.,0.,0.), # in Mpc/h
+            'box_rot':Rotation.from_rotvec((0,0,0)),
             'mask':None, # if float, mask fraction, if str or Path, path to mask file
             # Latents
             'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
@@ -305,6 +307,7 @@ class FieldLevelModel(Model):
     a_obs:float
     curved_sky:bool
     box_center:np.ndarray
+    box_rot:Rotation
     mask:float|str
     poles:tuple
     # Latents
@@ -320,8 +323,8 @@ class FieldLevelModel(Model):
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
-        self.box_shape = self.mesh_shape * self.cell_length
         self.box_center = np.asarray(self.box_center)
+        self.box_shape = self.mesh_shape * self.cell_length
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
@@ -381,6 +384,7 @@ class FieldLevelModel(Model):
 
         if self.evolution=='kaiser':
             assert not self.curved_sky, "Kaiser model is defined for flat-sky only"
+            # TODO: ligh-cone Kaiser
 
             gxy_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, box_center=self.box_center)
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
@@ -665,8 +669,19 @@ class FieldLevelModel(Model):
         cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
         means, stds = kaiser_posterior(delta_obs, cosmo_fid, bE_fid, self.a_obs, 
                                        self.box_shape, self.gxy_count, self.box_center)
-        post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
+        
+        post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
+
+        # post_mesh2 = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
+        # # post_mesh = temp**.5 * stds * post_mesh + means 
+
+        # diff = post_mesh - post_mesh2
+        # print("types:", *(str(post_mesh.dtype), str(post_mesh2.dtype), str(type(post_mesh)), str(type(post_mesh2))))
+        # debug.print("diff: {i}", i=(diff.mean(), diff.std(), diff.min(), diff.max()))
+        
+        # means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, norm="amp")
+        # post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
 
         init_params = self.loc_fid | {'init_mesh': post_mesh}
         if base:

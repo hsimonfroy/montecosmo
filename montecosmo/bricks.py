@@ -246,9 +246,9 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-####################
-# Alcock-Paczynski #
-####################
+###########################
+# Redshift-Space (RSD+AP) #
+###########################
 
 def rsd(cosmo:Cosmology, a, vel, los):
     """
