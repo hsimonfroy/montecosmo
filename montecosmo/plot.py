@@ -3,6 +3,7 @@ from functools import partial
 
 import matplotlib.pyplot as plt
 from IPython.display import display
+from PIL import Image
 from matplotlib import animation, rc
 from matplotlib.colors import to_rgba_array
 from matplotlib.colors import ListedColormap
@@ -50,21 +51,22 @@ def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
 #############
 # 3D Meshes #
 #############
-def mean_slice(mesh, sli:int | float | slice=None, axis=-1):
+def mean_slice(mesh, sli:int | float | slice=slice(None), axis=-1):
     """
     Return a 2D mean projected (along given axis) slice from a 3D mesh.
     """
     mesh_shape = np.array(mesh.shape)
-    if sli is None:
-        sli = slice(None)
-    elif isinstance(sli, int):
+    if isinstance(sli, int):
         sli = slice(None, sli)
     elif isinstance(sli, float):
-        sli = slice(None, round(sli*mesh_shape[axis]))
+        low = round(mesh_shape[axis] / 2 * (1 - sli))
+        high = round(mesh_shape[axis] / 2 * (1 + sli))
+        sli = slice(low, high)
     return np.moveaxis(mesh, axis, -1)[...,sli].mean(-1)
 
 
-def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, axis=-1, vlim:float | tuple[float,float]=1e-4, **kwargs):
+def plot_mesh(mesh, box_shape=None, sli:int | float | slice=slice(None), 
+              axis=-1, vlim:float | tuple[float,float]=1e-4, **kwargs):
     """
     Plot a 2D mean projected slice (along given axis) from a 3D mesh.
 
@@ -75,16 +77,17 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, axis=-1, vlim:
     box_shape : tuple of int, optional
         The shape of the mesh physical box in Mpc/h. If None, it defaults to mesh shape.
     sli : int, float or slice, optional
-        The slice to be averaged along the last axis of the mesh. 
-        * If None, entire axis is used. 
+        The slice to be averaged along the given axis of the mesh. 
         * If integer, specifies the number of slices used starting from 0. 
-        * If float, specifies the proportion of axis used starting from 0.
+        * If float, specifies the proportion of axis used centered in middle.
+    axis : int, optional
+        The axis along which to average the mesh. Default is -1 (last axis).
     vlim : float or tuple of float, optional
         The limit values for colormap. 
         * If float, specifies the proportion of values discarded bilateraly. 
         * If tuple, specifies (vmin, vmax).
-    cmap : str, optional
-        The colormap used for plotting. Default is 'viridis'.
+    **kwargs : keyword arguments
+        Additional arguments passed to `plt.pcolormesh`.
 
     Returns
     -------
@@ -95,7 +98,9 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=None, axis=-1, vlim:
     if box_shape is None:
         box_shape = mesh_shape
     else:
-        plt.xlabel("$x$ [Mpc/$h$]"), plt.ylabel("$y$ [Mpc/$h$]")
+        axlabel = ["x", "y", "z"]
+        axlabel = axlabel[:axis] + axlabel[axis+1:]
+        plt.xlabel(f"${axlabel[0]}$ [Mpc/$h$]"), plt.ylabel(f"${axlabel[1]}$ [Mpc/$h$]")
 
     mesh2d = mean_slice(mesh, sli, axis)
 
@@ -195,59 +200,42 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
         pow = pow[...,i_ell,:]
 
     if log:
-        if fill is None:
-            out = plt.loglog(ks, pow, *args, **kwargs)
-        else:
-            scis = credint(pow, fill, axis=0)
-            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
-            plt.xscale('log'), plt.yscale('log')
+        plt.xscale('log'), plt.yscale('log')
         plt.ylabel("$P"+sub+"(k)$ [Mpc/$h$]$^3$")
     else:
-        if fill is None:
-            out = plt.plot(ks, ks * pow, *args, **kwargs)
-        else:
-            scis = credint(pow, fill, axis=0)
-            out = plt.fill_between(ks[0], *(ks[0] * scis.T), *args, alpha=(1-fill)**.5, **kwargs)
         plt.ylabel("$k P"+sub+"(k)$ [Mpc/$h$]$^2$")
+        pow = ks * pow
+
+    if fill is None:
+        out = plt.plot(ks, pow, *args, **kwargs)
+    else:
+        scis = credint(pow, fill, axis=0)
+        out = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-fill)**.5} | kwargs)
     plt.xlabel("$k$ [$h$/Mpc]")
     return out
 
 
 def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
-    if log:
-        if fill is None:
-            out = plt.loglog(ks, trans, *args, **kwargs)
-        else:
-            scis = credint(trans, fill, axis=0)
-            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
-            plt.xscale('log'), plt.yscale('log')
+    if fill is None:
+        out = plt.plot(ks, trans, *args, **kwargs)
     else:
-        if fill is None:
-            out = plt.semilogy(ks, trans, *args, **kwargs)
-        else:
-            scis = credint(trans, fill, axis=0)
-            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
-            plt.yscale('log')
-    plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
+        scis = credint(trans, fill, axis=0)
+        out = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-fill)**.5} | kwargs)
+    if log:
+        plt.xscale('log')
+    plt.yscale('log'), plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
     return out
 
 
 def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
-    if log:
-        if fill is None:
-            out = plt.loglog(ks, coh, *args, **kwargs)
-        else:
-            scis = credint(coh, fill, axis=0)
-            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
-            plt.xscale('log'), plt.yscale('log')
+    if fill is None:
+        out = plt.plot(ks, coh, *args, **kwargs)
     else:
-        if fill is None:
-            out = plt.semilogy(ks, coh, *args, **kwargs)
-        else:
-            scis = credint(coh, fill, axis=0)
-            out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1-fill)**.5, **kwargs)
-            plt.yscale('log')
-    plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
+        scis = credint(coh, fill, axis=0)
+        out = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-fill)**.5} | kwargs)
+    if log:
+        plt.xscale('log')
+    plt.yscale('log'), plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
     return out
 
 
@@ -297,6 +285,8 @@ c2 = plt.get_cmap('Set2').colors
 
 SetDark2 = ListedColormap(alternate(c2, c1))
 DarkSet2 = ListedColormap(alternate(c1, c2))
+# SetDark2_k = ListedColormap(alternate(1-np.array(c2), 1-np.array(c1)))
+# DarkSet2_k = ListedColormap(alternate(1-np.array(c1), 1-np.array(c2)))
 
 
 
@@ -361,3 +351,17 @@ def theme(dark=False, usetex=False, font_size=10, cmap='SetDark2'):
     set_plotting_options(usetex, font_size)
     theme = partial(color_switch, reverse=dark)
     return theme
+
+
+def invert_bw(path, epsilon=30):
+    """
+    Invert black and white in image, without affecting other colors.
+    """
+    img = Image.open(path).convert("RGB")
+    img = np.array(img)
+
+    white_mask = np.all(img >= 255 - epsilon, axis=-1)
+    black_mask = np.all(img <= epsilon, axis=-1)
+    img[white_mask] = 255 - img[white_mask]
+    img[black_mask] = 255 - img[black_mask]
+    return Image.fromarray(img)

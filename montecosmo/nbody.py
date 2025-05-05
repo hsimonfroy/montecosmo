@@ -108,15 +108,13 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, r_split=0
     Compute gravitational forces on particles using a PM scheme
     """
     if mesh is None:
-        delta_k = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), pos))
+        mesh = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), pos))
     # elif jnp.isrealobj(mesh):
-    #     delta_k = jnp.fft.rfftn(mesh)
-    else:
-        delta_k = mesh
+    #     mesh = jnp.fft.rfftn(mesh)
 
     # Compute gravitational potential
     kvec = rfftk(mesh_shape)
-    pot_k = delta_k * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
+    pot_k = mesh * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
 
     # # If painted field, double deconvolution to account for both painting and reading 
     # if mesh is None:
@@ -128,26 +126,26 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, r_split=0
                       for i in range(3)], axis=-1)
 
 
-def pm_forces2(delta_k, pos, mesh_shape, lap_fd=False, grad_fd=False):
+def pm_forces2(pos, mesh_shape, mesh, lap_fd=False, grad_fd=False):
     """
     Return 2LPT source term.
     """
     kvec = rfftk(mesh_shape)
-    pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
+    pot = mesh * invlaplace_kernel(kvec, lap_fd)
 
     delta2 = 0
     shear_acc = 0
     for i in range(3):
         # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
         shear_ii = gradient_kernel(kvec, i, grad_fd)**2
-        shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
+        shear_ii = jnp.fft.irfftn(shear_ii * pot)
         delta2 += shear_ii * shear_acc 
         shear_acc += shear_ii
 
         for j in range(i+1, 3):
             # Substract squared strict-up-triangle terms
             hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
-            delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
+            delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
     force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
     return force2
@@ -160,19 +158,16 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False
     or Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
     # if jnp.isrealobj(init_mesh):
-    #     delta_k = jnp.fft.rfftn(init_mesh)
     #     mesh_shape = init_mesh.shape
-    # else:
-    delta_k = init_mesh
+    #     init_mesh = jnp.fft.rfftn(init_mesh)
     mesh_shape = ch2rshape(init_mesh.shape)
-    a = jnp.expand_dims(a, -1)
 
-    force1 = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
+    force1 = pm_forces(pos, mesh_shape, init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
     vel = force1
 
     if order == 2:
-        force2 = pm_forces2(delta_k, pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
+        force2 = pm_forces2(pos, mesh_shape, init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
         dpos -= a2gg(cosmo, a) * force2
         vel  -= a2dggdg(cosmo, a) * force2
 

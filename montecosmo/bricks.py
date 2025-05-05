@@ -3,11 +3,11 @@ import numpy as np
 
 from jax import numpy as jnp, tree, debug
 import jax_cosmo as jc
-from jax_cosmo import Cosmology
+from jax_cosmo import Cosmology, background, constants
 from jaxpm.painting import cic_read
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
-from montecosmo.nbody import rfftk, invlaplace_kernel, a2g, a2f, a2chi, chi2a
+from montecosmo.nbody import rfftk, invlaplace_kernel, a2g, g2a, a2f, a2chi, chi2a
 
 #############
 # Cosmology #
@@ -93,8 +93,18 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, box_center=(0,0,0)):
     Kaiser model, with linear growth, Eulerian linear bias, and RSD.
     """
     mesh_shape = ch2rshape(init_mesh.shape)
-    init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
-    return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
+    if jnp.shape(a) == mesh_shape: # Eulerian light-cone
+        los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
+        kvec = rfftk(mesh_shape)
+        kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+        mumesh = safe_div(mumesh, kmesh)
+
+        init_mesh = (bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh))
+        return 1 + a2g(cosmo, a) * init_mesh #  1 + delta
+    else:
+        init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
+        return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
 
 
 def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, box_center=(0,0,0)):
@@ -186,7 +196,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 # Bias #
 ########
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
-                       b1, b2, bs2, bn2, init_mesh):
+                       b1, b2, bs2, bn2, init_mesh, **bias):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -197,14 +207,13 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     init_mesh *= a2g(cosmo, a)
     # if jnp.isrealobj(init_mesh):
     #     delta = init_mesh
-    #     delta_k = jnp.fft.rfftn(delta)
+    #     init_mesh = jnp.fft.rfftn(delta)
     # else:
-    delta_k = init_mesh
-    delta = jnp.fft.irfftn(delta_k)
+    delta = jnp.fft.irfftn(init_mesh)
     # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases
     # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
-    # delta_k = delta_k * jnp.exp( - kk_box / k_nyquist**2)
-    # delta = jnp.fft.irfftn(delta_k)
+    # init_mesh *= jnp.exp( - kk_box / k_nyquist**2)
+    # delta = jnp.fft.irfftn(init_mesh)
 
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape)
@@ -223,21 +232,21 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     weights = weights + b2 * (delta2_part - delta2_part.mean())
 
     # Apply bshear2, non-punctual term
-    pot_k = delta_k * invlaplace_kernel(kvec)
+    pot = init_mesh * invlaplace_kernel(kvec)
 
     shear2 = 0  
     for i, ki in enumerate(kvec):
         # Add diagonal terms
-        shear2 = shear2 + jnp.fft.irfftn( - ki**2 * pot_k - delta_k / 3)**2
+        shear2 = shear2 + jnp.fft.irfftn( - ki**2 * pot - init_mesh / 3)**2
         for kj in kvec[i+1:]:
             # Add strict-up-triangle terms (counted twice)
-            shear2 = shear2 + 2 * jnp.fft.irfftn( - ki * kj * pot_k)**2
+            shear2 = shear2 + 2 * jnp.fft.irfftn( - ki * kj * pot)**2
 
     shear2_part = cic_read(shear2, pos)
     weights = weights + bs2 * (shear2_part - shear2_part.mean())
 
     # Apply bnabla2, non-punctual term
-    delta_nl = jnp.fft.irfftn( - kk_box * delta_k)
+    delta_nl = jnp.fft.irfftn( - kk_box * init_mesh)
 
     delta_nl_part = cic_read(delta_nl, pos)
     weights = weights + bn2 * delta_nl_part
@@ -246,44 +255,59 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
 
 
-###########################
-# Redshift-Space (RSD+AP) #
-###########################
 
-def rsd(cosmo:Cosmology, a, vel, los):
+##############################
+# Distance and Line-Of-Sight #
+##############################
+def cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape):
     """
-    Redshift-Space Distortion (RSD) displacement from cosmology and growth-time integrator velocity.
-    Computed with respect to scale factor(s) and line-of-sight(s).
+    Cell positions to physical positions.
     """
-    # growth-time integrator velocity vel = dq / dg = v / (H * g * f), so dpos := v / H = vel * g * f
-    # If v is in comoving Mpc/h/s, dpos is in comoving Mpc/h
-    a = jnp.expand_dims(a, -1)
-    dpos = vel * a2g(cosmo, a) * a2f(cosmo, a)
-    # Project velocity on line-of-sight(s)
-    dpos = (dpos * los).sum(-1, keepdims=True) * los
-    return dpos
+    pos *= (box_shape / mesh_shape)
+    pos -= box_shape / 2
+    pos = box_rot.apply(pos)
+    pos += box_center
+    return pos
 
-
-import jax_cosmo.constants as const
-def rsd2(cosmo:Cosmology, a, vel, los):
+def phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape):
     """
-    Redshift-Space Distortion (RSD) displacement from cosmology and growth-time integrator velocity.
-    Computed with respect to scale factor(s) and line-of-sight(s).
+    Physical positions to cell positions.
     """
-    # growth-time integrator velocity vel = dq / dg = v / (H * g * f), so dpos := v / H = vel * g * f
-    # If v is in comoving Mpc/h/s, dpos is in comoving Mpc/h
-    a = jnp.expand_dims(a, -1)
-    a = (1 / a + vel * a2g(cosmo, a) * a2f(cosmo, a) * jc.background.Esqr(cosmo, a)**.5 / const.rh)**-1
-    chi = a2chi(cosmo, a)
-    # Project velocity on line-of-sight(s)
-    dpos = (dpos * los).sum(-1, keepdims=True) * los
-    return dpos
-    
+    pos -= box_center
+    pos = box_rot.apply(pos, inverse=True)
+    pos += box_shape / 2
+    pos /= (box_shape / mesh_shape)
+    return pos
 
-
-def radius_mesh(box_center, box_shape, mesh_shape, curved_sky=True):
+def cell2phys_vel(vel, box_rot, box_shape, mesh_shape):
     """
-    Return distances from center of the mesh cells.
+    Cell velocities to physical velocities.
+    """
+    vel *= (box_shape / mesh_shape)
+    vel = box_rot.apply(vel)
+    return vel
+
+def phys2cell_vel(vel, box_rot, box_shape, mesh_shape):
+    """
+    Physical velocities to cell velocities.
+    """
+    vel = box_rot.apply(vel, inverse=True)
+    vel /= (box_shape / mesh_shape)
+    return vel
+
+def scale_pos(pos, los, scale_par, scale_perp):
+    """
+    Scale positions in parallel and perpendicular directions.
+    """
+    pos_par = (pos * los).sum(-1, keepdims=True) * los
+    pos_perp = pos - pos_par
+    pos_par *= scale_par
+    pos_perp *= scale_perp
+    return pos_par + pos_perp
+
+def radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky=True):
+    """
+    Return physical distances of the mesh cells.
     """
     rx = np.arange(mesh_shape[0]) + .5
     ry = np.arange(mesh_shape[1]) + .5
@@ -294,40 +318,29 @@ def radius_mesh(box_center, box_shape, mesh_shape, curved_sky=True):
     rz = rz.reshape([1, 1, -1])
     rvec = rx, ry, rz
 
+    box_center = box_rot.apply(box_center, inverse=True)
     if curved_sky:
-        rvec = [(r / m - .5) * b + c for r, m, b, c in zip(rvec, mesh_shape, box_shape, box_center)]
+        # Use that ||Rx + c|| = ||x + R^T c|| to avoid computing Rx
+        rvec = [r * b / m - b / 2 + c for r, m, b, c in zip(rvec, mesh_shape, box_shape, box_center)]
         rmesh = sum(ri**2 for ri in rvec)**0.5
     else:
-        los = safe_div(box_center, np.linalg.norm(box_center))
-        rvec = [((r / m - .5) * b + c) * l for r, m, b, c, l in zip(rvec, mesh_shape, box_shape, box_center, los)]
-        rmesh = sum(ri for ri in rvec)
+        # Use that l^T (Rx + c) = (R^T l)^T (x + R^T c) to avoid computing Rx
+        # Here l = c / ||c|| so R^T l = R^T c / ||R^T c|| 
+        los = safe_div(box_center, jnp.linalg.norm(box_center))
+        rvec = [(r * b / m - b / 2 + c) * l for r, m, b, c, l in zip(rvec, mesh_shape, box_shape, box_center, los)]
+        rmesh = jnp.abs(sum(ri for ri in rvec))
     return rmesh
 
-def radius_pos(pos, box_center, box_shape, mesh_shape, curved_sky=True):
-    """
-    Return distances from center of the positions.
-    """
-    pos = (pos / mesh_shape - .5) * box_shape + box_center
-    # pos = pos * (box_shape / mesh_shape) + (box_center - .5 * box_shape)
-    if curved_sky:
-        rpos = jnp.linalg.norm(pos, axis=-1)
-    else:
-        los = safe_div(box_center, np.linalg.norm(box_center))
-        rpos = (pos * los).sum(-1)
-    return rpos
-    
-def los_pos(pos, box_center, box_shape, mesh_shape, curved_sky=True):
-    """
-    Return line-of-sight(s) of the positions.
-    """
-    if curved_sky:
-        pos = (pos / mesh_shape - .5) * box_shape + box_center
-        los = safe_div(pos, jnp.linalg.norm(pos, axis=-1, keepdims=True))
-    else:
-        los = safe_div(box_center, np.linalg.norm(box_center))
-    return los
 
-
+def scalefactors_and_redges(cosmo, rmin, rmax, n_shells):
+    """
+    Return radius shell edges and corresponding scale factors.
+    """
+    gmin, gmax = a2g(cosmo, chi2a(cosmo, rmax)), a2g(cosmo, chi2a(cosmo, rmin))
+    gs = np.linspace(gmin, gmax, n_shells+1)
+    redges = a2chi(cosmo, g2a(cosmo, gs)) # decreasing distance
+    a = g2a(cosmo, (gs[:-1] + gs[1:]) / 2)
+    return a, redges
 
 
 def parperp2isoap(alpha_par, alpha_perp):
@@ -349,6 +362,76 @@ def isoap2parperp(alpha_iso, alpha_ap):
 
 
 
+################################
+# Cell to Physical to Redshift #
+################################
+def tophysical_mesh(box_center, box_rot, box_shape, mesh_shape, 
+                    cosmology:Cosmology, a_obs=None, curved_sky=True):
+    """
+    Return scale factor mesh for the different configurations of light-cone and sky.
+    """
+    rmesh = radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky)
+    if a_obs is None:
+        a = chi2a(cosmology, rmesh)
+    else:
+        a = a_obs
+    return a
+    
+
+def tophysical(pos, box_center, box_rot, box_shape, mesh_shape, 
+               cosmology:Cosmology, a_obs=None, curved_sky=True):
+    """
+    Return physical positions, distances, line-of-sight(s), and scale factor(s)
+    for the different configurations of light-cone and sky.
+    """
+    pos = cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape)
+    if curved_sky:
+        los = safe_div(pos, jnp.linalg.norm(pos, axis=-1, keepdims=True))
+        rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
+    else:
+        los = safe_div(box_center, np.linalg.norm(box_center))
+        rpos = jnp.abs((pos * los).sum(-1, keepdims=True))
+
+    if a_obs is None:
+        a = chi2a(cosmology, rpos)
+    else:
+        a = a_obs
+    return pos, rpos, los, a
+
+
+def toredshift_param(pos, vel, los, alphas, curved_sky=True):
+    """
+    Redshift-Space Distortions and parametrized Alcock-Paczynski effect.
+    """
+    vel_los = (vel * los).sum(-1, keepdims=True)
+    pos += vel_los * los
+    if curved_sky:
+        pos *= alphas['alpha_iso']
+    else:
+        alpha_par, alpha_perp = isoap2parperp(alphas['alpha_iso'], alphas['alpha_ap'])
+        pos = scale_pos(pos, los, alpha_par, alpha_perp)
+    return pos
+
+
+def toredshift_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky=True):
+    """
+    Redshift-Space Distortions and automatic Alcock-Paczynski effect.
+    """
+    vel_los = (vel * los).sum(-1, keepdims=True)
+    if not curved_sky: # handle positions behind line-of-sight
+        vel_los *= jnp.sign((pos * los).sum(-1, keepdims=True))
+
+    # Use that a_obs = 1 / (1 + z + v/c) = 1 / (1/a + v/H * H/c)
+    a = (1 / a + vel_los * background.Esqr(cosmo, a)**.5 / constants.rh)**-1
+    rpos_new = a2chi(cosmo_fid, a)
+    alpha = safe_div(rpos_new, rpos)
+    if curved_sky:
+        pos *= alpha
+    else:
+        pos = scale_pos(pos, los, alpha, 1)
+    return pos
+
+
 
 
 
@@ -357,17 +440,21 @@ def isoap2parperp(alpha_iso, alpha_ap):
 ########
 # Mask #
 ########
-def mesh2masked(mesh, mask):
-    return mesh[mask]
+def mesh2masked(mesh, mask=None):
+    if mask is None:
+        return mesh
+    else:
+        return mesh[mask]
 
-def masked2mesh(masked, mask):
-    mesh = jnp.zeros(mask.shape)
-    mesh = mesh.at[mask].set(masked)
-    return mesh
+def masked2mesh(masked, mask=None):
+    if mask is None:
+        return masked
+    else:
+        return jnp.zeros(mask.shape).at[mask].set(masked)
 
 def simple_mask(mesh_shape, frac=.5, ord:float=np.inf):
     """
-    Return a simple mask obtained by cropping a fraction of the mesh as an ord-norm ball.
+    Return a simple mask obtained by cropping a radius fraction of the mesh as an ord-norm ball.
     """
     ord = float(ord)
     rx = jnp.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
@@ -386,5 +473,5 @@ def simple_mask(mesh_shape, frac=.5, ord:float=np.inf):
     else:
         rmesh = sum(ri**ord for ri in rvec)**(1/ord)
 
-    mask = rmesh < frac**(1/3)
+    mask = rmesh < frac
     return mask

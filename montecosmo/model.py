@@ -10,17 +10,19 @@ from numpyro import sample, deterministic, render_model
 from numpyro.handlers import seed, condition, block, trace
 from numpyro.infer.util import log_density
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
+from jax.scipy.spatial.transform import Rotation
 
 from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
-                               lagrangian_weights, rsd, kaiser_boost, kaiser_model, kaiser_posterior,
-                               radius_mesh, radius_pos, los_pos,
-                               simple_mask, mesh2masked, masked2mesh)
-from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2g, a2f
+                               kaiser_boost, kaiser_model, kaiser_posterior,
+                               lagrangian_weights,
+                               simple_mask, mesh2masked, masked2mesh,
+                               tophysical_mesh, tophysical, toredshift_param, toredshift_auto,
+                               phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,)
+from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import ysafe_dump, ysafe_load, Path
 
@@ -44,9 +46,10 @@ default_config={
             'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
             'poles':(0,2,4),
             'a_obs':None, # light-cone if None
-            'curved_sky':True,
+            'curved_sky':True, # curved vs. flat sky
+            'ap_param': False, # parametrized AP vs. auto AP
             'box_center':(0.,0.,0.), # in Mpc/h
-            'box_rot':Rotation.from_rotvec((0,0,0)),
+            'box_rotvec':(0.,0.,0.), # rotation vector in radians
             'mask':None, # if float, mask fraction, if str or Path, path to mask file
             # Latents
             'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
@@ -96,6 +99,18 @@ default_config={
                                     },
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},
+                        'alpha_iso': {'group':'bias',
+                                      'label':'{\\alpha}_{\\mathrm{iso}}',
+                                      'loc':1.,
+                                      'scale':.1,
+                                      'scale_fid':0.5,
+                                      },
+                        'alpha_ap': {'group':'bias',
+                                      'label':'{\\alpha}_{\\mathrm{ap}}',
+                                      'loc':1.,
+                                      'scale':.1,
+                                      'scale_fid':0.5,
+                                      },
                         },
             }
 
@@ -136,7 +151,7 @@ class Model():
                 hide_fn = lambda site: False
         return block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=42, samples=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
+    def predict(self, rng=42, samples:int|tuple|dict=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
         """
         Run model conditioned on samples.
         * If samples is None, return a single prediction.
@@ -234,6 +249,9 @@ class Model():
     #################
     # Save and load #
     #################
+    def asdict(self):
+        return asdict(self)
+    
     def save(self, path): # with yaml because not array-like
         ysafe_dump(asdict(self), path)
 
@@ -303,13 +321,14 @@ class FieldLevelModel(Model):
     lpt_order:int
     # Observable
     observable:str
+    poles:tuple
     gxy_density:float
     a_obs:float
     curved_sky:bool
+    ap_param:bool
     box_center:np.ndarray
-    box_rot:Rotation
+    box_rotvec:np.ndarray
     mask:float|str
-    poles:tuple
     # Latents
     precond:str
     latents:dict
@@ -330,6 +349,21 @@ class FieldLevelModel(Model):
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
         # 2*pi factors because of Fourier transform definition
         self.gxy_count = self.gxy_density * self.cell_length**3
+        
+        self.box_rotvec = np.asarray(self.box_rotvec)
+        self.box_rot = Rotation.from_rotvec(self.box_rotvec)
+
+        if self.mask is None:
+            self.mask_mesh = None
+        elif isinstance(self.mask, float):
+            self.mask_mesh = simple_mask(self.mesh_shape, self.mask, ord=np.inf) 
+        elif isinstance(self.mask, (str, Path)):
+            self.mask_mesh = jnp.load(self.mask)
+
+        self.cosmo_fid = get_cosmology(**self.loc_fid)
+        a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
+                                self.cosmo_fid, self.a_obs, self.curved_sky)
+        self.a_fid = g2a(self.cosmo_fid, jnp.mean(a2g(self.cosmo_fid, a)))
 
     def __str__(self):
         out = ""
@@ -383,21 +417,20 @@ class FieldLevelModel(Model):
         cosmology, bias, init = params
 
         if self.evolution=='kaiser':
-            assert not self.curved_sky, "Kaiser model is defined for flat-sky only"
-            # TODO: ligh-cone Kaiser
+            if self.curved_sky:
+                raise NotImplementedError("Kaiser model for curved-sky is undefined.")
+            # TODO: AP param Kaiser
 
-            gxy_mesh = kaiser_model(cosmology, self.a_obs, bE=1+bias['b1'], **init, box_center=self.box_center)
+            a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
+                                cosmology, self.a_obs, self.curved_sky)
+            gxy_mesh = kaiser_model(cosmology, a, bE=1+bias['b1'], **init, box_center=self.box_center)
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
             return gxy_mesh
                     
-        # Create regular grid of particles
+        # Create regular grid of particles, and get their scale factors
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
-
-        if self.a_obs is None:
-            rpos = radius_pos(pos, self.box_center, self.box_shape, self.mesh_shape, self.curved_sky)
-            a = chi2a(cosmology, rpos)
-        else:
-            a = self.a_obs
+        _, _, _, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
+                                cosmology, self.a_obs, self.curved_sky)
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
         lbe_weights = lagrangian_weights(cosmology, jnp.mean(a), pos, self.box_shape, **bias, **init)
@@ -405,36 +438,34 @@ class FieldLevelModel(Model):
         # TODO: light-cone weights?
 
         if self.evolution=='lpt':
-            # NOTE: lpt assumes given mesh follows linear spectral power at a=1, and then correct by growth factor for target a_lpt
+            # NOTE: lpt assumes given mesh is at a=1
             cosmology._workspace = {}  # HACK: temporary fix
             dpos, vel = lpt(cosmology, **init, pos=pos, a=a, order=self.lpt_order, grad_fd=False, lap_fd=False)
             pos += dpos
-            pos, vel = deterministic('lpt_part', (pos, vel))
+            pos, vel = deterministic('lpt_part', jnp.array((pos, vel)))
 
         elif self.evolution=='nbody':
             cosmology._workspace = {}  # HACK: temporary fix
-            part = nbody_bf(cosmology, **init, pos=pos, a=a, n_steps=self.nbody_steps, 
+            pos, vel = nbody_bf(cosmology, **init, pos=pos, a=a, n_steps=self.nbody_steps, 
                                  grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
-            part = deterministic('nbody_part', part)
-            pos, vel = tree.map(lambda x: x[-1], part)
+            pos, vel = deterministic('nbody_part', jnp.array(pos, vel))
+            pos, vel = tree.map(lambda x: x[-1], (pos, vel))
 
-        los = los_pos(pos, self.box_center, self.box_shape, self.mesh_shape, self.curved_sky)
+        pos, rpos, los, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
+                                      cosmology, self.a_obs, self.curved_sky)        
+        vel = cell2phys_vel(vel, self.box_rot, self.box_shape, self.mesh_shape)
+        vel *= a2g(cosmology, a) * a2f(cosmology, a)
+        # growth-time integrator vel := dq / dg = v / (H * g * f), so dq_rsd := v / H = vel * g * f
+        # v in (Mpc/h)*(km/s/(Mpc/h)) = km/s, so dq_rsd in Mpc/h
 
-        if self.a_obs is None:
-            rpos = radius_pos(pos, self.box_center, self.box_shape, self.mesh_shape, self.curved_sky)
-            a = chi2a(cosmology, rpos)
+        # RSD and Alcock-Paczynski effects
+        if self.ap_param:
+            pos = toredshift_param(pos, vel, los, bias, self.curved_sky)
         else:
-            a = self.a_obs
-
-        velp = vel * self.box_shape / self.mesh_shape * a2g(cosmology, a) * a2f(cosmology, a)
-        velp = jnp.linalg.norm(velp, axis=-1)
-        debug.print("vel: {i}", i=(velp.mean(), velp.std(), velp.min(), velp.max()))
-
-        # RSD displacement
-        pos += rsd(cosmology, a, vel, los)
-        pos, vel = deterministic('rsd_part', (pos, vel))
+            pos = toredshift_auto(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) 
 
         # CIC paint weighted by Lagrangian bias expansion weights
+        pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
         gxy_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
         gxy_mesh = deconv_paint(gxy_mesh, order=2)
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
@@ -451,15 +482,8 @@ class FieldLevelModel(Model):
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-
         if self.observable == 'field':
-            if self.mask is None:
-                obs = mesh
-            elif isinstance(self.mask, float):
-                mask = simple_mask(self.mesh_shape, self.mask, ord=np.inf) 
-                obs = mesh2masked(mesh, mask)
-            elif isinstance(self.mask, (str, Path)):
-                raise NotImplementedError("Mask loading not implemented yet")
+            obs = mesh2masked(mesh, self.mask_mesh)
 
             # Gaussian noise
             obs = sample('obs', dist.Normal(obs, (temp / self.gxy_count)**.5))
@@ -581,16 +605,16 @@ class FieldLevelModel(Model):
             transfer = pmeshk**.5
 
         elif self.precond=='kaiser':
-            cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
-            boost_fid = kaiser_boost(cosmo_fid, self.a_obs, bE_fid, self.mesh_shape, self.box_center)
-            pmeshk_fid = lin_power_mesh(cosmo_fid, self.mesh_shape, self.box_shape)
+            bE_fid = 1 + self.loc_fid['b1']
+            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.mesh_shape, self.box_center)
+            pmeshk_fid = lin_power_mesh(self.cosmo_fid, self.mesh_shape, self.box_shape)
 
             scale = (1 + self.gxy_count * boost_fid**2 * pmeshk_fid)**.5
             transfer = pmeshk**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
-            boost = kaiser_boost(cosmo, self.a_obs, bE, self.mesh_shape, self.box_center)
+            boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.box_center)
 
             scale = (1 + self.gxy_count * boost**2 * pmeshk)**.5
             transfer = pmeshk**.5 / scale
@@ -642,6 +666,11 @@ class FieldLevelModel(Model):
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv)
 
+    def mesh2masked(self, mesh):
+        return mesh2masked(mesh, self.mask_mesh)
+    
+    def masked2mesh(self, mesh):
+        return masked2mesh(mesh, self.mask_mesh)
 
     ########################
     # Chains init and load #
@@ -666,22 +695,13 @@ class FieldLevelModel(Model):
         if jnp.isrealobj(delta_obs):
             delta_obs = jnp.fft.rfftn(delta_obs)
 
-        cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid['b1']
-        means, stds = kaiser_posterior(delta_obs, cosmo_fid, bE_fid, self.a_obs, 
+        bE_fid = 1 + self.loc_fid['b1']
+        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.a_fid, 
                                        self.box_shape, self.gxy_count, self.box_center)
         
         post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
-        post_mesh = temp**.5 * stds * post_mesh + means 
-
         # post_mesh2 = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
-        # # post_mesh = temp**.5 * stds * post_mesh + means 
-
-        # diff = post_mesh - post_mesh2
-        # print("types:", *(str(post_mesh.dtype), str(post_mesh2.dtype), str(type(post_mesh)), str(type(post_mesh2))))
-        # debug.print("diff: {i}", i=(diff.mean(), diff.std(), diff.min(), diff.max()))
-        
-        # means, stds = cgh2rg(means), cgh2rg(temp**.5 * stds, norm="amp")
-        # post_mesh = rg2cgh(stds * jr.normal(rng, means.shape) + means)
+        post_mesh = temp**.5 * stds * post_mesh + means 
 
         init_params = self.loc_fid | {'init_mesh': post_mesh}
         if base:
