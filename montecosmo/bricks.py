@@ -196,24 +196,18 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 # Bias #
 ########
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
-                       b1, b2, bs2, bn2, init_mesh, **bias):
+                       b1, b2, bs2, bn2, init_mesh):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
     """    
-    # Get init_mesh at observation scale factor
-    init_mesh *= a2g(cosmo, a)
-    # if jnp.isrealobj(init_mesh):
-    #     delta = init_mesh
-    #     init_mesh = jnp.fft.rfftn(delta)
-    # else:
-    delta = jnp.fft.irfftn(init_mesh)
     # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases
     # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
     # init_mesh *= jnp.exp( - kk_box / k_nyquist**2)
-    # delta = jnp.fft.irfftn(init_mesh)
+    delta = jnp.fft.irfftn(init_mesh)
+    growths = a2g(cosmo, a)
 
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape)
@@ -224,12 +218,12 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     weights = 1.
     
     # Apply b1, punctual term
-    delta_part = cic_read(delta, pos)
-    weights = weights + b1 * delta_part
+    delta_pos = cic_read(delta, pos) * growths
+    weights = weights + b1 * delta_pos
 
     # Apply b2, punctual term
-    delta2_part = delta_part**2
-    weights = weights + b2 * (delta2_part - delta2_part.mean())
+    delta2_pos = delta_pos**2
+    weights = weights + b2 * (delta2_pos - delta2_pos.mean())
 
     # Apply bshear2, non-punctual term
     pot = init_mesh * invlaplace_kernel(kvec)
@@ -242,14 +236,14 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
             # Add strict-up-triangle terms (counted twice)
             shear2 = shear2 + 2 * jnp.fft.irfftn( - ki * kj * pot)**2
 
-    shear2_part = cic_read(shear2, pos)
-    weights = weights + bs2 * (shear2_part - shear2_part.mean())
+    shear2_pos = cic_read(shear2, pos) * growths**2
+    weights = weights + bs2 * (shear2_pos - shear2_pos.mean())
 
     # Apply bnabla2, non-punctual term
-    delta_nl = jnp.fft.irfftn( - kk_box * init_mesh)
+    delta_nab2 = jnp.fft.irfftn( - kk_box * init_mesh)
 
-    delta_nl_part = cic_read(delta_nl, pos)
-    weights = weights + bn2 * delta_nl_part
+    delta_nab2_part = cic_read(delta_nab2, pos) * growths
+    weights = weights + bn2 * delta_nab2_part
 
     return weights
 
@@ -350,6 +344,7 @@ def parperp2isoap(alpha_par, alpha_perp):
     alpha_iso = (alpha_par * alpha_perp**2)**(1/3)
     alpha_ap = alpha_par / alpha_perp
     return alpha_iso, alpha_ap
+
 
 def isoap2parperp(alpha_iso, alpha_ap):
     """

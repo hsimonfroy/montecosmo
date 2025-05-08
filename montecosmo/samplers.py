@@ -335,7 +335,7 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             num_effective_samples=256, # NOTE: higher value implies slower averaging rate
             # TODO: add config as first guess (next blackjax update)
             )
-        debug.print("Performed {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)  
+        debug.print("Perform {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)  
 
     return state, config
 
@@ -494,7 +494,7 @@ def mams_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             diagonal_preconditioning=diagonal_preconditioning,
             params=config,
             )
-        debug.print("Performed {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)
+        debug.print("Perform {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)
 
     return state, config
 

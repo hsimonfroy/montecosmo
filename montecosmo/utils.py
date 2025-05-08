@@ -58,8 +58,9 @@ def safe_div(x, y):
     Uses the "double-where" trick for safe gradient, 
     see https://github.com/jax-ml/jax/issues/5039
     """
-    y_nozeros = jnp.where(y==0, 1, y)
-    return jnp.where(y==0, 0, x / y_nozeros)
+    where_fn = jnp.where if isinstance(x, jnp.ndarray) or isinstance(y, jnp.ndarray) else np.where
+    y_nozeros = where_fn(y==0, 1, y)
+    return where_fn(y==0, 0, x / y_nozeros)
 
 
 

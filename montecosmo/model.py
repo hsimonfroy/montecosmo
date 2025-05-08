@@ -57,59 +57,57 @@ default_config={
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
                                     'scale':0.5,
-                                    'scale_fid':0.02,
-                                    # 'scale_fid':5e-3,
+                                    'scale_fid':1e-2,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                                     'high': 1.},
                         'sigma8': {'group':'cosmo',
                                     'label':'{\\sigma}_8',
                                     'loc':0.8102,
                                     'scale':0.5,
-                                    'scale_fid':0.02,
-                                    # 'scale_fid':3e-3,
+                                    'scale_fid':1e-2,
                                     'low': 0.,
                                     'high':jnp.inf,},
                         'b1': {'group':'bias',
                                     'label':'{b}_1',
                                     'loc':1.,
                                     'scale':0.5,
-                                    'scale_fid':0.04,
-                                    # 'scale_fid':6e-3,
+                                    'scale_fid':1e-2,
                                     },
                         'b2': {'group':'bias',
                                     'label':'{b}_2',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.02,
-                                    # 'scale_fid':4e-3,
+                                    'scale_fid':1e-4,
                                     },
                         'bs2': {'group':'bias',
                                     'label':'{b}_{s^2}',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.08,
-                                    # 'scale_fid':2e-2,
+                                    'scale_fid':1e-3,
                                     },
                         'bn2': {'group':'bias',
                                     'label':'{b}_{\\nabla^2}',
                                     'loc':0.,
                                     'scale':2.,
-                                    'scale_fid':0.2,
-                                    # 'scale_fid':2e-2,
+                                    'scale_fid':1e-3,
                                     },
                         'init_mesh': {'group':'init',
                                       'label':'{\\delta}_L',},
-                        'alpha_iso': {'group':'bias',
+                        'alpha_iso': {'group':'ap',
                                       'label':'{\\alpha}_{\\mathrm{iso}}',
                                       'loc':1.,
                                       'scale':.1,
-                                      'scale_fid':0.5,
+                                      'scale_fid':1e-2,
+                                      'low':0.,
+                                      'high':jnp.inf,
                                       },
-                        'alpha_ap': {'group':'bias',
-                                      'label':'{\\alpha}_{\\mathrm{ap}}',
+                        'alpha_ap': {'group':'ap',
+                                      'label':'{\\alpha}_{\\mathrm{AP}}',
                                       'loc':1.,
                                       'scale':.1,
-                                      'scale_fid':0.5,
+                                      'scale_fid':1e-2,
+                                      'low':0.,
+                                      'high':jnp.inf,
                                       },
                         },
             }
@@ -198,7 +196,7 @@ class Model():
     ############
     # Wrappers #
     ############
-    def logpdf(self, params):
+    def logpdf(self, params={}):
         """
         A log-density function of the model. In particular, it is the log-*probability*-density function 
         with respect to the full set of variables, i.e. E[e^logpdf] = 1.
@@ -207,10 +205,10 @@ class Model():
         """
         return log_density(self.model, (), {}, params)[0]
 
-    def potential(self, params):
+    def potential(self, params={}):
         return - self.logpdf(params)
     
-    def force(self, params):
+    def force(self, params={}):
         return grad(self.logpdf)(params) # force = - grad potential = grad logpdf
     
     def trace(self, rng):
@@ -220,9 +218,14 @@ class Model():
         self.model = seed(self.model, rng_seed=rng)
 
     def condition(self, data={}, frombase=False):
-        # Optionally reparametrize base to sample params
+        """
+        Substitue rnadom variables by their provided values, 
+        optionally reparametrizing base values into sample values.
+        Values are stored in self.data.
+        """
         if frombase:
             data = self.reparam(data, inv=True)
+        self.data = data
         self.model = condition(self.model, data=data)
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
@@ -339,6 +342,7 @@ class FieldLevelModel(Model):
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
         self.loc_fid = self._loc_fid()
+        self.data = {} # to store observed values
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
@@ -393,37 +397,36 @@ class FieldLevelModel(Model):
         """
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
-        for g in ['cosmo', 'bias']:
+        for g in ['cosmo', 'bias', 'ap']:
             dic = self._sample(self.groups[g]) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
-        cosmo, bias = tup
+        cosmo, bias, ap = tup
         cosmology = get_cosmology(**cosmo)        
 
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_'
 
-        bE = 1 + bias['b1']
-        scale, transfer = self._precond_scale_and_transfer(cosmology, bE)
+        scale, transfer = self._precond_scale_and_transfer(cosmology, bias)
         init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
-        return cosmology, bias, init
+        return cosmology, bias, ap, init
 
 
     def evolve(self, params:tuple):
-        cosmology, bias, init = params
+        cosmology, bias, ap, init = params
 
         if self.evolution=='kaiser':
             if self.curved_sky:
                 raise NotImplementedError("Kaiser model for curved-sky is undefined.")
-            # TODO: AP param Kaiser
+            # TODO: AP param Kaiser?
 
             a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
                                 cosmology, self.a_obs, self.curved_sky)
-            gxy_mesh = kaiser_model(cosmology, a, bE=1+bias['b1'], **init, box_center=self.box_center)
+            gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, box_center=self.box_center)
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
             return gxy_mesh
                     
@@ -433,9 +436,8 @@ class FieldLevelModel(Model):
                                 cosmology, self.a_obs, self.curved_sky)
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, jnp.mean(a), pos, self.box_shape, **bias, **init)
+        lbe_weights = lagrangian_weights(cosmology, a, pos, self.box_shape, **bias, **init)
         # TODO: gaussian lagrangian weights
-        # TODO: light-cone weights?
 
         if self.evolution=='lpt':
             # NOTE: lpt assumes given mesh is at a=1
@@ -460,7 +462,7 @@ class FieldLevelModel(Model):
 
         # RSD and Alcock-Paczynski effects
         if self.ap_param:
-            pos = toredshift_param(pos, vel, los, bias, self.curved_sky)
+            pos = toredshift_param(pos, vel, los, ap, self.curved_sky)
         else:
             pos = toredshift_auto(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) 
 
@@ -507,22 +509,24 @@ class FieldLevelModel(Model):
         """
         Transform sample params into base params.
         """
+        # Retrieve potential substituted params
+        params_ = self.data | params if not inv else params
+
         # Extract groups from params
-        groups = ['cosmo','bias','init']
+        groups = ['cosmo','bias','ap','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
-        params = Chains(params, self.groups | self.groups_).get(key) # use chain querying
-        cosmo_, bias_, init, rest = (q.data for q in params)
-        # cosmo_, bias, init = self._get_by_groups(params, ['cosmo','bias','init'], base=inv)
+        params_ = Chains(params_, self.groups | self.groups_).get(key) # use chain querying
+        cosmo_, bias_, ap_, init, rest = (q.data for q in params_)
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
         bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+        ap = samp2base(ap_, self.latents, inv=inv, temp=temp)
 
         # Initial conditions
         if len(init) > 0:
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            bE = 1 + (bias_['b1'] if inv else bias['b1'])
-            _, transfer = self._precond_scale_and_transfer(cosmology, bE)
+            _, transfer = self._precond_scale_and_transfer(cosmology, bias_ if inv else bias)
 
             if not fourier and inv:
                 init = tree.map(lambda x: jnp.fft.rfftn(x), init)
@@ -532,7 +536,11 @@ class FieldLevelModel(Model):
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
 
-        return rest | cosmo | bias | init # possibly update rest
+        out = rest | cosmo | bias | ap | init # possibly update rest
+        if not inv: # do not return data
+            out = {k:v for k,v in out.items() if k in params or k+'_' in params}
+        return out
+
 
 
     ###########
@@ -594,7 +602,7 @@ class FieldLevelModel(Model):
         return dic            
 
 
-    def _precond_scale_and_transfer(self, cosmo:Cosmology, bE):
+    def _precond_scale_and_transfer(self, cosmo:Cosmology, bias):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
@@ -614,6 +622,7 @@ class FieldLevelModel(Model):
             scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
+            bE = 1 + bias['b1']
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.box_center)
 
             scale = (1 + self.gxy_count * boost**2 * pmeshk)**.5
