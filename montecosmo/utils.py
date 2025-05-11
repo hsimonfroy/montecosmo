@@ -18,6 +18,24 @@ from numpyro.distributions import Distribution, constraints, TruncatedNormal, Un
 
 
 
+def safe_div(x, y):
+    """
+    Safe division, where division by zero is zero.
+    Uses the "double-where" trick for safe gradient, 
+    see https://github.com/jax-ml/jax/issues/5039
+    """
+    where_fn = jnp.where if isinstance(x, jnp.ndarray) or isinstance(y, jnp.ndarray) else np.where
+    y_nozeros = where_fn(y==0, 1, y)
+    return where_fn(y==0, 0, x / y_nozeros)
+
+def nvmap(fun, n):
+    """
+    Nest vmap n times.
+    """
+    for _ in range(n):
+        fun = vmap(fun)
+    return fun
+
 def vlim(a, level=1., scale=1., axis=0):
     """
     Return robust inferior and superior limit values of an array,
@@ -26,7 +44,6 @@ def vlim(a, level=1., scale=1., axis=0):
     vmin, vmax = jnp.quantile(a, (1 - level) / 2, axis=axis), jnp.quantile(a, (1 + level) / 2, axis=axis)
     vmean, vdiff = (vmax + vmin) / 2, scale*(vmax - vmin) / 2
     return jnp.stack((vmean - vdiff, vmean + vdiff), axis=-1)
-
 
 def get_jit(*args, **kwargs):
     """
@@ -43,32 +60,12 @@ def get_jit(*args, **kwargs):
     return custom_jit
 
 
-def nvmap(fun, n):
-    """
-    Nest vmap n times.
-    """
-    for _ in range(n):
-        fun = vmap(fun)
-    return fun
-
-
-def safe_div(x, y):
-    """
-    Safe division, where division by zero is zero.
-    Uses the "double-where" trick for safe gradient, 
-    see https://github.com/jax-ml/jax/issues/5039
-    """
-    where_fn = jnp.where if isinstance(x, jnp.ndarray) or isinstance(y, jnp.ndarray) else np.where
-    y_nozeros = where_fn(y==0, 1, y)
-    return where_fn(y==0, 0, x / y_nozeros)
-
-
 
 #################
 # Dump and Load #
 #################
 class Path(Path):
-    """Pathlib path but with concatenation operator. Please tell me why it is not already implemented."""
+    """Pathlib path but with right-concatenation operator. Please tell me why it is not natively implemented."""
     def __add__(self, other):
         if isinstance(other, (str, Path)):
             return Path(str(self) + str(other))

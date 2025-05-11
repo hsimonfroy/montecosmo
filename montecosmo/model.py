@@ -19,9 +19,10 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, 
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_weights,
-                               simple_mask, mesh2masked, masked2mesh,
+                               simple_window, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical, toredshift_param, toredshift_auto,
-                               phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,)
+                               phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
+                               catalog2mesh, catalog2window, pos_mesh)
 from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import ysafe_dump, ysafe_load, Path
@@ -35,6 +36,8 @@ default_config={
             # Mesh and box parameters
             'mesh_shape':3 * (64,), # int
             'cell_length': 5., # in Mpc/h
+            'box_center':(0.,0.,0.), # in Mpc/h
+            'box_rotvec':(0.,0.,0.), # rotation vector in radians
             # 'box_shape':3 * (320.,), # in Mpc/h
             # Evolution
             'evolution':'lpt', # kaiser, lpt, nbody
@@ -48,9 +51,7 @@ default_config={
             'a_obs':None, # light-cone if None
             'curved_sky':True, # curved vs. flat sky
             'ap_param': False, # parametrized AP vs. auto AP
-            'box_center':(0.,0.,0.), # in Mpc/h
-            'box_rotvec':(0.,0.,0.), # rotation vector in radians
-            'mask':None, # if float, mask fraction, if str or Path, path to mask file
+            'window':None, # if float, padded fraction, if str or Path, path to window mesh file
             # Latents
             'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
             'latents': {'Omega_m': {'group':'cosmo', 
@@ -104,6 +105,14 @@ default_config={
                         'alpha_ap': {'group':'ap',
                                       'label':'{\\alpha}_{\\mathrm{AP}}',
                                       'loc':1.,
+                                      'scale':.1,
+                                      'scale_fid':1e-2,
+                                      'low':0.,
+                                      'high':jnp.inf,
+                                      },
+                        'Wbar': {'group':'syst',
+                                      'label':'{\\bar{W}}',
+                                      'loc':1e-3, # in galaxy / (Mpc/h)^3
                                       'scale':.1,
                                       'scale_fid':1e-2,
                                       'low':0.,
@@ -221,11 +230,12 @@ class Model():
         """
         Substitue rnadom variables by their provided values, 
         optionally reparametrizing base values into sample values.
-        Values are stored in self.data.
+        Values are stored in attribute data.
         """
         if frombase:
+            self.data |= data
             data = self.reparam(data, inv=True)
-        self.data = data
+        self.data |= data
         self.model = condition(self.model, data=data)
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
@@ -317,6 +327,8 @@ class FieldLevelModel(Model):
     # Mesh and box parameters
     mesh_shape:np.ndarray
     cell_length:float
+    box_center:np.ndarray
+    box_rotvec:np.ndarray
     # Evolution
     evolution:str
     nbody_steps:int
@@ -329,9 +341,7 @@ class FieldLevelModel(Model):
     a_obs:float
     curved_sky:bool
     ap_param:bool
-    box_center:np.ndarray
-    box_rotvec:np.ndarray
-    mask:float|str
+    window:float|str
     # Latents
     precond:str
     latents:dict
@@ -346,7 +356,10 @@ class FieldLevelModel(Model):
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
+        self.cell_length = float(self.cell_length)
         self.box_center = np.asarray(self.box_center)
+        self.box_rotvec = np.asarray(self.box_rotvec)
+        self.box_rot = Rotation.from_rotvec(self.box_rotvec)
         self.box_shape = self.mesh_shape * self.cell_length
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
@@ -354,15 +367,16 @@ class FieldLevelModel(Model):
         # 2*pi factors because of Fourier transform definition
         self.gxy_count = self.gxy_density * self.cell_length**3
         
-        self.box_rotvec = np.asarray(self.box_rotvec)
-        self.box_rot = Rotation.from_rotvec(self.box_rotvec)
-
-        if self.mask is None:
-            self.mask_mesh = None
-        elif isinstance(self.mask, float):
-            self.mask_mesh = simple_mask(self.mesh_shape, self.mask, ord=np.inf) 
-        elif isinstance(self.mask, (str, Path)):
-            self.mask_mesh = jnp.load(self.mask)
+        if self.window is None:
+            self.wind_mesh = 1.
+            self.mask = None
+        elif isinstance(self.window, float):
+            self.wind_mesh = simple_window(self.mesh_shape, self.window, ord=np.inf) 
+            self.mask = self.wind_mesh > 0
+        elif isinstance(self.window, (str, Path)):
+            self.window = str(self.window) # cast to str to allow yaml saving
+            self.wind_mesh = np.load(self.window)
+            self.mask = self.wind_mesh > 0
 
         self.cosmo_fid = get_cosmology(**self.loc_fid)
         a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
@@ -397,11 +411,11 @@ class FieldLevelModel(Model):
         """
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
-        for g in ['cosmo', 'bias', 'ap']:
+        for g in ['cosmo', 'bias', 'ap', 'syst']:
             dic = self._sample(self.groups[g]) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
-        cosmo, bias, ap = tup
+        cosmo, bias, ap, syst = tup
         cosmology = get_cosmology(**cosmo)        
 
         # Sample, reparametrize, and register initial conditions
@@ -413,11 +427,11 @@ class FieldLevelModel(Model):
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
-        return cosmology, bias, ap, init
+        return cosmology, bias, ap, syst, init
 
 
     def evolve(self, params:tuple):
-        cosmology, bias, ap, init = params
+        cosmology, bias, ap, syst, init = params
 
         if self.evolution=='kaiser':
             if self.curved_sky:
@@ -428,7 +442,7 @@ class FieldLevelModel(Model):
                                 cosmology, self.a_obs, self.curved_sky)
             gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, box_center=self.box_center)
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
-            return gxy_mesh
+            return gxy_mesh, syst
                     
         # Create regular grid of particles, and get their scale factors
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
@@ -475,20 +489,25 @@ class FieldLevelModel(Model):
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
-        return gxy_mesh # NOTE: mesh is 1+delta_obs
+        return gxy_mesh, syst # NOTE: mesh is 1+delta_obs
 
 
-    def likelihood(self, mesh, temp=1.):
+    def likelihood(self, params:tuple, temp=1.):
         """
         A likelihood for cosmological model.
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
+        mesh, syst = params
+
         if self.observable == 'field':
-            obs = mesh2masked(mesh, self.mask_mesh)
+            obs = mesh2masked(mesh, self.mask)
+            wind = mesh2masked(self.wind_mesh, self.mask)
+            obs *= wind * syst['Wbar'] * self.cell_length**3
 
             # Gaussian noise
-            obs = sample('obs', dist.Normal(obs, (temp / self.gxy_count)**.5))
+            obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
+            # obs = sample('obs', dist.Normal(obs, (temp / self.gxy_count)**.5))
             return obs 
 
         # elif self.obs == 'pk':
@@ -510,18 +529,19 @@ class FieldLevelModel(Model):
         Transform sample params into base params.
         """
         # Retrieve potential substituted params
-        params_ = self.data | params if not inv else params
+        params_ = self.data | params
 
         # Extract groups from params
-        groups = ['cosmo','bias','ap','init']
+        groups = ['cosmo','bias','ap','syst','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
         params_ = Chains(params_, self.groups | self.groups_).get(key) # use chain querying
-        cosmo_, bias_, ap_, init, rest = (q.data for q in params_)
+        cosmo_, bias_, ap_, syst_, init, rest = (q.data for q in params_)
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
         bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
         ap = samp2base(ap_, self.latents, inv=inv, temp=temp)
+        syst = samp2base(syst_, self.latents, inv=inv, temp=temp)
 
         # Initial conditions
         if len(init) > 0:
@@ -536,9 +556,10 @@ class FieldLevelModel(Model):
             if not fourier and not inv:
                 init = tree.map(lambda x: jnp.fft.irfftn(x), init)
 
-        out = rest | cosmo | bias | ap | init # possibly update rest
-        if not inv: # do not return data
-            out = {k:v for k,v in out.items() if k in params or k+'_' in params}
+        out = cosmo | bias | ap | syst | init
+        out = {k:v for k,v in out.items() if (k[:-1] if inv else k+'_') in params}
+        rest = {k:v for k,v in rest.items() if k in params} # do not return data
+        out = rest | out # possibly update rest
         return out
 
 
@@ -579,7 +600,6 @@ class FieldLevelModel(Model):
                     new[name]['scale_fid'] = (high - low) / 12**.5
         return new
 
-
     def _sample(self, names:str|list):
         """
         Sample latent parameters from latents config.
@@ -600,7 +620,6 @@ class FieldLevelModel(Model):
             else:
                 dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
         return dic            
-
 
     def _precond_scale_and_transfer(self, cosmo:Cosmology, bias):
         """
@@ -631,7 +650,6 @@ class FieldLevelModel(Model):
         
         return scale, transfer
     
-
     def _groups(self, base=True):
         """
         Return groups from latents config.
@@ -645,7 +663,6 @@ class FieldLevelModel(Model):
             groups[group].append(name if base else name+'_')
         return groups
 
-
     def _labels(self):
         """
         Return labels from latents config
@@ -657,13 +674,49 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
     
-
     def _loc_fid(self):
         """
         Return fiducial location values from latents config.
         """
         return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
     
+
+    ########
+    # Data #
+    ########
+    def mesh2masked(self, mesh):
+        return mesh2masked(mesh, self.mask)
+    
+    def masked2mesh(self, mesh):
+        return masked2mesh(mesh, self.mask)
+    
+    def pos_mesh(self):
+        return pos_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+    
+
+    def add_window(self, load_path:str|Path, cell_budget, padding=0., save_path:str|Path=None):
+        """
+        Compute and save a painted window mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
+        """
+        wind_mesh, cell_length, box_center, box_rotvec = catalog2window(load_path, self.cosmo_fid, cell_budget, padding)
+        if save_path is None:
+            save_path = Path(load_path).with_suffix('.npy')
+        save_path = str(save_path) # cast to str to allow yaml saving
+        np.save(save_path, wind_mesh)
+
+        self.window = save_path
+        self.mesh_shape = wind_mesh.shape
+        self.cell_length = cell_length
+        self.box_center = box_center
+        self.box_rotvec = box_rotvec
+        self.__post_init__() # update other model attributes
+
+    def catalog2mesh(self, path:str|Path):
+        """
+        Compute a painted mesh from a RA, DEC, Z .fits catalog.
+        """
+        return catalog2mesh(path, self.cosmo_fid, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+
 
     ###########
     # Metrics #
@@ -675,11 +728,6 @@ class FieldLevelModel(Model):
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv)
 
-    def mesh2masked(self, mesh):
-        return mesh2masked(mesh, self.mask_mesh)
-    
-    def masked2mesh(self, mesh):
-        return masked2mesh(mesh, self.mask_mesh)
 
     ########################
     # Chains init and load #
@@ -709,7 +757,7 @@ class FieldLevelModel(Model):
                                        self.box_shape, self.gxy_count, self.box_center)
         
         post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
-        # post_mesh2 = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
+        # post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
 
         init_params = self.loc_fid | {'init_mesh': post_mesh}

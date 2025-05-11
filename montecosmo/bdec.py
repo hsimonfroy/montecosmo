@@ -10,9 +10,12 @@ from functools import partial
 def safe_div(x, y):
     """
     Safe division, where division by zero is zero.
+    Uses the "double-where" trick for safe gradient, 
+    see https://github.com/jax-ml/jax/issues/5039
     """
-    y_nozeros = jnp.where(y==0, 1, y)
-    return jnp.where(y==0, 0, x / y_nozeros)
+    where_fn = jnp.where if isinstance(x, jnp.ndarray) or isinstance(y, jnp.ndarray) else np.where
+    y_nozeros = where_fn(y==0, 1, y)
+    return where_fn(y==0, 0, x / y_nozeros)
 
 def vsearchsorted(a, v, side='left', sorter=None):
     return vmap(vmap(partial(jnp.searchsorted, side=side, sorter=sorter), in_axes=(0, None)), in_axes=(None, 0))(a, v)
@@ -185,9 +188,9 @@ def argmedian(a, axis=-1):
 
 
 
-####################
-# Credible Regions #
-####################
+#################
+# Credible Sets #
+#################
 def credint(x, p=.95, axis=0, weights=None, type='small', ord=1):
     """
     Compute the p-Credible Interval (CI),
@@ -234,10 +237,10 @@ def qbci(x, p=.95, axis=0, weights=None, type='med', ord=1):
     return jnp.stack([q_low, q_high], -1)
 
 
-def qbcr(x, p=.95, weights=None, type='med', norm='inf'):
+def qbcs(x, p=.95, weights=None, type='med', norm='inf'):
     """
-    Compute the p-Quantile-Based Credible Region (QBCR), 
-    i.e. the `norm`-norm spherical region of proba `p`, where its center on dimension `i` is
+    Compute the p-Quantile-Based Credible Set (QBCS), 
+    i.e. the `norm`-norm spherical set of proba `p`, where its center on dimension `i` is
 
     * the Lowest if `type[i]=='low'` (LCR)
     * the Median if `type[i]=='med'` (MCR)
@@ -245,7 +248,7 @@ def qbcr(x, p=.95, weights=None, type='med', norm='inf'):
 
     `x` is assumed to be of shape (*n_batch, n_samples, n_dim), and `type` is broadcasted to shape (n_dim,).
     
-    Return both the region center and radius (in `norm`-norm). Center is of shape (*n_batch, n_dim,), and radius is of shape (*n_p, *n_batch,).
+    Return both the set center and radius (in `norm`-norm). Center is of shape (*n_batch, n_dim,), and radius is of shape (*n_p, *n_batch,).
     """
     x = jnp.atleast_2d(x)
     type = np.broadcast_to(type, x.shape[-1])
@@ -339,10 +342,10 @@ def sci(x, p=.95, axis=0, weights=None, ord=1):
     return jnp.stack([q_low, q_high], axis=-1).reshape(*p_shape, *out_shape, 2)
 
 
-def scr(x, p=.95):
+def scs(x, p=.95):
     """
-    Compute the p-Smallest Credible Region (SCR) / p-Highest Density Region (HDR),
-    i.e. the smallest region of proba `p`.
+    Compute the p-Smallest Credible Set (SCS) / p-Highest Density Region (HDR),
+    i.e. the smallest set of proba `p`.
 
     Return both a KDE mesh of the samples density, 
     and the density level corresponding to `p`.

@@ -4,7 +4,9 @@ import numpy as np
 from jax import numpy as jnp, tree, debug
 import jax_cosmo as jc
 from jax_cosmo import Cosmology, background, constants
-from jaxpm.painting import cic_read
+from jaxpm.painting import cic_read, cic_paint
+import fitsio
+from jax.scipy.spatial.transform import Rotation
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
 from montecosmo.nbody import rfftk, invlaplace_kernel, a2g, g2a, a2f, a2chi, chi2a
@@ -207,7 +209,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
     # init_mesh *= jnp.exp( - kk_box / k_nyquist**2)
     delta = jnp.fft.irfftn(init_mesh)
-    growths = a2g(cosmo, a)
+    growths = a2g(cosmo, a).squeeze()
 
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape)
@@ -253,7 +255,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 ##############################
 # Distance and Line-Of-Sight #
 ##############################
-def cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape):
+def cell2phys_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape):
     """
     Cell positions to physical positions.
     """
@@ -263,7 +265,7 @@ def cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape):
     pos += box_center
     return pos
 
-def phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape):
+def phys2cell_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape):
     """
     Physical positions to cell positions.
     """
@@ -273,7 +275,7 @@ def phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape):
     pos /= (box_shape / mesh_shape)
     return pos
 
-def cell2phys_vel(vel, box_rot, box_shape, mesh_shape):
+def cell2phys_vel(vel, box_rot:Rotation, box_shape, mesh_shape):
     """
     Cell velocities to physical velocities.
     """
@@ -281,7 +283,7 @@ def cell2phys_vel(vel, box_rot, box_shape, mesh_shape):
     vel = box_rot.apply(vel)
     return vel
 
-def phys2cell_vel(vel, box_rot, box_shape, mesh_shape):
+def phys2cell_vel(vel, box_rot:Rotation, box_shape, mesh_shape):
     """
     Physical velocities to cell velocities.
     """
@@ -299,10 +301,11 @@ def scale_pos(pos, los, scale_par, scale_perp):
     pos_perp *= scale_perp
     return pos_par + pos_perp
 
-def radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky=True):
+def radius_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, curved_sky=True):
     """
     Return physical distances of the mesh cells.
     """
+    # Only Nx*Ny*Nz memory instead of naive Nx*Ny*Nz*3 obtained from mesh of positions 
     rx = np.arange(mesh_shape[0]) + .5
     ry = np.arange(mesh_shape[1]) + .5
     rz = np.arange(mesh_shape[2]) + .5
@@ -324,6 +327,16 @@ def radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky=True):
         rvec = [(r * b / m - b / 2 + c) * l for r, m, b, c, l in zip(rvec, mesh_shape, box_shape, box_center, los)]
         rmesh = jnp.abs(sum(ri for ri in rvec))
     return rmesh
+
+def pos_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape):
+    """
+    Return a mesh of the physical positions of the mesh cells.
+    """
+    # In most of use cases, desired computation requires only Nx*Ny*Nz memory, instead of this Nx*Ny*Nz*3 
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3,-1).T + .5
+    pos = cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape)
+    return pos.reshape(tuple(mesh_shape) + (3,))
+
 
 
 def scalefactors_and_redges(cosmo, rmin, rmax, n_shells):
@@ -360,7 +373,7 @@ def isoap2parperp(alpha_iso, alpha_ap):
 ################################
 # Cell to Physical to Redshift #
 ################################
-def tophysical_mesh(box_center, box_rot, box_shape, mesh_shape, 
+def tophysical_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, 
                     cosmology:Cosmology, a_obs=None, curved_sky=True):
     """
     Return scale factor mesh for the different configurations of light-cone and sky.
@@ -373,7 +386,7 @@ def tophysical_mesh(box_center, box_rot, box_shape, mesh_shape,
     return a
     
 
-def tophysical(pos, box_center, box_rot, box_shape, mesh_shape, 
+def tophysical(pos, box_center, box_rot:Rotation, box_shape, mesh_shape, 
                cosmology:Cosmology, a_obs=None, curved_sky=True):
     """
     Return physical positions, distances, line-of-sight(s), and scale factor(s)
@@ -432,9 +445,9 @@ def toredshift_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology
 
 
 
-########
-# Mask #
-########
+###################
+# Mask and Window #
+###################
 def mesh2masked(mesh, mask=None):
     if mask is None:
         return mesh
@@ -447,9 +460,45 @@ def masked2mesh(masked, mask=None):
     else:
         return jnp.zeros(mask.shape).at[mask].set(masked)
 
-def simple_mask(mesh_shape, frac=.5, ord:float=np.inf):
+def radecrad2cart(ra, dec, radius):
+    ra = jnp.radians(ra)
+    dec = jnp.radians(dec)
+    x = jnp.cos(dec) * jnp.cos(ra)
+    y = jnp.cos(dec) * jnp.sin(ra)
+    z = jnp.sin(dec)
+    cart = jnp.moveaxis(radius * jnp.stack((x, y, z)), 0, -1)
+    return cart
+
+def cart2radecrad(cart:jnp.ndarray):
+    radius = jnp.linalg.norm(cart, axis=-1)
+    x, y, z = jnp.moveaxis(cart, -1, 0)
+    ra = jnp.degrees(jnp.arctan2(y, x))
+    dec = jnp.degrees(jnp.arcsin(z / radius))
+    return ra, dec, radius
+
+def radecz2cart(cosmo:Cosmology, radecz:dict):
     """
-    Return a simple mask obtained by cropping a radius fraction of the mesh as an ord-norm ball.
+    Convert RA, DEC, Z dictionary (in degrees) to cartesian array (in Mpc/h).
+    """
+    ra = jnp.array(radecz['RA'])
+    dec = jnp.array(radecz['DEC'])
+    radius = a2chi(cosmo, jnp.array(1 / (1 + radecz['Z'])))
+    cart = radecrad2cart(ra, dec, radius)
+    return cart
+
+def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
+    """
+    Convert cartesian array (in Mpc/h) to RA, DEC, Z dictionary (in degrees).
+    """
+    ra, dec, radius = cart2radecrad(cart)
+    z = 1 / chi2a(cosmo, radius) - 1
+    radecz = {'RA': ra, 'DEC': dec, 'Z': z}
+    return radecz
+
+
+def simple_window(mesh_shape, padding=0., ord:float=np.inf):
+    """
+    Return an ord-norm ball binary window mesh, with radius as `1/(1+padding)` mesh axes fraction.
     """
     ord = float(ord)
     rx = jnp.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
@@ -468,5 +517,55 @@ def simple_mask(mesh_shape, frac=.5, ord:float=np.inf):
     else:
         rmesh = sum(ri**ord for ri in rvec)**(1/ord)
 
-    mask = rmesh < frac
-    return mask
+    wind_mesh = (rmesh < 1 / (1 + padding)).astype(float)
+    wind_mesh /= wind_mesh.mean()
+    return wind_mesh
+
+def simple_box(pos):
+    """
+    Return box configuration (center, rotvec, shape) for a given set of positions.
+    The box is simply computed from the min and max of the positions along each axis.
+    """
+    low_corner, high_corner = pos.min(0), pos.max(0)
+    center = (low_corner + high_corner) / 2
+    shape = high_corner - low_corner
+    rotvec = jnp.zeros(jnp.shape(pos)[-1])
+    return center, rotvec, shape
+
+def find_mesh_shape(box_shape, cell_budget, padding=0.):
+    """
+    Return mesh shape and cell length for a given box shape and cell budget, with optional padding.
+    Mesh shape is rounded to the nearest even integers.
+    """
+    box_shape *= 1 + padding
+    cell_length = float((box_shape.prod() / cell_budget)**(1/3))
+    mesh_shape = 2 * np.round(box_shape / cell_length / 2).astype(int)
+    return mesh_shape, cell_length
+
+
+def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_shape):
+    """
+    Return painted mesh from a given path to RA, DEC, Z data.
+    """
+    data = fitsio.read(path, columns=['RA','DEC','Z'])
+    pos = radecz2cart(cosmo, data)
+
+    pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
+    mesh = cic_paint(jnp.zeros(mesh_shape), pos)
+    return mesh
+
+def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0.):
+    """
+    Return painted window mesh and box configuration from a given path to RA, DEC, Z data.
+    """
+    data = fitsio.read(path, columns=['RA','DEC','Z'])
+    pos = radecz2cart(cosmo, data)
+    box_center, box_rotvec, box_shape = simple_box(pos)
+    mesh_shape, cell_length = find_mesh_shape(box_shape, cell_budget, padding)
+    box_shape = mesh_shape * cell_length # box_shape update due to rounding and padding
+    box_rot = Rotation.from_rotvec(box_rotvec)
+
+    pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
+    wind_mesh = cic_paint(jnp.zeros(mesh_shape), pos)
+    wind_mesh /= wind_mesh.mean()
+    return wind_mesh, cell_length, box_center, box_rotvec

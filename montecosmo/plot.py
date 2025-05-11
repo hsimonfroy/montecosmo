@@ -51,24 +51,22 @@ def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
 #############
 # 3D Meshes #
 #############
-def mean_slice(mesh, sli:int | float | slice=slice(None), axis=-1):
+def mean_proj(mesh, indices:float|slice|np.ndarray=1., axis=-1):
     """
-    Return a 2D mean projected (along given axis) slice from a 3D mesh.
+    Return a 2D mean projection of a 3D mesh along given axis.
     """
     mesh_shape = np.array(mesh.shape)
-    if isinstance(sli, int):
-        sli = slice(None, sli)
-    elif isinstance(sli, float):
-        low = round(mesh_shape[axis] / 2 * (1 - sli))
-        high = round(mesh_shape[axis] / 2 * (1 + sli))
-        sli = slice(low, high)
-    return np.moveaxis(mesh, axis, -1)[...,sli].mean(-1)
+    if isinstance(indices, float):
+        low = round(mesh_shape[axis] / 2 * (1 - indices))
+        high = round(mesh_shape[axis] / 2 * (1 + indices))
+        indices = slice(low, high)
+    return np.moveaxis(mesh, axis, -1)[...,indices].mean(-1)
 
 
-def plot_mesh(mesh, box_shape=None, sli:int | float | slice=slice(None), 
-              axis=-1, vlim:float | tuple[float,float]=1e-4, **kwargs):
+def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1., 
+              axis=-1, vlim:float|tuple[float,float]=1e-4, **kwargs):
     """
-    Plot a 2D mean projected slice (along given axis) from a 3D mesh.
+    Plot a 2D mean projection of a 3D mesh along given axis.
 
     Parameters
     ----------
@@ -76,10 +74,9 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=slice(None),
         The 3D mesh to be plotted.
     box_shape : tuple of int, optional
         The shape of the mesh physical box in Mpc/h. If None, it defaults to mesh shape.
-    sli : int, float or slice, optional
-        The slice to be averaged along the given axis of the mesh. 
-        * If integer, specifies the number of slices used starting from 0. 
-        * If float, specifies the proportion of axis used centered in middle.
+    indices : float, slice, or ndarray, optional
+        Indices to be averaged along the given axis of the mesh. 
+        If float, specifies the proportion of axis used centered in middle.
     axis : int, optional
         The axis along which to average the mesh. Default is -1 (last axis).
     vlim : float or tuple of float, optional
@@ -95,14 +92,16 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=slice(None),
         The QuadMesh object created by `plt.pcolormesh`.
     """
     mesh_shape = np.array(mesh.shape)
+    axids = [0,1,2]
+    axids.remove(axis)
     if box_shape is None:
         box_shape = mesh_shape
     else:
-        axlabel = ["x", "y", "z"]
-        axlabel = axlabel[:axis] + axlabel[axis+1:]
-        plt.xlabel(f"${axlabel[0]}$ [Mpc/$h$]"), plt.ylabel(f"${axlabel[1]}$ [Mpc/$h$]")
+        box_shape = np.asarray(box_shape)
+        xlab, ylab = np.array(["x", "y", "z"])[axids]
+        plt.xlabel(f"${xlab}$ [Mpc/$h$]"), plt.ylabel(f"${ylab}$ [Mpc/$h$]")
 
-    mesh2d = mean_slice(mesh, sli, axis)
+    mesh2d = mean_proj(mesh, indices, axis)
 
     if vlim is None:
         vlim = None, None
@@ -110,15 +109,16 @@ def plot_mesh(mesh, box_shape=None, sli:int | float | slice=slice(None),
         vlim = np.quantile(mesh2d, [vlim/2, 1-vlim/2])
     vmin, vmax = vlim
 
-    # xx, yy = np.indices(mesh_shape[:2]) * (box_shape/mesh_shape)[:2,None,None]
-    xs, ys = np.linspace(0, box_shape[0], mesh_shape[0]), np.linspace(0, box_shape[1], mesh_shape[1])
+    xb, yb = box_shape[axids]
+    xm, ym = mesh_shape[axids]
+    xs, ys = np.linspace(0, xb, xm), np.linspace(0, yb, ym)
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
     quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, **kwargs)
     plt.gca().set_aspect(1)
     return quad
 
 
-def anim_meshes(meshes, box_shape=None, vlim:float | tuple[float,float]=1e-4, 
+def anim_meshes(meshes, box_shape=None, vlim:float|tuple[float,float]=1e-4, 
                 cmap='viridis', pause=10):
     """
     Animate a list of 2D meshes.
@@ -132,7 +132,7 @@ def anim_meshes(meshes, box_shape=None, vlim:float | tuple[float,float]=1e-4,
     elif isinstance(vlim, float):
         vlim = np.quantile(meshes, [vlim/2, 1-vlim/2])
 
-    quad = plot_mesh(meshes[0,...,None], box_shape, None, vlim, cmap)
+    quad = plot_mesh(meshes[0,...,None], box_shape, 1., vlim, cmap)
     plt.colorbar()
 
     def update(i):
@@ -170,19 +170,19 @@ def circ_mean(a, n=1, axis=-1):
 
 
 
-def scan_mesh3d(mesh, sli:int | float=1/16):
+def scan_mesh3d(mesh, n:int|float=1/16):
     """
-    Return a list of 2D mesh as the mean projected slices from a 3D mesh.
+    Return a list of 2D mesh, mean projected from a 3D mesh.
     """
     mesh_shape = np.array(mesh.shape)
-    if isinstance(sli, float):
-        sli = round(sli*mesh_shape[-1])
-    return np.moveaxis(circ_mean(mesh, sli, axis=-1), -1, 0)
+    if isinstance(n, float):
+        n = round(n*mesh_shape[-1])
+    return np.moveaxis(circ_mean(mesh, n, axis=-1), -1, 0)
 
 
-def anim_scan(mesh, box_shape=None, sli:int | float=1/16, vlim:float | tuple[float,float]=1e-4, 
+def anim_scan(mesh, box_shape=None, n:int|float=1/16, vlim:float|tuple[float,float]=1e-4, 
               cmap='viridis', pause=0):
-    scan = scan_mesh3d(mesh, sli)
+    scan = scan_mesh3d(mesh, n)
     anim_meshes(scan, box_shape, vlim=vlim, cmap=cmap, pause=pause)   
     
 
