@@ -52,6 +52,7 @@ default_config={
             'curved_sky':True, # curved vs. flat sky
             'ap_param': False, # parametrized AP vs. auto AP
             'window':None, # if float, padded fraction, if str or Path, path to window mesh file
+            # 'save_dir':str,
             # Latents
             'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
             'latents': {'Omega_m': {'group':'cosmo', 
@@ -92,8 +93,12 @@ default_config={
                                     'scale':2.,
                                     'scale_fid':1e-3,
                                     },
-                        'init_mesh': {'group':'init',
-                                      'label':'{\\delta}_L',},
+                        'fNL': {'group':'bias',
+                                    'label':'{f}_{\\mathrm{NL}}',
+                                    'loc':0.,
+                                    'scale':100.,
+                                    'scale_fid':20,
+                                    },
                         'alpha_iso': {'group':'ap',
                                       'label':'{\\alpha}_{\\mathrm{iso}}',
                                       'loc':1.,
@@ -118,6 +123,8 @@ default_config={
                                       'low':0.,
                                       'high':jnp.inf,
                                       },
+                        'init_mesh': {'group':'init',
+                                      'label':'{\\delta}_L',},
                         },
             }
 
@@ -251,8 +258,9 @@ class Model():
         else:
             self.model = block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
 
-    def render(self, render_dist=False, render_params=False):
-        display(render_model(self.model, render_distributions=render_dist, render_params=render_params))
+    def render(self, filename=None, render_dist=False, render_params=False):
+        # NOTE: filename ignores path
+        display(render_model(self.model, filename=filename, render_distributions=render_dist, render_params=render_params))
 
     def partial(self, *args, **kwargs):
         self.model = partial(self.model, *args, **kwargs)
@@ -368,7 +376,7 @@ class FieldLevelModel(Model):
         self.gxy_count = self.gxy_density * self.cell_length**3
         
         if self.window is None:
-            self.wind_mesh = 1.
+            self.wind_mesh = np.array(1.)
             self.mask = None
         elif isinstance(self.window, float):
             self.wind_mesh = simple_window(self.mesh_shape, self.window, ord=np.inf) 
@@ -391,7 +399,7 @@ class FieldLevelModel(Model):
         out += f"box_shape:     {list(self.box_shape)} Mpc/h\n"
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
-        out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n"
+        out += f"mean_gxy_count: {self.gxy_count:.3f} gxy/cell\n" # TODO: to remove?
         return out
 
     def _model(self, temp_prior=1., temp_lik=1.):
@@ -426,6 +434,17 @@ class FieldLevelModel(Model):
         init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
+
+        fNL = bias['fNL']
+        # if fNL!=0.:
+        from montecosmo.bricks import trans_phi_delta_interp, rfftk
+        kvec = rfftk(self.mesh_shape)
+        kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, self.mesh_shape, self.box_shape))**0.5
+        trans_phi_delta = trans_phi_delta_interp(cosmology)(kmesh)
+        phi = jnp.fft.irfftn(trans_phi_delta * init['init_mesh'])
+        phi2 = phi**2
+        phi += fNL * (phi2 - phi2.mean())
+        init['init_mesh'] = safe_div(jnp.fft.rfftn(phi), trans_phi_delta)
 
         return cosmology, bias, ap, syst, init
 
@@ -506,8 +525,13 @@ class FieldLevelModel(Model):
             obs *= wind * syst['Wbar'] * self.cell_length**3
 
             # Gaussian noise
-            obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
+            obs = sample('obs', dist.Normal(obs, (temp * syst['Wbar'] * self.cell_length**3)**.5))
+            # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
+            # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
             # obs = sample('obs', dist.Normal(obs, (temp / self.gxy_count)**.5))
+
+            # Poisson noise
+            # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
             return obs 
 
         # elif self.obs == 'pk':
@@ -625,27 +649,27 @@ class FieldLevelModel(Model):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
-        pmeshk = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
+        pmesh = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
 
         if self.precond in ['direct', 'fourier']:
             scale = jnp.ones(self.mesh_shape)
-            transfer = pmeshk**.5
+            transfer = pmesh**.5
 
         elif self.precond=='kaiser':
             bE_fid = 1 + self.loc_fid['b1']
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.mesh_shape, self.box_center)
-            pmeshk_fid = lin_power_mesh(self.cosmo_fid, self.mesh_shape, self.box_shape)
+            pmesh_fid = lin_power_mesh(self.cosmo_fid, self.mesh_shape, self.box_shape)
 
-            scale = (1 + self.gxy_count * boost_fid**2 * pmeshk_fid)**.5
-            transfer = pmeshk**.5 / scale
+            scale = (1 + self.gxy_count * boost_fid**2 * pmesh_fid)**.5
+            transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
             bE = 1 + bias['b1']
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.box_center)
 
-            scale = (1 + self.gxy_count * boost**2 * pmeshk)**.5
-            transfer = pmeshk**.5 / scale
+            scale = (1 + self.gxy_count * boost**2 * pmesh)**.5
+            transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
         return scale, transfer
@@ -684,16 +708,27 @@ class FieldLevelModel(Model):
     ########
     # Data #
     ########
+    def pos_mesh(self):
+        return pos_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+    
     def mesh2masked(self, mesh):
         return mesh2masked(mesh, self.mask)
     
     def masked2mesh(self, mesh):
         return masked2mesh(mesh, self.mask)
-    
-    def pos_mesh(self):
-        return pos_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
-    
 
+    def count2delta(self, mesh):
+        """
+        Count mesh to delta mesh, by imposing global integral constraint.
+        """
+        # NOTE: same as
+        # mesh = self.mesh2masked(mesh)
+        # mesh = (mesh / mesh.mean() - self.mesh2masked(self.wind_mesh))
+        # return self.masked2mesh(mesh) / self.wind_mesh.mean()**.5
+        
+        wind_mean = self.wind_mesh.mean()
+        return (mesh / mesh.mean() - self.wind_mesh / wind_mean) * wind_mean**.5
+    
     def add_window(self, load_path:str|Path, cell_budget, padding=0., save_path:str|Path=None):
         """
         Compute and save a painted window mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
@@ -756,6 +791,7 @@ class FieldLevelModel(Model):
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.a_fid, 
                                        self.box_shape, self.gxy_count, self.box_center)
         
+        # HACK: rg2cgh has absurd problem with vmaped random arrays (in CUDA11, not CUDA12) so rely on rg2cgh2.
         post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
         # post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 

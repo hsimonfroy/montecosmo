@@ -9,7 +9,7 @@ import fitsio
 from jax.scipy.spatial.transform import Rotation
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
-from montecosmo.nbody import rfftk, invlaplace_kernel, a2g, g2a, a2f, a2chi, chi2a
+from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a
 
 #############
 # Cosmology #
@@ -55,12 +55,12 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     Return a light emulation of the linear matter power spectrum.
     """
     ks = jnp.logspace(-4, 1, n_interp)
-    logpows = jnp.log(jc.power.linear_matter_power(cosmo, ks, a=a))
+    # logpows = jnp.log(jc.power.linear_matter_power(cosmo, ks, a=a))
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
     # as interpolation in loglog space can produce nan gradients
-    pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), ks, logpows, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
-    # pows = jc.power.linear_matter_power(cosmo, ks, a=a)
-    # pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
+    # pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), ks, logpows, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
+    pows = jc.power.linear_matter_power(cosmo, ks, a=a)
+    pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
     return pow_fn
 
 
@@ -72,6 +72,23 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     kvec = rfftk(mesh_shape)
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
+
+
+def trans_phi_delta_interp(cosmo, a=1., n_interp=256):
+    pow_fn = lin_power_interp(cosmo, a=a)
+    k = jnp.logspace(-4, 1, n_interp)
+    # we should do: https://github.com/cosmodesi/desilike/blob/52f52698f7d901881724cd10f3bdd446e79a19f3/desilike/theories/galaxy_clustering/primordial_non_gaussianity.py#L84
+    # but jax_cosmo has no A_s, so fallback on dirty implementation
+    pow_prim = k**cosmo.n_s
+    pow_dd = pow_fn(k)
+    tk = (pow_dd / pow_prim / (pow_dd[0] / pow_prim[0]))**0.5
+    znorm = 10.  # in matter-dominated era
+    anorm = 1. / (1. + znorm)
+    normalized_growth_factor = a2g(cosmo, a) / a2g(cosmo, anorm) * anorm
+    alpha = 3. * cosmo.Omega_m * 100**2 / (2. * (constants.c / 1e3)**2 * k**2 * tk * normalized_growth_factor)
+    trans = lambda x: jnp.interp(x.reshape(-1), k, alpha, left=0., right=0.).reshape(x.shape)
+    return trans
+
 
 
 ##########
@@ -116,11 +133,11 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, bo
     """
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
-    pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
+    pmesh = lin_power_mesh(cosmo, mesh_shape, box_shape)
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
 
-    stds = (pmeshk / (1 + gxy_count * boost**2 * pmeshk))**.5
-    # Also: stds = jnp.where(pmeshk==0., 0., pmeshk / (1 + gxy_count * evolve**2 * pmeshk))**.5
+    stds = (pmesh / (1 + gxy_count * boost**2 * pmesh))**.5
+    # Also: stds = jnp.where(pmesh==0., 0., pmesh / (1 + gxy_count * evolve**2 * pmesh))**.5
     means = stds**2 * gxy_count * boost * delta_obs
     return means, stds
 
@@ -198,7 +215,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 # Bias #
 ########
 def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape, 
-                       b1, b2, bs2, bn2, init_mesh):
+                       b1, b2, bs2, bn2, fNL, init_mesh):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -221,33 +238,64 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     
     # Apply b1, punctual term
     delta_pos = cic_read(delta, pos) * growths
-    weights = weights + b1 * delta_pos
+    weights += b1 * delta_pos
 
     # Apply b2, punctual term
     delta2_pos = delta_pos**2
-    weights = weights + b2 * (delta2_pos - delta2_pos.mean())
+    weights += b2 * (delta2_pos - delta2_pos.mean())
 
     # Apply bshear2, non-punctual term
     pot = init_mesh * invlaplace_kernel(kvec)
-
+    dims = range(len(kvec))
     shear2 = 0  
-    for i, ki in enumerate(kvec):
+
+    for i in dims:
         # Add diagonal terms
-        shear2 = shear2 + jnp.fft.irfftn( - ki**2 * pot - init_mesh / 3)**2
-        for kj in kvec[i+1:]:
+        nabi = gradient_kernel(kvec, i)
+        shear2 = shear2 + jnp.fft.irfftn( - nabi**2 * pot - init_mesh / 3)**2
+        for j in dims[i+1:]:
             # Add strict-up-triangle terms (counted twice)
-            shear2 = shear2 + 2 * jnp.fft.irfftn( - ki * kj * pot)**2
+            nabj = gradient_kernel(kvec, j)
+            shear2 = shear2 + 2 * jnp.fft.irfftn( - nabi * nabj * pot)**2
 
     shear2_pos = cic_read(shear2, pos) * growths**2
-    weights = weights + bs2 * (shear2_pos - shear2_pos.mean())
+    weights += bs2 * (shear2_pos - shear2_pos.mean())
 
     # Apply bnabla2, non-punctual term
     delta_nab2 = jnp.fft.irfftn( - kk_box * init_mesh)
 
     delta_nab2_part = cic_read(delta_nab2, pos) * growths
-    weights = weights + bn2 * delta_nab2_part
+    weights += bn2 * delta_nab2_part
+
+    # Apply bphi, primordial term
+    phi = jnp.fft.irfftn(trans_phi_delta_interp(cosmo, a)(kk_box**0.5) * init_mesh)
+    p = 1. # tracer parameter
+    bp = b_phi(b1, p)
+
+    phi_pos = cic_read(phi, pos)
+    weights += bp * fNL * phi_pos
+    
+    # Apply bphidelta, primordial term
+    phi_delta_pos = phi_pos * delta_pos * growths**2
+    bpd = b_phi_delta(b1, b2, bp)
+
+    weights += bpd * fNL * (phi_delta_pos - jnp.mean(phi_delta_pos))
 
     return weights
+
+
+
+def b_phi(b1, p=1., delta_c=1.686):
+    """
+    Primordial scale-dependant bias parameter. See []()
+    """
+    return 2 * delta_c * (b1 - p)
+
+def b_phi_delta(b1, b2, bp, delta_c=1.686):
+    """
+    Primordial-density scale-dependant bias parameter. See []()
+    """
+    return bp - b1 + 1 + delta_c * (b2 - 8 / 21 * (b1 - 1))
 
 
 
@@ -518,7 +566,8 @@ def simple_window(mesh_shape, padding=0., ord:float=np.inf):
         rmesh = sum(ri**ord for ri in rvec)**(1/ord)
 
     wind_mesh = (rmesh < 1 / (1 + padding)).astype(float)
-    wind_mesh /= wind_mesh.mean()
+    # NOTE: normalization convention adopted is that the mean window equal 1 within its support.
+    wind_mesh /= wind_mesh[wind_mesh > 0].mean()
     return wind_mesh
 
 def simple_box(pos):
@@ -567,5 +616,7 @@ def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0.):
 
     pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
     wind_mesh = cic_paint(jnp.zeros(mesh_shape), pos)
-    wind_mesh /= wind_mesh.mean()
+
+    # NOTE: normalization convention adopted is that the mean window equal 1 within its support.
+    wind_mesh /= wind_mesh[wind_mesh > 0].mean()
     return wind_mesh, cell_length, box_center, box_rotvec
