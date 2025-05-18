@@ -7,6 +7,7 @@ from jax_cosmo import Cosmology, background, constants
 from jaxpm.painting import cic_read, cic_paint
 import fitsio
 from jax.scipy.spatial.transform import Rotation
+from scipy.interpolate import SmoothSphereBivariateSpline
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
 from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a
@@ -74,20 +75,42 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
 
 
-def trans_phi_delta_interp(cosmo, a=1., n_interp=256):
+def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
+    """
+    Return a light emulation of the transfer function from primordial potential to linear matter density field.
+    """
+    # NOTE: we could do as in
+    # https://github.com/cosmodesi/desilike/blob/52f52698f7d901881724cd10f3bdd446e79a19f3/desilike/theories/galaxy_clustering/primordial_non_gaussianity.py#L84
+    # but jax_cosmo has no A_s, so fallback on https://arxiv.org/pdf/1904.08859
+
     pow_fn = lin_power_interp(cosmo, a=a)
-    k = jnp.logspace(-4, 1, n_interp)
-    # we should do: https://github.com/cosmodesi/desilike/blob/52f52698f7d901881724cd10f3bdd446e79a19f3/desilike/theories/galaxy_clustering/primordial_non_gaussianity.py#L84
-    # but jax_cosmo has no A_s, so fallback on dirty implementation
-    pow_prim = k**cosmo.n_s
-    pow_dd = pow_fn(k)
-    tk = (pow_dd / pow_prim / (pow_dd[0] / pow_prim[0]))**0.5
-    znorm = 10.  # in matter-dominated era
-    anorm = 1. / (1. + znorm)
-    normalized_growth_factor = a2g(cosmo, a) / a2g(cosmo, anorm) * anorm
-    alpha = 3. * cosmo.Omega_m * 100**2 / (2. * (constants.c / 1e3)**2 * k**2 * tk * normalized_growth_factor)
-    trans = lambda x: jnp.interp(x.reshape(-1), k, alpha, left=0., right=0.).reshape(x.shape)
-    return trans
+    ks = jnp.logspace(-4, 1, n_interp)
+    pow_prim = ks**cosmo.n_s
+    pow_lin = pow_fn(ks)
+    trans_lin = (pow_lin / pow_prim / (pow_lin[0] / pow_prim[0]))**0.5
+
+    z_norm = 10. # in matter-dominated era
+    a_norm = 1. / (1. + z_norm)
+    normalized_growth_factor = a2g(cosmo, a) / a2g(cosmo, a_norm) * a_norm
+    trans = - 2. * constants.rh**2 * ks**2 * trans_lin * normalized_growth_factor / (3. * cosmo.Omega)
+    trans_fn = lambda x: jnp.interp(x.reshape(-1), ks, trans, left=0., right=0.).reshape(x.shape)
+    return trans_fn
+
+
+def add_png(cosmo:Cosmology, fNL, init_mesh, mesh_shape, box_shape):
+    """
+    Add Primordial Non-Gaussianity (PNG) to the linear matter density field.
+    """
+    kvec = rfftk(mesh_shape)
+    kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
+    trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+
+    phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+    phi2 = phi**2
+    phi += fNL * (phi2 - phi2.mean())
+    init_mesh = trans_phi2delta * jnp.fft.rfftn(phi)
+
+    return init_mesh
 
 
 
@@ -126,7 +149,7 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, box_center=(0,0,0)):
         return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
 
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, box_center=(0,0,0)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, wind_mesh, a, box_shape, box_center=(0,0,0)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -136,9 +159,12 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, a, box_shape, gxy_count, bo
     pmesh = lin_power_mesh(cosmo, mesh_shape, box_shape)
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
 
-    stds = (pmesh / (1 + gxy_count * boost**2 * pmesh))**.5
-    # Also: stds = jnp.where(pmesh==0., 0., pmesh / (1 + gxy_count * evolve**2 * pmesh))**.5
-    means = stds**2 * gxy_count * boost * delta_obs
+    wind = (wind_mesh**2).mean()**.5
+    # wind = 1.
+    # print("wind", wind)
+
+    stds = (pmesh / (1 + wind * count * boost**2 * pmesh))**.5
+    means = stds**2 * boost * count * wind * delta_obs
     return means, stds
 
 
@@ -220,7 +246,9 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
-        w = 1 + b_1 \\delta + b_2 \\left(\\delta^2 - \\braket{\\delta^2}\\right) + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta
+        w = 1 + b_1 \\delta_L + b_2 \\left(\\delta_L^2 - \\braket{\\delta_L^2}\\right) 
+        + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta_L
+        + b_{\\phi} f_\\mathrm{NL} \\phi + b_{\\phi \\delta} f_\\mathrm{NL} (\\phi \\delta_L - \\braket{\\phi \\delta_L})
     """    
     # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases
     # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
@@ -230,8 +258,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
 
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape)
-    kk_box = sum((ki  * (m / l))**2 
-            for ki, m, l in zip(kvec, mesh_shape, box_shape)) # minus laplace kernel in h/Mpc physical units
+    kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**.5 # in h/Mpc 
 
     # Init weights
     weights = 1.
@@ -262,13 +289,14 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     weights += bs2 * (shear2_pos - shear2_pos.mean())
 
     # Apply bnabla2, non-punctual term
-    delta_nab2 = jnp.fft.irfftn( - kk_box * init_mesh)
+    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * init_mesh)
 
-    delta_nab2_part = cic_read(delta_nab2, pos) * growths
-    weights += bn2 * delta_nab2_part
+    delta_nab2_pos = cic_read(delta_nab2, pos) * growths
+    weights += bn2 * delta_nab2_pos
 
     # Apply bphi, primordial term
-    phi = jnp.fft.irfftn(trans_phi_delta_interp(cosmo, a)(kk_box**0.5) * init_mesh)
+    trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+    phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
     p = 1. # tracer parameter
     bp = b_phi(b1, p)
 
@@ -276,7 +304,7 @@ def lagrangian_weights(cosmo:Cosmology, a, pos, box_shape,
     weights += bp * fNL * phi_pos
     
     # Apply bphidelta, primordial term
-    phi_delta_pos = phi_pos * delta_pos * growths**2
+    phi_delta_pos = phi_pos * delta_pos
     bpd = b_phi_delta(b1, b2, bp)
 
     weights += bpd * fNL * (phi_delta_pos - jnp.mean(phi_delta_pos))
@@ -380,7 +408,7 @@ def pos_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape):
     """
     Return a mesh of the physical positions of the mesh cells.
     """
-    # In most of use cases, desired computation requires only Nx*Ny*Nz memory, instead of this Nx*Ny*Nz*3 
+    # Most applications require only Nx*Ny*Nz memory, instead of this Nx*Ny*Nz*3 
     pos = jnp.indices(mesh_shape, dtype=float).reshape(3,-1).T + .5
     pos = cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape)
     return pos.reshape(tuple(mesh_shape) + (3,))
@@ -509,6 +537,9 @@ def masked2mesh(masked, mask=None):
         return jnp.zeros(mask.shape).at[mask].set(masked)
 
 def radecrad2cart(ra, dec, radius):
+    """
+    Convert ra, dec (in degrees), and radius to cartesian coordinates.
+    """
     ra = jnp.radians(ra)
     dec = jnp.radians(dec)
     x = jnp.cos(dec) * jnp.cos(ra)
@@ -518,9 +549,15 @@ def radecrad2cart(ra, dec, radius):
     return cart
 
 def cart2radecrad(cart:jnp.ndarray):
+    """
+    Convert cartesian coordinates to ra, dec (in degrees), and radius.
+    * ra \in [0, 360]
+    * dec \in [-90, 90]
+    * radius \in [0, \infty[
+    """
     radius = jnp.linalg.norm(cart, axis=-1)
     x, y, z = jnp.moveaxis(cart, -1, 0)
-    ra = jnp.degrees(jnp.arctan2(y, x))
+    ra = jnp.degrees(jnp.arctan2(y, x)) % 360.
     dec = jnp.degrees(jnp.arcsin(z / radius))
     return ra, dec, radius
 
@@ -543,6 +580,33 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
     radecz = {'RA': ra, 'DEC': dec, 'Z': z}
     return radecz
 
+def radec_interp(ra, dec, value, w=None, s=0., eps=1e-16):
+    """
+    Return an interpolator of a spherical field.
+    """
+    phi = np.radians(ra).reshape(-1)
+    theta = np.radians(90. - dec).reshape(-1)
+    value = value.reshape(-1)
+    interp_fn = SmoothSphereBivariateSpline(theta, phi, value, w=w, s=s, eps=eps)
+
+    def radec_interp_fn(ra, dec):
+        shape = ra.shape
+        phi = np.radians(ra).reshape(-1)
+        theta = np.radians(90. - dec).reshape(-1)
+        return interp_fn(theta, phi, grid=False).reshape(shape)
+    return radec_interp_fn
+
+# def radec_interp_mesh(ra, dec, value, w=None, s=0., eps=1e-16):
+#     interp = radec_interp(ra, dec, value, w=w, s=s, eps=eps)
+
+#     los = model.pos_mesh()
+#     # los = pos_mesh(box_center, box_rot, box_shape, mesh_shape)
+#     los = los / jnp.linalg.norm(los, axis=-1, keepdims=True)
+#     ra_mesh, dec_mesh, _ = cart2radecrad(los)
+#     val_mesh = interp(ra_mesh, dec_mesh)
+#     return val_mesh
+
+
 
 def simple_window(mesh_shape, padding=0., ord:float=np.inf):
     """
@@ -563,10 +627,10 @@ def simple_window(mesh_shape, padding=0., ord:float=np.inf):
     elif ord == -np.inf:
         rmesh = np.minimum(np.minimum(rvec[0], rvec[1]), rvec[2])
     else:
-        rmesh = sum(ri**ord for ri in rvec)**(1/ord)
+        rmesh = sum(ri**ord for ri in rvec)**(1 / ord)
 
     wind_mesh = (rmesh < 1 / (1 + padding)).astype(float)
-    # NOTE: normalization convention adopted is that the mean window equal 1 within its support.
+    # NOTE: normalization to mean window equal 1 within its support.
     wind_mesh /= wind_mesh[wind_mesh > 0].mean()
     return wind_mesh
 
@@ -617,6 +681,6 @@ def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0.):
     pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
     wind_mesh = cic_paint(jnp.zeros(mesh_shape), pos)
 
-    # NOTE: normalization convention adopted is that the mean window equal 1 within its support.
+    # NOTE: normalization to mean window equal 1 within its support.
     wind_mesh /= wind_mesh[wind_mesh > 0].mean()
     return wind_mesh, cell_length, box_center, box_rotvec

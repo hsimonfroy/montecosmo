@@ -30,18 +30,19 @@ def from_id(id):
     from copy import deepcopy
     config = deepcopy(default_config | config)
     model = FieldLevelModel(**config)
-    # for k, v in model.latents.items():
-    #     if 'scale_fid' in v:
-    #         # model.latents[k]['scale_fid'] = v['scale_fid'] * (64 / args.mesh_length)**(3/2)
-    #         model.latents[k]['scale_fid'] = v['scale_fid'] * (640. / model.box_shape[0])**(3/2)
+    for k, v in model.latents.items():
+        if 'scale_fid' in v:
+            model.latents[k]['scale_fid'] = v['scale_fid'] * (64 / args.mesh_length)**(3/2)
+            # model.latents[k]['scale_fid'] = v['scale_fid'] * (640. / model.box_shape[0])**(3/2) ######
+            # model.latents[k]['scale_fid'] = v['scale_fid'] * (640. / model.box_shape[0])**(3/2) * 2**.5
     
     mcmc_config = {
         'sampler':args.sampler,
         'target_accept_prob':0.65,
-        'n_samples':128 if args.mesh_length < 128 else 32 if args.mesh_length==128 else 16, ######
-        # 'n_samples':128 if args.sampler in ['MCLMC','aMCLMC'] else 64, ######
+        'n_samples':64 if args.mesh_length < 128 else 32 if args.mesh_length==128 else 16, ######
+        # 'n_samples':128 if args.sampler in ['MCLMC'] else 64, ######
         'max_tree_depth':10,
-        'n_runs':30 if args.mesh_length < 128 else 60 if args.mesh_length==128 else 120,
+        'n_runs':60 if args.mesh_length < 128 else 60 if args.mesh_length==128 else 120,
         'n_chains':8, ######
         'mm':args.mm,
     }
@@ -54,9 +55,12 @@ def from_id(id):
         model.loc_fid['b1'] = 0.
 
     save_path = save_dir 
-    save_path += f"s{mcmc_config['sampler']}_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
+    save_path += f"s{mcmc_config['sampler']}2_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
     if args.mm==0:
         save_path += "_nomm"
+    elif args.mm==2:
+        save_path += "_omel"
+    
 
     return model, mcmc_config, save_dir, save_path
 
@@ -64,19 +68,20 @@ class ParseSlurmId():
     def __init__(self, id):
         self.id = str(id)
         # self.id = '31' + self.id
-        self.id = '422' + self.id
+        # self.id = '422' + self.id
         # self.id = self.id + '41'
+        self.id = self.id[0] + '113' + self.id[1:]
         print("True id:", self.id) #####
 
         dic = {}
         dic['mesh_length'] = [8,16,32,64,128,256]
         dic['evolution'] = ['kaiser','lpt','nbody']
         dic['lpt_order'] = [0,1,2]
-        dic['rsdb'] = [0,1,2] #########################
+        dic['rsdb'] = [0,1,2,3] #########################
         dic['precond'] = ['direct','fourier','kaiser','kaiser_dyn']
 
         dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'NUTSwG2', 'MCLMC', 'aMCLMC']
-        dic['mm'] = [0,1]
+        dic['mm'] = [0,1,2]
 
         # dic['rsdb'] = [2]
         dic['box_length'] = [None]

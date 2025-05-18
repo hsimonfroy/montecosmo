@@ -73,10 +73,10 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
     mesh : ndarray
         The 3D mesh to be plotted.
     box_shape : tuple of int, optional
-        The shape of the mesh physical box in Mpc/h. If None, it defaults to mesh shape.
+        The shape of the mesh physical box in Mpc/h. If None, defaults to mesh shape.
     indices : float, slice, or ndarray, optional
         Indices to be averaged along the given axis of the mesh. 
-        If float, specifies the proportion of axis used centered in middle.
+        If float, specifies the proportion of axis used starting from mesh center.
     axis : int, optional
         The axis along which to average the mesh. Default is -1 (last axis).
     vlim : float or tuple of float, optional
@@ -93,7 +93,7 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
     """
     mesh_shape = np.array(mesh.shape)
     axids = [0,1,2]
-    axids.remove(axis)
+    axids.remove(axids[axis])
     if box_shape is None:
         box_shape = mesh_shape
     else:

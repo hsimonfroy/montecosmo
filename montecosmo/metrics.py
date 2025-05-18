@@ -196,14 +196,16 @@ def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)
     return ks, pow01 / (pow0 * pow1)**.5
 
 
-def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0), scale_coh:float=1.):
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
     pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
     ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
     ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
-    return ks, pow1, (pow1 / pow0)**.5, pow01 / (pow0 * pow1)**.5
+    trans = (pow1 / pow0)**.5
+    coh = scale_coh * pow01 / (pow0 * pow1)**.5
+    return ks, pow1, trans, coh
     
 
 
