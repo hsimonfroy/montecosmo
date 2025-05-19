@@ -78,7 +78,7 @@ if not os.path.exists(save_dir+"truth.p"):
         truth['b1'] = 0.
 
     model.reset()
-    truth = model.predict(samples=truth, hide_base=False, hide_samp=False, frombase=True)
+    truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
     
     print(f"Saving model and truth at {save_dir}")
     model.save(save_dir+"model.p")    
@@ -96,7 +96,7 @@ else:
 model.reset()
 if model.loc_fid['b1'] == 0:
     print('no bias')
-    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
+    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, from_base=True)
     # model.condition({'obs': truth['obs'], 'bn2': truth['bn2']}, frombase=True)
 else:
     model.condition({'obs': truth['obs']})
@@ -116,7 +116,7 @@ if continue_run:
     pass
 else:
     model.reset()
-    model.condition({'obs': truth['obs']} | model.loc_fid, frombase=True)
+    model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
     model.block()
 
     # mcmc = get_init_mcmc(model.model, mcmc_config['n_chains'])    
@@ -193,7 +193,7 @@ else:
 model.reset()
 if model.loc_fid['b1'] == 0:
     print('no bias')
-    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, frombase=True)
+    model.condition({'obs': truth['obs'], 'b1': truth['b1'], 'b2': truth['b2'], 'bs2': truth['bs2'], 'bn2': truth['bn2']}, from_base=True)
     # model.condition({'obs': truth['obs'], 'bn2': truth['bn2']}, frombase=True)
 else:
     model.condition({'obs': truth['obs']})

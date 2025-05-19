@@ -53,7 +53,7 @@ default_config={
             'window':None, # if float, padded fraction, if str or Path, path to window mesh file
             # 'save_dir':str,
             # Latents
-            'precond':'kaiser', # direct, fourier, kaiser, kaiser_dyn
+            'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
             'latents': {'Omega_m': {'group':'cosmo', 
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
@@ -77,20 +77,20 @@ default_config={
                         'b2': {'group':'bias',
                                     'label':'{b}_2',
                                     'loc':0.,
-                                    'scale':2.,
-                                    'scale_fid':1e-2,
+                                    'scale':5.,
+                                    'scale_fid':1e-1,
                                     },
                         'bs2': {'group':'bias',
                                     'label':'{b}_{s^2}',
                                     'loc':0.,
-                                    'scale':2.,
-                                    'scale_fid':1e-2,
+                                    'scale':5.,
+                                    'scale_fid':1e-1,
                                     },
                         'bn2': {'group':'bias',
                                     'label':'{b}_{\\nabla^2}',
                                     'loc':0.,
-                                    'scale':2.,
-                                    'scale_fid':1e-1,
+                                    'scale':5.,
+                                    'scale_fid':1e0,
                                     },
                         'fNL': {'group':'bias',
                                     'label':'{f}_{\\mathrm{NL}}',
@@ -168,7 +168,7 @@ class Model():
                 hide_fn = lambda site: False
         return block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=42, samples:int|tuple|dict=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, frombase=False):
+    def predict(self, rng=42, samples:int|tuple|dict=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, from_base=False):
         """
         Run model conditioned on samples.
         * If samples is None, return a single prediction.
@@ -180,7 +180,7 @@ class Model():
 
         def single_prediction(rng, sample={}):
             # Optionally reparametrize base to sample params
-            if frombase:
+            if from_base:
                 sample = self.reparam(sample, inv=True) 
                 # NOTE: deterministic sites have no effects with handlers.condition, but do with handlers.subsitute
 
@@ -239,13 +239,13 @@ class Model():
     def seed(self, rng):
         self.model = seed(self.model, rng_seed=rng)
 
-    def condition(self, data={}, frombase=False):
+    def condition(self, data={}, from_base=False):
         """
         Substitue rnadom variables by their provided values, 
         optionally reparametrizing base values into sample values.
         Values are stored in attribute data.
         """
-        if frombase:
+        if from_base:
             self.data |= data
             data = self.reparam(data, inv=True)
         self.data |= data
@@ -322,8 +322,6 @@ class FieldLevelModel(Model):
         Only used for 'lpt' evolution.
     observable : str
         Observable: 'field', 'powspec'.
-    gxy_density : float
-        Galaxy density in galaxy / (Mpc/h)^3
     los : array_like
         Line-of-sight direction for flat-sky simulation. 
         If None, no Redshift Space Distorsion is applied.
@@ -334,7 +332,7 @@ class FieldLevelModel(Model):
         Power spectrum poles to compute.
         Only used for 'powspec' observable.
     precond : str
-        Preconditioning method: 'direct', 'fourier', 'kaiser', 'kaiser_dyn'.
+        Preconditioning method: 'real', 'fourier', 'kaiser', 'kaiser_dyn'.
     latents : dict
         Latent variables configuration.
     """
@@ -647,7 +645,7 @@ class FieldLevelModel(Model):
         """
         pmesh = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
 
-        if self.precond in ['direct', 'fourier']:
+        if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.mesh_shape)
             transfer = pmesh**.5
 
@@ -655,8 +653,9 @@ class FieldLevelModel(Model):
             bE_fid = 1 + self.loc_fid['b1']
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.mesh_shape, self.box_center)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.mesh_shape, self.box_shape)
+            wind = (self.wind_mesh**2).mean()**.5
 
-            scale = (1 + self.count_fid * boost_fid**2 * pmesh_fid)**.5
+            scale = (1 + wind * self.count_fid * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -664,8 +663,9 @@ class FieldLevelModel(Model):
             bE = 1 + bias['b1']
             count = syst['ngbar'] * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.box_center)
+            wind = (self.wind_mesh**2).mean()**.5
 
-            scale = (1 + count * boost**2 * pmesh)**.5
+            scale = (1 + wind * count * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -714,10 +714,13 @@ class FieldLevelModel(Model):
     def masked2mesh(self, mesh):
         return masked2mesh(mesh, self.mask)
 
-    def count2delta(self, mesh):
+    def count2delta(self, mesh, from_masked=True):
         """
         Count mesh to delta mesh, by imposing global integral constraint.
         """
+        if from_masked:
+            mesh = self.masked2mesh(mesh)
+
         # NOTE: equivalent to:
         # mesh = self.mesh2masked(count_obs)
         # mesh = (mesh / mesh.mean() - self.mesh2masked(model.wind_mesh))

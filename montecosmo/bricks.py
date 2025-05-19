@@ -214,8 +214,8 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 
         # Reparametrize
         if not inv:
-            if precond=='direct':
-                # Sample in direct space
+            if precond=='real':
+                # Sample in real space
                 mesh = jnp.fft.rfftn(mesh)
 
             elif precond in ['fourier','kaiser','kaiser_dyn']:
@@ -226,7 +226,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
         else:
             mesh = safe_div(mesh, transfer)
             
-            if precond=='direct':
+            if precond=='real':
                 mesh = jnp.fft.irfftn(mesh)
 
             elif precond in ['fourier','kaiser','kaiser_dyn']:
@@ -540,8 +540,8 @@ def radecrad2cart(ra, dec, radius):
     """
     Convert ra, dec (in degrees), and radius to cartesian coordinates.
     """
-    ra = jnp.radians(ra)
-    dec = jnp.radians(dec)
+    ra = jnp.deg2rad(ra)
+    dec = jnp.deg2rad(dec)
     x = jnp.cos(dec) * jnp.cos(ra)
     y = jnp.cos(dec) * jnp.sin(ra)
     z = jnp.sin(dec)
@@ -557,8 +557,8 @@ def cart2radecrad(cart:jnp.ndarray):
     """
     radius = jnp.linalg.norm(cart, axis=-1)
     x, y, z = jnp.moveaxis(cart, -1, 0)
-    ra = jnp.degrees(jnp.arctan2(y, x)) % 360.
-    dec = jnp.degrees(jnp.arcsin(z / radius))
+    ra = jnp.rad2deg(jnp.arctan2(y, x)) % 360.
+    dec = jnp.rad2deg(jnp.arcsin(z / radius))
     return ra, dec, radius
 
 def radecz2cart(cosmo:Cosmology, radecz:dict):
@@ -584,15 +584,15 @@ def radec_interp(ra, dec, value, w=None, s=0., eps=1e-16):
     """
     Return an interpolator of a spherical field.
     """
-    phi = np.radians(ra).reshape(-1)
-    theta = np.radians(90. - dec).reshape(-1)
+    phi = np.deg2rad(ra).reshape(-1)
+    theta = np.deg2rad(90. - dec).reshape(-1)
     value = value.reshape(-1)
     interp_fn = SmoothSphereBivariateSpline(theta, phi, value, w=w, s=s, eps=eps)
 
     def radec_interp_fn(ra, dec):
         shape = ra.shape
-        phi = np.radians(ra).reshape(-1)
-        theta = np.radians(90. - dec).reshape(-1)
+        phi = np.deg2rad(ra).reshape(-1)
+        theta = np.deg2rad(90. - dec).reshape(-1)
         return interp_fn(theta, phi, grid=False).reshape(shape)
     return radec_interp_fn
 
