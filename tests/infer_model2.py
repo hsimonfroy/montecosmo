@@ -20,6 +20,7 @@ print(jdevices())
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload, Path
 
+# save_dir = Path("/feynman/home/dphp/hs276503/scratch/png/lpt_64_fnl_0")
 save_dir = Path("/pscratch/sd/h/hsimfroy/png/lpt_64_fnl_0")
 save_path = save_dir / "test"
 save_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +52,7 @@ cell_budget = 64**3
 padding = 0.2
 
 if not os.path.exists(save_dir / "truth.npz") or overwrite:
-
+    print("Generate truth...")
     model = FieldLevelModel(**default_config | 
                                 {'mesh_shape': 3*(64,), 
                                 'cell_length': 10., 
