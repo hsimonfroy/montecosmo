@@ -761,27 +761,31 @@ class FieldLevelModel(Model):
         return spectrum(mesh, mesh2=mesh2, box_shape=self.box_shape, 
                             kedges=kedges, deconv=deconv, poles=poles, box_center=self.box_center)
 
-    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0), scale_coh:float=None):
+    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
         """
         Return wavenumber, power spectrum, transfer function, and coherence of two meshes.
-        If scale_coh is None, scale up coherence to compensate for window.
         """
-        if scale_coh is None:
-            scale_coh = 1 / self.wind_mesh.mean() # scale up coherence to compensate for window
-        return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv, scale_coh=scale_coh)
+        return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv)
 
 
-    ########################
-    # Chains init and load #
-    ########################
+    ##################
+    # Chains process #
+    ##################
     def load_runs(self, path:str, start:int, end:int, transforms=None, batch_ndim=2) -> Chains:
         return Chains.load_runs(path, start, end, transforms, 
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
-    def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2):
-        chains = chains.copy()
+    def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2) -> Chains:
+        chains = chains.copy() # TODO: tree.map
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
+    
+    # def predict_chains(self, chains:Chains, rng=42, batch_ndim=2, 
+    #                    hide_base=True, hide_det=True, hide_samp=True, from_base=False) -> Chains:
+    #     chains = chains.copy() # TODO: tree.map
+    #     chains.data = self.predict(rng=rng, samples=chains.data, batch_ndim=batch_ndim, 
+    #                                hide_base=hide_base, hide_det=hide_det, hide_samp=hide_samp, from_base=from_base)
+    #     return chains
     
     def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
                            kedges:int|float|list=None, deconv=(0, 0), batch_ndim=2) -> Chains:

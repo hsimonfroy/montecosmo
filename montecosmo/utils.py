@@ -36,7 +36,7 @@ def nvmap(fun, n):
         fun = vmap(fun)
     return fun
 
-def vlim(a, level=1., scale=1., axis=0):
+def vlim(a, level=1., scale=1., axis:int=None):
     """
     Return robust inferior and superior limit values of an array,
     i.e. discard quantiles bilateraly on some level, and scale the margins.

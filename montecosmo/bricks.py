@@ -528,13 +528,14 @@ def mesh2masked(mesh, mask=None):
     if mask is None:
         return mesh
     else:
-        return mesh[mask]
+        return mesh[...,mask]
 
 def masked2mesh(masked, mask=None):
     if mask is None:
         return masked
     else:
-        return jnp.zeros(mask.shape).at[mask].set(masked)
+        shape = jnp.shape(masked)[:-1] + jnp.shape(mask)
+        return jnp.zeros(shape).at[...,mask].set(masked)
 
 def radecrad2cart(ra, dec, radius):
     """
@@ -551,9 +552,9 @@ def radecrad2cart(ra, dec, radius):
 def cart2radecrad(cart:jnp.ndarray):
     """
     Convert cartesian coordinates to ra, dec (in degrees), and radius.
-    * ra \in [0, 360]
-    * dec \in [-90, 90]
-    * radius \in [0, \infty[
+    * ra \\in [0, 360]
+    * dec \\in [-90, 90]
+    * radius \\in [0, \\infty[
     """
     radius = jnp.linalg.norm(cart, axis=-1)
     x, y, z = jnp.moveaxis(cart, -1, 0)

@@ -64,7 +64,7 @@ def mean_proj(mesh, indices:float|slice|np.ndarray=1., axis=-1):
 
 
 def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1., 
-              axis=-1, vlim:float|tuple[float,float]=1e-4, **kwargs):
+              axis=-1, vlim:float|tuple[float,float]=1e-4, transpose=False, **kwargs):
     """
     Plot a 2D mean projection of a 3D mesh along given axis.
 
@@ -99,6 +99,8 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
     else:
         box_shape = np.asarray(box_shape)
         xlab, ylab = np.array(["x", "y", "z"])[axids]
+        if transpose:
+            xlab, ylab = ylab, xlab
         plt.xlabel(f"${xlab}$ [Mpc/$h$]"), plt.ylabel(f"${ylab}$ [Mpc/$h$]")
 
     mesh2d = mean_proj(mesh, indices, axis)
@@ -113,6 +115,8 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
     xm, ym = mesh_shape[axids]
     xs, ys = np.linspace(0, xb, xm), np.linspace(0, yb, ym)
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
+    if transpose:
+        xx, yy = yy, xx
     quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, **kwargs)
     plt.gca().set_aspect(1)
     return quad
