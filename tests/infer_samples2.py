@@ -21,12 +21,9 @@ from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload, Path
 from getdist import plots
 
-get_ipython().run_line_magic('matplotlib', 'inline')
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
-get_ipython().system('hostname')
 
-save_dir = Path("/feynman/home/dphp/hs276503/scratch/png/lpt_64_fnl_m50")
+# save_dir = Path("/feynman/home/dphp/hs276503/scratch/png/lpt_64_fnl_0")
+save_dir = Path("/pscratch/sd/h/hsimfroy/png/lpt_64_fnl_0")
 save_path = save_dir / "test"
 save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -46,8 +43,7 @@ model = FieldLevelModel.load(save_dir / "model.yaml")
 truth = dict(jnp.load(save_dir / 'truth.npz'))
 mesh_true = jnp.fft.irfftn(truth['init_mesh'])
 kpow_true = model.spectrum(mesh_true)
-count_obs = model.masked2mesh(truth['obs'])
-delta_obs = model.count2delta(count_obs)
+delta_obs = model.count2delta(truth['obs'])
 kptc_obs = model.powtranscoh(mesh_true, delta_obs)
 
 obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','fNL','ngbar','init_mesh']
@@ -70,13 +66,6 @@ chains.shape
 # ### Inspecting chains
 # We look for mixed chains (no visible trends), `n_eff`>500, `r_hat`<1.01
 
-# In[3]:
-
-
-plt.hist(chains['init_mesh_'].std((0,1)), bins=50);
-
-
-# In[4]:
 
 
 config = pload(save_path+"_conf.p")
