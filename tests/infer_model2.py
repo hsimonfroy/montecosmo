@@ -20,7 +20,6 @@ print(jdevices())
 from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload, Path
 
-
 save_dir = Path("/pscratch/sd/h/hsimfroy/png/lpt_64_fnl_0")
 save_path = save_dir / "test"
 save_dir.mkdir(parents=True, exist_ok=True)
@@ -36,6 +35,7 @@ save_dir.mkdir(parents=True, exist_ok=True)
 # In[2]:
 
 
+# overwrite = True
 overwrite = False
 truth0 = {'Omega_m':0.3, 
     'sigma8':0.8,
@@ -86,7 +86,7 @@ else:
     # print(model2)
     truth2 = np.load(save_dir / "truth2.npz")
 
-model.render()
+# model.render()
 # model2.render("bnet.png")
 
 
@@ -123,7 +123,7 @@ plot_pow(*kpow2);
 # In[5]:
 
 
-n_samples, n_runs, n_chains = 128, 64, 4
+n_samples, n_runs, n_chains = 128, 64, 8
 tune_mass = True
 # overwrite = True
 overwrite = False
@@ -159,7 +159,7 @@ obs = {k: truth[k] for k in obs}
 
 model.reset()
 model.condition(obs, from_base=True)
-model.render()
+# model.render()
 model.block()
 
 params_warm = params_init | state.position
@@ -220,9 +220,8 @@ from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 # overwrite = True
 overwrite = False
 
-n_samples, n_runs, n_chains = 128, 64, 4
 
-if not os.path.exists(save_path+"_warm_state.p") or overwrite:
+if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
     print("Warming up...")
     warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, # 2**13
                                         desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
@@ -245,15 +244,21 @@ if not os.path.exists(save_path+"_warm_state.p") or overwrite:
     pdump(state, save_path+"_warm2_state.p")
     pdump(config, save_path+"_conf.p")
 
-else:
+elif not os.path.exists(save_path+"_last_state.p") or overwrite:
     state = pload(save_path+"_warm2_state.p")
     config = pload(save_path+"_conf.p")
+    start = 1
 
-state = pload(save_path+"_last_state.p")
+else:
+    state = pload(save_path+"_last_state.p")
+    config = pload(save_path+"_conf.p")
+    start = 7 ###########
+
+
+print("Running...")
 run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
-
 key = jr.key(42)
-start = 3 #####
+
 end = start + n_runs - 1
 for i_run in tqdm(range(start, end + 1)):
     print(f"run {i_run}/{end}")
