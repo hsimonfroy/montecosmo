@@ -21,7 +21,7 @@ from montecosmo.model import FieldLevelModel, default_config
 from montecosmo.utils import pdump, pload, Path
 
 # save_dir = Path("/feynman/home/dphp/hs276503/scratch/png/lpt_64_fnl_0")
-save_dir = Path("/pscratch/sd/h/hsimfroy/png/lpt_64_fnl_0")
+save_dir = Path("/pscratch/sd/h/hsimfroy/png/lpt_32_fnl_0_lc_apauto_nodec")
 save_path = save_dir / "test"
 save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -38,83 +38,84 @@ save_dir.mkdir(parents=True, exist_ok=True)
 
 # overwrite = True
 overwrite = False
-truth0 = {'Omega_m':0.3, 
-    'sigma8':0.8,
-    'b1':1.,
-    'b2':0., 
-    'bs2':0., 
+
+truth0 = {'Omega_m': 0.3, 
+    'sigma8': 0.8,
+    'b1': 1.,
+    'b2': 0., 
+    'bs2': 0., 
     'bn2': 0.,
     'fNL': 0.,
     'alpha_iso': 1.,
     'alpha_ap': 1.,
-    'ngbar':1e-3,}
-cell_budget = 64**3
+    'ngbar': 1e-3,}
+cell_budget = 32**3
 padding = 0.2
+
+config = {'mesh_shape': 3*(64,), 
+        'cell_length': 10., 
+        'box_center': (0.,0.,2000.), # in Mpc/h
+        'box_rotvec': (0.,0.,0.), # rotation vector in radians
+        'evolution': 'lpt',
+        'a_obs': None, # light-cone if None
+        'curved_sky': True, # curved vs. flat sky
+        'ap_param': False, # parametrized AP vs. auto AP
+        'window': padding, # if float, padded fraction, if str or Path, path to window mesh file
+        }
 
 if not os.path.exists(save_dir / "truth.npz") or overwrite:
     print("Generate truth...")
-    model = FieldLevelModel(**default_config | 
-                                {'mesh_shape': 3*(64,), 
-                                'cell_length': 10., 
-                                'box_center': (0.,0.,2000.), # in Mpc/h
-                                'box_rotvec': (0.,0.,0.), # rotation vector in radians
-                                'evolution': 'lpt',
-                                'a_obs': 0.5, # light-cone if None
-                                'curved_sky': True, # curved vs. flat sky
-                                'ap_param': False, # parametrized AP vs. auto AP
-                                'window': padding, # if float, padded fraction, if str or Path, path to window mesh file
-                                } )
+    model = FieldLevelModel(**default_config | config )
     
     fits_path = Path("/global/cfs/cdirs/desi/survey/catalogs/Y1/mocks/SecondGenMocks/AbacusSummit_v4_2/mock0/LRG_complete_SGC_1_clustering.ran.fits")
     model.add_window(fits_path, cell_budget, padding, save_dir / "window.npy")
 
-    print(model)
     truth = model.predict(samples=truth0, hide_base=False, hide_samp=False, hide_det=False, from_base=True)
     model.save(save_dir / "model.yaml")    
     jnp.savez(save_dir / "truth.npz", **truth)
 
-    model2 = FieldLevelModel(**model.asdict() | {'evolution': 'kaiser', 'curved_sky':False, 'window':None})
-    # print(model2)
-    truth2 = model2.predict(samples=truth0, hide_base=False, hide_samp=False, from_base=True)
-    model2.save(save_dir / "model2.yaml")    
-    jnp.savez(save_dir / "truth2.npz", **truth2)
+    # model2 = FieldLevelModel(**model.asdict() | {'evolution': 'kaiser', 'curved_sky':False, 'window':None})
+    # truth2 = model2.predict(samples=truth0, hide_base=False, hide_samp=False, from_base=True)
+    # model2.save(save_dir / "model2.yaml")    
+    # jnp.savez(save_dir / "truth2.npz", **truth2)
 else:
     model = FieldLevelModel.load(save_dir / "model.yaml")
-    print(model)
     truth = np.load(save_dir / "truth.npz")
 
-    model2 = FieldLevelModel.load(save_dir / "model2.yaml")
-    # print(model2)
-    truth2 = np.load(save_dir / "truth2.npz")
+    # model2 = FieldLevelModel.load(save_dir / "model2.yaml")
+    # truth2 = np.load(save_dir / "truth2.npz")
 
+delta_obs  = model.count2delta(truth['obs'])
+print(model)
 # model.render()
+
+# delta_obs2 = model2.count2delta(truth2['obs'])
+# print(model2)
 # model2.render("bnet.png")
 
 
 # In[4]:
 
 
-from montecosmo.plot import plot_mesh, plot_pow
+# from montecosmo.plot import plot_mesh, plot_pow
 
-axis = 0
-ind = .1
-delta_obs  = model.count2delta(truth['obs'])
-delta_obs2 = model2.count2delta(truth2['obs'])
+# axis = 0
+# ind = .1
 
-plt.figure(figsize=(12, 4), layout='constrained')
-plt.subplot(131)
-plot_mesh(delta_obs, model.box_shape, ind, axis)
-plt.colorbar()
+# plt.figure(figsize=(12, 4), layout='constrained')
+# plt.subplot(131)
+# plot_mesh(delta_obs, model.box_shape, ind, axis)
+# plt.colorbar()
 
-plt.subplot(132)
-plot_mesh(delta_obs2, model.box_shape, ind, axis)
-plt.colorbar()
+# plt.subplot(132)
+# plot_mesh(delta_obs2, model.box_shape, ind, axis)
+# plt.colorbar()
 
-plt.subplot(133)
-kpow = model.spectrum(delta_obs)
-kpow2 = model2.spectrum(delta_obs2)
-plot_pow(*kpow);
-plot_pow(*kpow2);
+# plt.subplot(133)
+# kpow = model.spectrum(delta_obs)
+# kpow2 = model2.spectrum(delta_obs2)
+# plot_pow(*kpow);
+# plot_pow(*kpow2);
 
 
 # ## Perform the inference
@@ -124,13 +125,13 @@ plot_pow(*kpow2);
 # In[5]:
 
 
-n_samples, n_runs, n_chains = 128, 64, 8
+n_samples, n_runs, n_chains = 128, 64, 6
 tune_mass = True
 # overwrite = True
 overwrite = False
 
 params_init = jit(vmap(partial(model.kaiser_post, delta_obs=delta_obs, scale_field=1/10)))(jr.split(jr.key(45), n_chains))    
-params_init2 = jit(vmap(partial(model2.kaiser_post, delta_obs=delta_obs2)))(jr.split(jr.key(45), n_chains))
+# params_init2 = jit(vmap(partial(model2.kaiser_post, delta_obs=delta_obs2)))(jr.split(jr.key(45), n_chains))
 
 if not os.path.exists(save_path+"_warm_state.p") or overwrite:
     print("Warming up...")
@@ -139,7 +140,7 @@ if not os.path.exists(save_path+"_warm_state.p") or overwrite:
     model.block()
 
     from montecosmo.samplers import get_mclmc_warmup
-    warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
+    warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
                                 desired_energy_var=1e-6, diagonal_preconditioning=False)))
     state, config = warmup_fn(jr.split(jr.key(43), n_chains), {k: params_init[k] for k in ['init_mesh_']})
     pdump(state, save_path+"_warm_state.p")
@@ -178,7 +179,7 @@ kpow_true = model.spectrum(mesh_true)
 kpow_fid = kpow_true[0], lin_power_interp(model.cosmo_fid)(kpow_true[0])
 kptc_obs = model.powtranscoh(mesh_true, delta_obs)
 kptcs_init = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x, fourier=False)['init_mesh']))(params_init)
-kptcs_init2 = vmap(lambda x: model2.powtranscoh(mesh_true, model2.reparam(x, fourier=False)['init_mesh']))(params_init2)
+# kptcs_init2 = vmap(lambda x: model2.powtranscoh(mesh_true, model2.reparam(x, fourier=False)['init_mesh']))(params_init2)
 kptcs_warm = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x, fourier=False)['init_mesh']))(params_warm)
 
 
@@ -193,7 +194,7 @@ def plot_kptcs(kptcs, label=None):
     plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), label=label)
 
 plot_kptcs(kptcs_init, label='init')
-plot_kptcs(kptcs_init2, label='init2')
+# plot_kptcs(kptcs_init2, label='init2')
 plot_kptcs(kptcs_warm, label='warm')
 
 plt.subplot(131)
@@ -205,7 +206,7 @@ plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', label='fiducia
 plt.axhline(1., linestyle=':', color='k', alpha=0.5)
 plt.subplot(133)
 plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs');
-plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+plt.axhline(model.wind_mesh.mean(), linestyle=':', color='k', alpha=0.5)
 plt.savefig(save_path+f'_init_warm.png')   
 
 
@@ -244,6 +245,7 @@ if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
 
     pdump(state, save_path+"_warm2_state.p")
     pdump(config, save_path+"_conf.p")
+    start = 1
 
 elif not os.path.exists(save_path+"_last_state.p") or overwrite:
     state = pload(save_path+"_warm2_state.p")
@@ -253,7 +255,7 @@ elif not os.path.exists(save_path+"_last_state.p") or overwrite:
 else:
     state = pload(save_path+"_last_state.p")
     config = pload(save_path+"_conf.p")
-    start = 7 ###########
+    start = 1 ###########
 
 
 print("Running...")

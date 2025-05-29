@@ -1,185 +1,246 @@
-import os
+
+import numpy as np
+from functools import partial
+import matplotlib.pyplot as plt
+from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree
+
 from montecosmo.model import FieldLevelModel, default_config
-from numpyro import infer
+from montecosmo.utils import pdump, pload, Path
+import os
 
-def get_save_dir(**kwargs):
-    dir = os.path.expanduser("~/scratch/pickles/")
-    # dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/pickles/")
-    # dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") ###############
-    # dir = os.path.expanduser("/pscratch/sd/h/hsimfroy/pickles/")
+def load_model(truth0, config, cell_budget, padding, save_dir, overwrite=False):
 
-    dir += f"m{kwargs['mesh_shape'][0]:d}_b{kwargs['box_shape'][0]:.1f}_ao{kwargs['a_obs']:.1f}"
-    dir += f"_ev{kwargs['evolution']}_lo{kwargs['lpt_order']:d}_pc{kwargs['precond']}_ob{kwargs['observable']}/"
-    return dir
-
-def from_id(id):
-    args = ParseSlurmId(id)
-    config = {
-          'mesh_shape':3 * (args.mesh_length,),
-          'box_shape':3 * (args.box_length if args.box_length is not None else 5. * args.mesh_length,), 
-        #   'box_shape':3 * (320.,), 
-          'a_obs':args.a_obs,
-          'lpt_order':args.lpt_order,
-          'evolution':args.evolution,
-          'precond':args.precond,
-          'observable':args.obs,
-          'nbody_steps':5,
-          }
-
-    save_dir = get_save_dir(**config)
-    from copy import deepcopy
-    config = deepcopy(default_config | config)
-    model = FieldLevelModel(**config)
-    for k, v in model.latents.items():
-        if 'scale_fid' in v:
-            model.latents[k]['scale_fid'] = v['scale_fid'] * (64 / args.mesh_length)**(3/2)
-            # model.latents[k]['scale_fid'] = v['scale_fid'] * (640. / model.box_shape[0])**(3/2) ######
-            # model.latents[k]['scale_fid'] = v['scale_fid'] * (640. / model.box_shape[0])**(3/2) * 2**.5
-    
-    mcmc_config = {
-        'sampler':args.sampler,
-        'target_accept_prob':0.65,
-        'n_samples':64 if args.mesh_length < 128 else 32 if args.mesh_length==128 else 16, ######
-        # 'n_samples':128 if args.sampler in ['MCLMC'] else 64, ######
-        'max_tree_depth':10,
-        'n_runs':60 if args.mesh_length < 128 else 60 if args.mesh_length==128 else 120,
-        'n_chains':8, ######
-        'mm':args.mm,
-    }
-    if args.rsdb==0:
-        save_dir = save_dir[:-1] + "_norsdb/"
-        model.loc_fid['b1'] = 0.
-        model.los = None
-    if args.rsdb==1:
-        save_dir = save_dir[:-1] + "_nob/"
-        model.loc_fid['b1'] = 0.
-
-    save_path = save_dir 
-    save_path += f"s{mcmc_config['sampler']}2_nc{mcmc_config['n_chains']:d}_ns{mcmc_config['n_samples']:d}"
-    if args.mm==0:
-        save_path += "_nomm"
-    elif args.mm==2:
-        save_path += "_omel"
-    
-
-    return model, mcmc_config, save_dir, save_path
-
-class ParseSlurmId():
-    def __init__(self, id):
-        self.id = str(id)
-        # self.id = '31' + self.id
-        # self.id = '422' + self.id
-        # self.id = self.id + '41'
-        self.id = self.id[0] + '113' + self.id[1:]
-        print("True id:", self.id) #####
-
-        dic = {}
-        dic['mesh_length'] = [8,16,32,64,128,256]
-        dic['evolution'] = ['kaiser','lpt','nbody']
-        dic['lpt_order'] = [0,1,2]
-        dic['rsdb'] = [0,1,2,3] #########################
-        dic['precond'] = ['direct','fourier','kaiser','kaiser_dyn']
-
-        dic['sampler'] = ['NUTS', 'HMC', 'NUTSwG', 'NUTSwG2', 'MCLMC', 'aMCLMC']
-        dic['mm'] = [0,1,2]
-
-        # dic['rsdb'] = [2]
-        dic['box_length'] = [None]
-        dic['a_obs'] = [0.5]
-        dic['obs'] = ['field']
+    if not os.path.exists(save_dir / "truth.npz") or overwrite:
+        print("Generate truth...")
+        model = FieldLevelModel(**default_config | config )
         
-        for i, (k, v) in enumerate(dic.items()):
-            if i < len(self.id):
-                setattr(self, k, v[int(self.id[i])])
-            else:
-                setattr(self, k, v[0])
+        fits_path = Path("/global/cfs/cdirs/desi/survey/catalogs/Y1/mocks/SecondGenMocks/AbacusSummit_v4_2/mock0/LRG_complete_SGC_1_clustering.ran.fits")
+        model.add_window(fits_path, cell_budget, padding, save_dir / "window.npy")
+
+        truth = model.predict(samples=truth0, hide_base=False, hide_samp=False, hide_det=False, from_base=True)
+        model.save(save_dir / "model.yaml")    
+        jnp.savez(save_dir / "truth.npz", **truth)
+
+        # model2 = FieldLevelModel(**model.asdict() | {'evolution': 'kaiser', 'curved_sky':False, 'window':None})
+        # truth2 = model2.predict(samples=truth0, hide_base=False, hide_samp=False, from_base=True)
+        # model2.save(save_dir / "model2.yaml")    
+        # jnp.savez(save_dir / "truth2.npz", **truth2)
+    else:
+        model = FieldLevelModel.load(save_dir / "model.yaml")
+        truth = np.load(save_dir / "truth.npz")
+
+        # model2 = FieldLevelModel.load(save_dir / "model2.yaml")
+        # truth2 = np.load(save_dir / "truth2.npz")
+
+    print(model)
+    # model.render()
+
+    # print(model2)
+    # model2.render("bnet.png")
+    return model, truth
 
 
 
-def get_mcmc(model, config):
-    n_samples = config['n_samples']
-    n_chains = config['n_chains']
-    max_tree_depth = config['max_tree_depth']
-    target_accept_prob = config['target_accept_prob']
-    name = config['sampler']
-    mm = config['mm']
-    
-    if name == "NUTS":
-        kernel = infer.NUTS(
-            model=model,
-            # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-            step_size=1e-3, 
-            max_tree_depth=max_tree_depth,
-            target_accept_prob=target_accept_prob,
-            # adapt_step_size=False,
-            adapt_mass_matrix=mm,
-            )
+
+def warmup1(save_path, n_chains, overwrite=False):
+    save_dir = save_path.parent
+    model = FieldLevelModel.load(save_dir / "model.yaml")
+    truth = np.load(save_dir / "truth.npz")
+
+    delta_obs  = model.count2delta(truth['obs'])
+    params_init = jit(vmap(partial(model.kaiser_post, delta_obs=delta_obs, scale_field=1/10)))(jr.split(jr.key(45), n_chains))    
+    # params_init2 = jit(vmap(partial(model2.kaiser_post, delta_obs=delta_obs2)))(jr.split(jr.key(45), n_chains))
+
+    if not os.path.exists(save_path+"_warm_state.p") or overwrite:
+        print("Warming up...")
+        model.reset()
+        model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
+        model.block()
+
+        from montecosmo.samplers import get_mclmc_warmup
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
+                                    desired_energy_var=3e-7, diagonal_preconditioning=False)))
+        state, config = warmup_fn(jr.split(jr.key(43), n_chains), {k: params_init[k] for k in ['init_mesh_']})
+        pdump(state, save_path+"_warm_state.p")
+        pdump(config, save_path+"_warm_conf.p")
+    else:
+        state = pload(save_path+"_warm_state.p")
+        config = pload(save_path+"_warm_conf.p")
+
+    # obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
+    # obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','ngbar']
+    # obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar']
+    # obs = ['obs','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
+    # obs = ['obs','fNL','ngbar','alpha_iso','alpha_ap']
+    obs = ['obs','ngbar','alpha_iso','alpha_ap']
+    # obs = ['obs','alpha_iso','alpha_ap']
+    # obs = ['obs', 'ngbar']
+    obs = {k: truth[k] for k in obs}
+
+    model.reset()
+    model.condition(obs, from_base=True)
+    # model.render()
+    model.block()
+
+    params_warm = params_init | state.position
+    params_warm = {k: params_warm[k] for k in params_warm.keys() - model.data.keys()}
+
+
+
+    ########
+    # Plot #
+    ########
+    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh
+    from montecosmo.bricks import lin_power_interp
+
+    mesh_true = jnp.fft.irfftn(truth['init_mesh'])
+    kpow_true = model.spectrum(mesh_true)
+    kpow_fid = kpow_true[0], lin_power_interp(model.cosmo_fid)(kpow_true[0])
+    kptc_obs = model.powtranscoh(mesh_true, delta_obs)
+    kptcs_init = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x, fourier=False)['init_mesh']))(params_init)
+    kptcs_warm = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x, fourier=False)['init_mesh']))(params_warm)
+    # kptcs_run = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x, fourier=False)['init_mesh']))(state.position)
+
+
+    prob = 0.95
+
+    plt.figure(figsize=(12, 4), layout='constrained')
+    def plot_kptcs(kptcs, label=None):
+        plot_powtranscoh(*kptcs, fill=prob)
+        plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), label=label)
+
+    plot_kptcs(kptcs_init, label='init')
+    plot_kptcs(kptcs_warm, label='warm')
+    # plot_kptcs(kptcs_run, label='run')
+
+    plt.subplot(131)
+    plot_pow(*kpow_true, 'k:', label='true')
+    plot_pow(*kpow_fid, 'k--', label='fiducial')
+    plt.legend()
+    plt.subplot(132)
+    plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', label='fiducial')
+    plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plt.subplot(133)
+    plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs');
+    plt.axhline(model.wind_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+    plt.savefig(save_path+f'_init_warm.png')   
+
+    return params_warm
+
+
+
+
+def warmup2run(params_warm, save_path, n_samples, n_runs, n_chains, tune_mass, overwrite=False):
+    save_dir = save_path.parent
+    model = FieldLevelModel.load(save_dir / "model.yaml")
+
+    # jconfig.update("jax_debug_nans", True)
+    from tqdm import tqdm
+    from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
+    from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
+
+    if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
+        print("Warming up...")
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, # 2**13
+                                            desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
+        state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
+
+        eval_per_ess = 1e3
+        ss = jnp.median(config.step_size)
+        config = MCLMCAdaptationState(L=0.4 * eval_per_ess/2 * ss, 
+                                    step_size=ss, 
+                                    inverse_mass_matrix=jnp.median(config.inverse_mass_matrix, 0))
+        config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
         
-    elif name == "HMC":
-        kernel = infer.HMC(
-            model=model,
-            # init_strategy=numpyro.infer.init_to_value(values=fiduc_params),
-            step_size=1e-3, 
-            # Heuristic mean_length_steps_NUTS / 2, compare with gaussian pi.
-            trajectory_length=4.4 / 2, 
-            target_accept_prob=target_accept_prob,
-            # adapt_step_size=False,
-            adapt_mass_matrix=mm,
-            )
+        print("ss: ", config.step_size)
+        print("L: ", config.L)
+        from jax.flatten_util import ravel_pytree
+        flat, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
+        print("inv_mm:", unrav_fn(config.inverse_mass_matrix[0]))
+        print(tree.map(vmap(lambda x: jnp.isnan(x).sum()), state.position))
 
-    mcmc = infer.MCMC(
-        sampler=kernel,
-        num_warmup=n_samples,
-        num_samples=n_samples, # for each run
-        num_chains=n_chains,
-        chain_method="vectorized",
-        progress_bar=True,)
-    
-    return mcmc
+        pdump(state, save_path+"_warm2_state.p")
+        pdump(config, save_path+"_conf.p")
+        start = 1
 
+    elif not os.path.exists(save_path+"_last_state.p") or overwrite:
+        state = pload(save_path+"_warm2_state.p")
+        config = pload(save_path+"_conf.p")
+        start = 1
+
+    else:
+        state = pload(save_path+"_last_state.p")
+        config = pload(save_path+"_conf.p")
+        start = 100 ###########
 
 
-def get_init_mcmc(model, n_chains=8):
-    n_samples = 128
-    max_tree_depth = 10 ######
-    
-    kernel = infer.NUTS(
-        model=model,
-        # init_strategy=numpyro.infer.init_to_value(values=fiduc_params)
-        step_size=1e-3, 
-        max_tree_depth=max_tree_depth,
-        target_accept_prob=0.65,
-        # adapt_step_size=False,
-        # adapt_mass_matrix=False,
-        )
+    print("Running...")
+    run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
+    key = jr.key(42)
 
-    mcmc = infer.MCMC(
-        sampler=kernel,
-        num_warmup=n_samples,
-        num_samples=n_samples, # for each run
-        num_chains=n_chains,
-        chain_method="vectorized",
-        progress_bar=True,)
-    
-    return mcmc
+    end = start + n_runs - 1
+    for i_run in tqdm(range(start, end + 1)):
+        print(f"run {i_run}/{end}")
+        key, run_key = jr.split(key, 2)
+        state, samples = run_fn(jr.split(run_key, n_chains), state, config)
+        
+        print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
+        jnp.savez(save_path+f"_{i_run}.npz", **samples)
+        pdump(state, save_path+"_last_state.p")
 
 
 
-# from jax.flatten_util import ravel_pytree
-# from jax import numpy as jnp
 
-# def get_sqrt_diag_cov_from_numpyro(state, params, all=False):
-#     mass_matrix_sqrt_inv = state.adapt_state.mass_matrix_sqrt_inv
-#     sqrt_diag_cov = {}
 
-#     if all:
-#         _, unravel_fn = ravel_pytree(params)
-#         sqrt_diag_cov = unravel_fn(next(iter(mass_matrix_sqrt_inv.values())))
-#     else:
-#         for k, v in params.items():
-#             if k in ['init_mesh_']:
-#                 _, unravel_fn = ravel_pytree(v)
-#                 sqrt_diag_cov[k] = unravel_fn(mass_matrix_sqrt_inv[('init_mesh_',)])
-#             else:
-#                 sqrt_diag_cov[k] = jnp.ones_like(v)
-#     return sqrt_diag_cov
+
+
+def make_chains(save_path):
+    from montecosmo.chains import Chains
+    save_dir = save_path.parent
+
+    model = FieldLevelModel.load(save_dir / "model.yaml")
+    truth = dict(jnp.load(save_dir / 'truth.npz'))
+    mesh_true = jnp.fft.irfftn(truth['init_mesh'])
+    # kpow_true = model.spectrum(mesh_true)
+    # delta_obs = model.count2delta(truth['obs'])
+    # kptc_obs = model.powtranscoh(mesh_true, delta_obs)
+
+    obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','fNL','ngbar','init_mesh']
+    obs = {k: truth[k] for k in obs}
+    model.condition(obs, from_base=True)
+
+    transforms = [
+                #   lambda x: x[:3],
+                partial(Chains.thin, thinning=1),                     # thin the chains
+                model.reparam_chains,                                 # reparametrize sample variables into base variables
+                partial(model.powtranscoh_chains, mesh0=mesh_true),   # compute mesh statistics
+                partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
+                ]
+    chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
+    pdump(chains, save_path + "_chains.p")
+    print(chains.shape, '\n')
+
+
+    transforms = [
+                #   lambda x: x[:3],
+                partial(Chains.thin, thinning=1),                     # thin the chains
+                partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
+                ]
+    chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
+    pdump(chains, save_path + "_chains_.p")
+    print(chains.shape, '\n')
+
+
+    transforms = [
+                #   lambda x: x[:3],
+                partial(Chains.thin, thinning=64),
+                model.reparam_chains,
+                partial(model.powtranscoh_chains, mesh0=mesh_true),
+                ]
+    chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
+    pdump(chains, save_path + "_chains_mesh.p")
+    print(chains.shape, '\n')
+
+
+
+
