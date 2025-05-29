@@ -20,7 +20,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_weights,
                                simple_window, mesh2masked, masked2mesh,
-                               tophysical_mesh, tophysical, toredshift_param, toredshift_auto,
+                               tophysical_mesh, tophysical, toredshift_param, toredshift_auto, toredshift_auto2,
                                phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                catalog2mesh, catalog2window, pos_mesh)
 from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f
@@ -49,7 +49,7 @@ default_config={
             'poles':(0,2,4),
             'a_obs':None, # light-cone if None
             'curved_sky':True, # curved vs. flat sky
-            'ap_param': False, # parametrized AP vs. auto AP
+            'ap_auto': True, # parametrized AP vs. auto AP
             'window':None, # if float, padded fraction, if str or Path, path to window mesh file
             # 'save_dir':str,
             # Latents
@@ -93,13 +93,13 @@ default_config={
                                     'scale_fid':1e0,
                                     },
                         'fNL': {'group':'bias',
-                                    'label':'{f}_{\\mathrm{NL}}',
+                                    'label':'{f}_\\mathrm{NL}',
                                     'loc':0.,
                                     'scale':1e3,
                                     'scale_fid':1e1,
                                     },
                         'alpha_iso': {'group':'ap',
-                                      'label':'{\\alpha}_{\\mathrm{iso}}',
+                                      'label':'{\\alpha_\\mathrm{iso}}',
                                       'loc':1.,
                                       'scale':.1,
                                       'scale_fid':1e-2,
@@ -107,7 +107,7 @@ default_config={
                                       'high':jnp.inf,
                                       },
                         'alpha_ap': {'group':'ap',
-                                      'label':'{\\alpha}_{\\mathrm{AP}}',
+                                      'label':'{\\alpha_\\mathrm{AP}}',
                                       'loc':1.,
                                       'scale':.1,
                                       'scale_fid':1e-2,
@@ -123,7 +123,7 @@ default_config={
                                       'high':jnp.inf,
                                       },
                         'init_mesh': {'group':'init',
-                                      'label':'{\\delta}_L',},
+                                      'label':'{\\delta_\\mathrm{L}}',},
                         },
             }
 
@@ -351,7 +351,7 @@ class FieldLevelModel(Model):
     poles:tuple
     a_obs:float
     curved_sky:bool
-    ap_param:bool
+    ap_auto:bool
     window:float|str
     # Latents
     precond:str
@@ -443,7 +443,7 @@ class FieldLevelModel(Model):
     def evolve(self, params:tuple):
         cosmology, bias, ap, syst, init = params
 
-        init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.mesh_shape, self.box_shape)
+        init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_shape)
 
         if self.evolution=='kaiser':
             if self.curved_sky:
@@ -487,15 +487,15 @@ class FieldLevelModel(Model):
         # v in (Mpc/h)*(km/s/(Mpc/h)) = km/s, so dq_rsd in Mpc/h
 
         # RSD and Alcock-Paczynski effects
-        if self.ap_param:
-            pos = toredshift_param(pos, vel, los, ap, self.curved_sky)
-        else:
+        if self.ap_auto:
             pos = toredshift_auto(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) 
+        else:
+            pos = toredshift_param(pos, vel, los, ap, self.curved_sky)
 
         # CIC paint weighted by Lagrangian bias expansion weights
         pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
         gxy_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
-        gxy_mesh = deconv_paint(gxy_mesh, order=2) # NOTE: final deconvolution?
+        # gxy_mesh = deconv_paint(gxy_mesh, order=2); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))

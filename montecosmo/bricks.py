@@ -97,10 +97,11 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     return trans_fn
 
 
-def add_png(cosmo:Cosmology, fNL, init_mesh, mesh_shape, box_shape):
+def add_png(cosmo:Cosmology, fNL, init_mesh, box_shape):
     """
     Add Primordial Non-Gaussianity (PNG) to the linear matter density field.
     """
+    mesh_shape = ch2rshape(init_mesh.shape)
     kvec = rfftk(mesh_shape)
     kmesh = sum((ki  * (m / l))**2 for ki, m, l in zip(kvec, mesh_shape, box_shape))**0.5
     trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
@@ -515,6 +516,23 @@ def toredshift_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology
         pos = scale_pos(pos, los, alpha, 1)
     return pos
 
+
+def toredshift_auto2(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky=True):
+    """
+    Redshift-Space Distortions and automatic Alcock-Paczynski effect.
+    """
+    vel_los = (vel * los).sum(-1, keepdims=True)
+    pos += vel_los * los
+
+    rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
+    a = chi2a(cosmo, rpos)
+    rpos_new = a2chi(cosmo_fid, a)
+    alpha = safe_div(rpos_new, rpos)
+    if curved_sky:
+        pos *= alpha
+    else:
+        pos = scale_pos(pos, los, alpha, 1)
+    return pos
 
 
 
