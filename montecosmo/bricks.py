@@ -537,7 +537,7 @@ def toredshift_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology
     if curved_sky:
         pos *= alpha
     else:
-        pos = scale_pos(pos, los, alpha, 1)
+        pos = scale_pos(pos, los, alpha, 1.)
     return pos
 
 
@@ -610,7 +610,7 @@ def radecz2cart(cosmo:Cosmology, radecz:dict):
     """
     ra = jnp.array(radecz['RA'])
     dec = jnp.array(radecz['DEC'])
-    radius = a2chi(cosmo, jnp.array(1 / (1 + radecz['Z'])))
+    radius = a2chi(cosmo, 1 / jnp.array(1 + radecz['Z']))
     cart = radecrad2cart(ra, dec, radius)
     return cart
 

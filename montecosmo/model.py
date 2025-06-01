@@ -27,7 +27,7 @@ from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import ysafe_dump, ysafe_load, Path
 
-from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, cgh2rg2, rg2cgh2
+from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2
 from montecosmo.chains import Chains
 
 
@@ -59,6 +59,7 @@ default_config={
             'latents': {'Omega_m': {'group':'cosmo', 
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
+                                    # 'loc':0.3, 
                                     'scale':0.5,
                                     'scale_fid':1e-2,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -816,8 +817,8 @@ class FieldLevelModel(Model):
                                        self.wind_mesh, self.a_fid, self.box_shape, self.box_center)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
-        post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
-        # post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
+        # post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
+        post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
         # NOTE: scaling down the field is recommended when the Kaiser posterior approximation becomes less valid
         # because many high-wavevector amplitudes can be set to high.

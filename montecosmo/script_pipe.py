@@ -1,85 +1,109 @@
 
+from desipipe import Queue, Environment, TaskManager, spawn
+from desipipe.environment import BaseEnvironment
 
+queue = Queue('test', base_dir='_test')
+queue.clear(kill=False)
 
-# from desipipe import Queue, Environment, TaskManager
-# from desipipe.environment import BaseEnvironment
-
-# # Let's instantiate a Queue, which records all tasks to be performed
-# queue = Queue('test', base_dir='_tests')
-
-# # class MontEnv(BaseEnvironment):
-# #     name = 'montenv'
-# #     _defaults = dict(DESICFS='/global/cfs/cdirs/desi')
-# #     _command = 'export CRAY_ACCEL_TARGET=nvidia80 ; ' \
-# #                 'export MPICC="cc -shared ; ' \
-# #                 'export SLURM_CPU_BIND="cores" ; ' \
-# #                 'source activate montenv'
-
-# # environ = MontEnv
-# # environ = Environment("montenv")
 # environ = Environment("nersc-cosmodesi")  # or your environnment, see https://github.com/cosmodesi/desipipe/blob/f0e8cafe63f5aa4ca80cc5e40c6b2efa61bcbcb5/desipipe/environment.py#L196
 
-# output, error = './outs/slurm-%j.out', './outs/slurm-%j.err'
-# tm = TaskManager(queue=queue, environ=environ, 
-#                  scheduler=dict(max_workers=20), 
-#                  provider=dict(provider='nersc', time='01:00:00', mpiprocs_per_worker=8, nodes_per_worker=2, output=output, error=error, constraint='gpu'))
+# class MontEnv(BaseEnvironment):
+#     name = 'montenv'
+#     _defaults = dict(DESICFS='/global/cfs/cdirs/desi')
+#     _command = 'export CRAY_ACCEL_TARGET=nvidia80 ; ' \
+#                 'export MPICC="cc -shared" ; ' \
+#                 'export SLURM_CPU_BIND="cores" ; ' \
+#                 'source activate montenv'
 
-
-# @tm.python_app
-# def run():
-#     print("ho")
-#     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='.75' # NOTE: jax preallocates GPU (default 75%)
-#     import numpy as np
-#     from functools import partial
-#     import matplotlib.pyplot as plt
-#     from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree
-#     jconfig.update("jax_enable_x64", True)
-#     print(jdevices())
-
-#     from montecosmo.model import FieldLevelModel, default_config
-#     from montecosmo.utils import pdump, pload, Path
-#     import os
-
-#     # save_dir = os.path.expanduser("~/scratch/png/")
-#     # save_dir = os.path.expanduser("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/")
-#     # save_dir = os.path.expanduser("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") ###############
-#     save_dir = os.path.expanduser("/pscratch/sd/h/hsimfroy/png/")
-    
-#     save_dir = save_dir / "lpt_64_fnl_00"
-#     save_path = save_dir / "test"
-#     # save_dir = "./lpt_64_fnl_0"
-#     # save_path = save_dir + "test"
-#     save_dir.mkdir(parents=True, exist_ok=True)
-
-#     print("ho")
-
-# if __name__ == '__main__':
-#     from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree
-#     jconfig.update("jax_enable_x64", True)
-#     print(jdevices())
-#     run()
-
-
-
-
-from desipipe import Queue, Environment, TaskManager, spawn
-
-queue = Queue('test', base_dir='_tests')
-environ = Environment("nersc-cosmodesi")  # or your environnment, see https://github.com/cosmodesi/desipipe/blob/f0e8cafe63f5aa4ca80cc5e40c6b2efa61bcbcb5/desipipe/environment.py#L196
+environ = BaseEnvironment(command='source /global/homes/h/hsimfroy/miniforge3/bin/activate montenv')
 
 output, error = './outs/slurm-%j.out', './outs/slurm-%j.err'
 tm = TaskManager(queue=queue, environ=environ, 
-                 scheduler=dict(max_workers=20), 
-                 provider=dict(provider='nersc', time='01:00:00', mpiprocs_per_worker=8, nodes_per_worker=2, output=output, error=error, constraint='gpu'))
+                 scheduler=dict(max_workers=12), 
+                 provider=dict(provider='nersc', time='00:05:00', 
+                               mpiprocs_per_worker=1, nodes_per_worker=1, 
+                               output=output, error=output, 
+                               constraint='gpu', qos='debug'))
+
+
+
+
+
+
+
 
 
 @tm.python_app
-def run():
-    print("ho")
+def infer_model():
+    import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
+    import numpy as np
+    from functools import partial
+    import matplotlib.pyplot as plt
+    from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree
+    jconfig.update("jax_enable_x64", True)
+    print('\n', jdevices())
+
+    from montecosmo.model import FieldLevelModel, default_config
+    from montecosmo.utils import pdump, pload, Path
+
+    # save_dir = Path(os.path.expanduser("~/scratch/png/"))
+    # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/")
+    # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/")
+    save_dir = Path("/pscratch/sd/h/hsimfroy/png/")
+    
+    save_dir = save_dir / "lpt_64_fnl_00"
+    save_path = save_dir / "test"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    truth0 = {'Omega_m': 0.3, 
+        'sigma8': 0.8,
+        'b1': 1.,
+        'b2': 0., 
+        'bs2': 0., 
+        'bn2': 0.,
+        'fNL': 0.,
+        'alpha_iso': 1.,
+        'alpha_ap': 1.,
+        'ngbar': 1e-3,}
+    cell_budget = 64**3
+    padding = 0.2
+
+    config = {'mesh_shape': 3*(64,), 
+            'cell_length': 10., 
+            'box_center': (0.,0.,2000.), # in Mpc/h
+            'box_rotvec': (0.,0.,0.), # rotation vector in radians
+            'evolution': 'lpt',
+            'a_obs': None, # light-cone if None
+            'curved_sky': True, # curved vs. flat sky
+            'ap_param': False, # parametrized AP vs. auto AP
+            'window': padding, # if float, padded fraction, if str or Path, path to window mesh file
+            }
+
+    overwrite = False
+    from montecosmo.script import load_model, warmup1, warmup2run, make_chains
+    model, truth = load_model(truth0, config, cell_budget, padding, save_dir, overwrite)
+
+    n_samples, n_runs, n_chains, tune_mass = 128, 64, 6, True  
+    print(f"n_samples={n_samples}, n_runs={n_runs}, n_chains={n_chains}, tune_mass={tune_mass}")
+    
+    params_warm = warmup1(save_path, n_chains, overwrite)
+    warmup2run(params_warm, save_path, n_samples, n_runs, n_chains, tune_mass, overwrite)
+
+    make_chains(save_path)
+
+
+
+
+
 
 if __name__ == '__main__':
     print("hey")
-    run()
+    infer_model()
     print("bye")
 
-    spawn(queue)
+    spawn(queue, spawn=True)
+
+
+
+
+
