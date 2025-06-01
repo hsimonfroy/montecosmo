@@ -71,7 +71,7 @@ def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
     """
     pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**0.5
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**.5
     return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
 
 
@@ -87,7 +87,7 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     ks = jnp.logspace(-4, 1, n_interp)
     pow_prim = ks**cosmo.n_s
     pow_lin = pow_fn(ks)
-    trans_lin = (pow_lin / pow_prim / (pow_lin[0] / pow_prim[0]))**0.5
+    trans_lin = (pow_lin / pow_prim / (pow_lin[0] / pow_prim[0]))**.5
 
     z_norm = 10. # in matter-dominated era
     a_norm = 1. / (1. + z_norm)
@@ -103,7 +103,7 @@ def add_png(cosmo:Cosmology, fNL, init_mesh, box_shape):
     """
     mesh_shape = ch2rshape(init_mesh.shape)
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**0.5
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**.5
     trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
 
     phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
@@ -124,7 +124,7 @@ def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, box_center=(0,0,0)):
     """
     los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
     kvec = rfftk(mesh_shape)
-    kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
+    kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
     mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
     mumesh = safe_div(mumesh, kmesh)
 
@@ -142,7 +142,7 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los):
         return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
     else:
         kvec = rfftk(mesh_shape)
-        kmesh = sum(kk**2 for kk in kvec)**0.5 # in cell units
+        kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
 
         mu_delta = jnp.stack([jnp.fft.irfftn(
                 safe_div(kvec[i] * init_mesh, kmesh)
@@ -400,20 +400,16 @@ def radius_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, curved_sky=
     Return physical distances of the mesh cells.
     """
     # Only Nx*Ny*Nz memory instead of naive Nx*Ny*Nz*3 obtained from mesh of positions 
-    rx = np.arange(mesh_shape[0]) + .5
-    ry = np.arange(mesh_shape[1]) + .5
-    rz = np.arange(mesh_shape[2]) + .5
-
-    rx = rx.reshape([-1, 1, 1])
-    ry = ry.reshape([1, -1, 1])
-    rz = rz.reshape([1, 1, -1])
+    rx = np.arange(mesh_shape[0]).reshape([-1, 1, 1])
+    ry = np.arange(mesh_shape[1]).reshape([1, -1, 1])
+    rz = np.arange(mesh_shape[2]).reshape([1, 1, -1])
     rvec = rx, ry, rz
 
     box_center = box_rot.apply(box_center, inverse=True)
     if curved_sky:
         # Use that ||Rx + c|| = ||x + R^T c|| to avoid computing Rx
         rvec = [r * b / m - b / 2 + c for r, m, b, c in zip(rvec, mesh_shape, box_shape, box_center)]
-        rmesh = sum(ri**2 for ri in rvec)**0.5
+        rmesh = sum(ri**2 for ri in rvec)**.5
     else:
         # Use that l^T (Rx + c) = (R^T l)^T (x + R^T c) to avoid computing Rx
         # Here l = c / ||c|| so R^T l = R^T c / ||R^T c|| 
@@ -426,8 +422,7 @@ def pos_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape):
     """
     Return a mesh of the physical positions of the mesh cells.
     """
-    # Most applications require only Nx*Ny*Nz memory, instead of this Nx*Ny*Nz*3 
-    pos = np.indices(mesh_shape, dtype=float).reshape(3,-1).T + .5
+    pos = np.indices(mesh_shape, dtype=float).reshape(3,-1).T
     pos = cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape)
     return pos.reshape(tuple(mesh_shape) + (3,))
 
@@ -689,15 +684,22 @@ def simple_box(pos):
     rotvec = jnp.zeros(jnp.shape(pos)[-1])
     return center, rotvec, shape
 
-def find_mesh_shape(box_shape, cell_budget, padding=0.):
+def get_mesh_shape(box_shape, cell_budget, padding=0.):
     """
     Return mesh shape and cell length for a given box shape and cell budget, with optional padding.
     Mesh shape is rounded to the nearest even integers.
     """
     box_shape *= 1 + padding
     cell_length = float((box_shape.prod() / cell_budget)**(1/3))
-    mesh_shape = 2 * np.round(box_shape / cell_length / 2).astype(int)
+    mesh_shape = 2 * np.rint(box_shape / cell_length / 2).astype(int)
     return mesh_shape, cell_length
+
+def get_ptcl_shape(mesh_shape, oversampling=1.):
+    """
+    Return particle grid shape for a given mesh shape 
+    and a 1D oversampling factor of the particle grid by the mesh grid.
+    """
+    return np.rint(mesh_shape / oversampling).astype(int)
 
 
 def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_shape):
@@ -718,7 +720,7 @@ def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0.):
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
     box_center, box_rotvec, box_shape = simple_box(pos)
-    mesh_shape, cell_length = find_mesh_shape(box_shape, cell_budget, padding)
+    mesh_shape, cell_length = get_mesh_shape(box_shape, cell_budget, padding)
     box_shape = mesh_shape * cell_length # box_shape update due to rounding and padding
     box_rot = Rotation.from_rotvec(box_rotvec)
 

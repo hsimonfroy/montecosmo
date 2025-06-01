@@ -113,7 +113,7 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
 
     xb, yb = box_shape[axids]
     xm, ym = mesh_shape[axids]
-    xs, ys = np.linspace(0, xb, xm), np.linspace(0, yb, ym)
+    xs, ys = np.linspace(0, xb, xm, endpoint=False), np.linspace(0, yb, ym, endpoint=False)
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
     if transpose:
         xx, yy = yy, xx

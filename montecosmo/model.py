@@ -14,7 +14,7 @@ import numpy as np
 from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jax.scipy.spatial.transform import Rotation
 
-from jaxpm.painting import cic_paint
+# from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
@@ -22,8 +22,8 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
                                simple_window, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical, toredshift_param, toredshift_auto, toredshift_auto2,
                                phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
-                               catalog2mesh, catalog2window, pos_mesh)
-from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f
+                               catalog2mesh, catalog2window, pos_mesh, get_ptcl_shape)
+from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, paint
 from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
 from montecosmo.utils import ysafe_dump, ysafe_load, Path
 
@@ -41,17 +41,17 @@ default_config={
             # 'box_shape':3 * (320.,), # in Mpc/h
             # Evolution
             'evolution':'lpt', # kaiser, lpt, nbody
-            'nbody_steps':5,
-            'nbody_snapshots':None,
-            'lpt_order':2,
-            'paint_order':2,
+            'nbody_steps':5, # number of N-body steps
+            'nbody_snapshots':None, # number of N-body snapshots to save, if None, only save last
+            'lpt_order':2, # order of LPT displacement
+            'paint_order':2, # order of interpolation kernel
             'oversampling':1., # particle grid to mesh grid 1D ratio
             # Observables
             'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
-            'poles':(0,2,4),
+            'poles':(0,2,4), # multipoles order to compute, if observable is 'powspec'
             'a_obs':None, # light-cone if None
             'curved_sky':True, # curved vs. flat sky
-            'ap_auto': True, # parametrized AP vs. auto AP
+            'ap_auto': True, # auto AP vs. parametric AP
             'window':None, # if float, padded fraction, if str or Path, path to window mesh file
             # 'save_dir':str,
             # Latents
@@ -383,6 +383,7 @@ class FieldLevelModel(Model):
         self.box_rotvec = np.asarray(self.box_rotvec)
         self.box_rot = Rotation.from_rotvec(self.box_rotvec)
         self.box_shape = self.mesh_shape * self.cell_length
+        self.ptcl_shape = get_ptcl_shape(self.mesh_shape, self.oversampling)
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
@@ -413,6 +414,7 @@ class FieldLevelModel(Model):
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
         out += f"mean_count_fid: {self.count_fid:.3f} gxy/cell\n"
+        out += f"ptcl_shape:     {list(self.ptcl_shape)} ptcl\n"
         return out
 
     def _model(self, temp_prior=1., temp_lik=1.):
@@ -454,7 +456,7 @@ class FieldLevelModel(Model):
     def evolve(self, params:tuple):
         cosmology, bias, ap, syst, init = params
 
-        init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_shape)
+        # init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_shape) ######
 
         if self.evolution=='kaiser':
             # TODO: AP Kaiser?
@@ -465,7 +467,12 @@ class FieldLevelModel(Model):
             return gxy_mesh, syst
                     
         # Create regular grid of particles, and get their scale factors
-        pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
+        # pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
+        # print("oldy")
+
+        pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(self.mesh_shape, self.ptcl_shape)]
+        pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
+
         _, _, los, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
                                 cosmology, self.a_obs, self.curved_sky)
 
@@ -476,15 +483,20 @@ class FieldLevelModel(Model):
         if self.evolution=='lpt':
             # NOTE: lpt assumes given mesh is at a=1
             cosmology._workspace = {}  # HACK: temporary fix
-            dpos, vel = lpt(cosmology, **init, pos=pos, a=a, order=self.lpt_order, grad_fd=False, lap_fd=False)
+            dpos, vel = lpt(cosmology, **init, pos=pos, a=a, 
+                            lpt_order=self.lpt_order, paint_order=self.paint_order, grad_fd=False, lap_fd=False)
+            # print("ratio", (self.mesh_shape / self.ptcl_shape).prod() )
+            # pos += dpos * (self.mesh_shape / self.ptcl_shape).prod()
+
             pos += dpos
-            pos, vel = deterministic('lpt_part', jnp.array((pos, vel)))
+            pos, vel = deterministic('lpt_ptcl', jnp.array((pos, vel)))
 
         elif self.evolution=='nbody':
             cosmology._workspace = {}  # HACK: temporary fix
+            assert jnp.ndim(a) == 0, "N-body light-cone not implemented yet"
             pos, vel = nbody_bf(cosmology, **init, pos=pos, a=a, n_steps=self.nbody_steps, 
-                                 grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
-            pos, vel = deterministic('nbody_part', jnp.array(pos, vel))
+                                paint_order=self.paint_order, grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
+            pos, vel = deterministic('nbody_ptcl', jnp.array((pos, vel)))
             pos, vel = tree.map(lambda x: x[-1], (pos, vel))
 
         pos, rpos, los, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
@@ -496,15 +508,15 @@ class FieldLevelModel(Model):
 
         # RSD and Alcock-Paczynski effects
         if self.ap_auto:
-            pos = toredshift_auto2(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) ####
+            pos = toredshift_auto2(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) ########
             # pos = toredshift_auto(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) 
         else:
             pos = toredshift_param(pos, vel, los, ap, self.curved_sky)
 
         # Painting weighted by Lagrangian bias expansion weights
         pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
-        gxy_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
-        gxy_mesh = deconv_paint(gxy_mesh, order=2); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+        gxy_mesh = paint(pos, tuple(self.mesh_shape), lbe_weights, self.paint_order)
+        gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
@@ -531,8 +543,8 @@ class FieldLevelModel(Model):
             obs *= wind * syst['ngbar'] * self.cell_length**3
 
             # Gaussian noise
-            obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5))
-            # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
+            # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5))
+            obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
             # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
             # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
 

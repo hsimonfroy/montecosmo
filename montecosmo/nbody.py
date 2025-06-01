@@ -1,4 +1,5 @@
 from functools import partial
+from itertools import product
 import numpy as np
 
 from jax import numpy as jnp, tree, debug, lax
@@ -134,138 +135,95 @@ def paint_kernel(kvec, order:int=2):
 ###################
 # Mass-assignment #
 ###################
-"""
-Implementation of various resamplers, with attributes ``read``, ``paint`` and ``compensate``.
-"""
-import itertools
-from collections.abc import Callable
+paint_kernels = [
+    lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
+    lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
+    lambda s: 1 - s, # CIC
+    lambda s: (s <= 1/2) * (3/4 - s**2) + (s > 1/2) / 2 * (3/2 - s)**2, # TSC
+    lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (s > 1) / 6 * (2 - s)**3, # PCS
+]
 
-
-def _kernel_ngp(shape: tuple, positions: jnp.ndarray):
-    shape = jnp.array(shape)
-
+def mass_assignment(pos, shape, order:int=2):
+    """
+    Compute mass assignment of particles onto a mesh.
+    """
+    dtype = 'int16' # int16 -> +/- 32_767
+    shape = np.asarray(shape, dtype=dtype)
     def wrap(idx):
         return idx % shape
 
-    fidx = positions
-    idx = jnp.rint(fidx).astype('i4')
+    id0 = (jnp.round if order % 2 else jnp.floor)(pos).astype(dtype)
+    ishifts = np.arange(order) - (order - 1) // 2
 
-    yield wrap(idx), 1
+    for ishift in product(* len(shape) * (ishifts,)):
+        idx = id0 + np.array(ishift, dtype=dtype)
+        s = jnp.abs(idx - pos)
+        yield wrap(idx), paint_kernels[order](s).prod(-1)
 
+def paint(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2):
+    """
+    Paint the positions onto the mesh. 
+    If mesh is a tuple, paint on a zero mesh with such shape.
+    """
+    if isinstance(mesh, tuple):
+        mesh = jnp.zeros(mesh)
+    else:
+        mesh = jnp.asarray(mesh)
 
-def _kernel_cic(shape: tuple, positions: jnp.ndarray):
-    shape = jnp.array(shape)
-
-    def wrap(idx):
-        return idx % shape
-
-    fidx = positions
-    idx = jnp.floor(fidx).astype('i4')
-    dx_left = fidx - idx
-    dx_right = 1 - dx_left
-
-    for ishift in itertools.product(*([0, 1],) * len(shape)):
-        ishift = np.array(ishift)
-        s = jnp.where(ishift <= 0, dx_left, dx_right)  # absolute distance to mesh node, shape (N, 3)
-        kernel = 1 - s
-        yield wrap(idx + ishift), jnp.prod(kernel, axis=-1)
-
-
-def _kernel_tsc(shape: tuple, positions: jnp.ndarray):
-    shape = jnp.array(shape)
-
-    def wrap(idx):
-        return idx % shape
-
-    fidx = positions
-    idx = jnp.rint(fidx).astype('i4')
-    dx_left = fidx - idx
-    dx_right = - dx_left
-
-    for ishift in itertools.product(*([-1, 0, 1],) * len(shape)):
-        ishift = np.array(ishift)
-        s = jnp.where(ishift <= 0, dx_left, dx_right) + 1 * (np.abs(ishift) > 0.5) # absolute distance to mesh node, shape (N, 3)
-        kernel = (s <= 1/2) * (3/4 - s**2) + (s > 1/2) / 2. * (3/2 - s)**2
-        yield wrap(idx + ishift), jnp.prod(kernel, axis=-1)
-
-
-def _kernel_pcs(shape: tuple, positions: jnp.ndarray):
-    shape = jnp.array(shape)
-
-    def wrap(idx):
-        return idx % shape
-
-    fidx = positions
-    idx = jnp.floor(fidx).astype('i4')
-    dx_left = fidx - idx
-    dx_right = 1 - dx_left
-
-    for ishift in itertools.product(*([-1, 0, 1, 2],) * len(shape)):
-        ishift = np.array(ishift)
-        s = jnp.where(ishift <= 0, dx_left, dx_right) + 1 * (np.abs(ishift - 0.5) > 1)  # absolute distance to mesh node, shape (N, 3)
-        kernel = (s <= 1) / 6. * (4 - 6 * s**2 + 3 * s**3) + (s > 1) / 6. * (2 - s)**3
-        yield wrap(idx + ishift), jnp.prod(kernel, axis=-1)
-
-
-def _get_painter(kernel: Callable):
-    def fn(mesh, positions, weights=None):
-        for idx, ker in kernel(mesh.shape, positions):
-            idx = jnp.unstack(idx, axis=-1)
-            mesh = mesh.at[idx].add(ker if weights is None else weights * ker)
-        return mesh
-    return fn
-
-
-def _get_reader(kernel: Callable):
-    def fn(mesh, positions):
-        toret = 0.
-        for idx, ker in kernel(mesh.shape, positions):
-            idx = jnp.unstack(idx, axis=-1)
-            toret += mesh[idx] * ker
-        return toret
-    return fn
-
-
-
-
+    for idx, ker in mass_assignment(pos, mesh.shape, order):
+        # idx = jnp.unstack(idx, axis=-1)
+        idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
+        mesh = mesh.at[idx].add(weights * ker)
+    return mesh
+    
+def read(pos, mesh:jnp.ndarray, order:int=2):
+    """
+    Read the value at the positions from the mesh.
+    """
+    out = 0.
+    for idx, ker in mass_assignment(pos, mesh.shape, order):
+        # idx = jnp.unstack(idx, axis=-1)
+        idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
+        out += mesh[idx] * ker
+    return out
 
 
 
 ##########
 # Forces #
 ##########
-def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, kcut=np.inf):
+def pm_forces(pos, mesh:tuple|jnp.ndarray, paint_order:int=2, grad_fd=False, lap_fd=False, kcut=np.inf):
     """
     Compute gravitational forces on particles using a PM scheme
     """
-    if mesh is None:
-        mesh = jnp.fft.rfftn(cic_paint(jnp.zeros(mesh_shape), pos))
+    if isinstance(mesh, tuple):
+        mesh = jnp.fft.rfftn(paint(pos, mesh, order=paint_order))
     # elif jnp.isrealobj(mesh):
     #     mesh = jnp.fft.rfftn(mesh)
 
     # Compute gravitational potential
-    kvec = rfftk(mesh_shape)
+    kvec = rfftk(ch2rshape(mesh.shape))
     pot_k = mesh * invlaplace_kernel(kvec, lap_fd) * gaussian_kernel(kvec, kcut)
 
     # # If painted field, double deconvolution to account for both painting and reading 
     # if mesh is None:
     #     print("deconv")
-    #     pot_k /= paint_kernel(kvec, order=2)**2
+    #     pot_k /= paint_kernel(kvec, order=paint_order)**2
 
     # Compute gravitational forces
-    return jnp.stack([cic_read(jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), pos) 
+    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), paint_order) 
                       for i in range(3)], axis=-1)
 
 
-def pm_forces2(pos, mesh_shape, mesh, lap_fd=False, grad_fd=False):
+def pm_forces2(pos, mesh:jnp.ndarray, paint_order:int=2, lap_fd=False, grad_fd=False):
     """
     Return 2LPT source term.
     """
-    kvec = rfftk(mesh_shape)
+    kvec = rfftk(ch2rshape(mesh.shape))
     pot = mesh * invlaplace_kernel(kvec, lap_fd)
 
-    delta2 = 0
-    hess_acc = 0
+    delta2 = 0.
+    hess_acc = 0.
     for i in range(3):
         # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
         hess_ii = gradient_kernel(kvec, i, grad_fd)**2
@@ -278,11 +236,11 @@ def pm_forces2(pos, mesh_shape, mesh, lap_fd=False, grad_fd=False):
             hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
             delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
-    force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
+    force2 = pm_forces(pos, jnp.fft.rfftn(delta2), paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     return force2
 
 
-def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False):
+def lpt(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=2, paint_order:int=2, grad_fd=False, lap_fd=False):
     """
     Compute first or second order LPT displacement, at given scale factor(s).
     See e.g. Eq. 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
@@ -291,14 +249,13 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=False
     # if jnp.isrealobj(init_mesh):
     #     mesh_shape = init_mesh.shape
     #     init_mesh = jnp.fft.rfftn(init_mesh)
-    mesh_shape = ch2rshape(init_mesh.shape)
 
-    force1 = pm_forces(pos, mesh_shape, init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
+    force1 = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
     vel = force1
 
-    if order == 2:
-        force2 = pm_forces2(pos, mesh_shape, init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
+    if lpt_order == 2:
+        force2 = pm_forces2(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
         dpos -= a2gg(cosmo, a) * force2
         vel  -= a2dggdg(cosmo, a) * force2
 
@@ -454,7 +411,7 @@ def chi2a(cosmo, chi):
 ###########
 # Solvers #
 ###########
-def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
+def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, grad_fd=False, lap_fd=False):
     """
     BullFrog vector field.
     """
@@ -487,7 +444,7 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
     def kick(state, g0, cosmo, dg):
         pos, vel = state
         g1 = g0 + dg / 2
-        forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
+        forces = pm_forces(pos, tuple(mesh_shape), paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
         alpha = alpha_bf(cosmo, g0, dg)
         return pos, alpha * vel + (1 - alpha) * forces / g1
         # return pos, vel + (1 - alpha) * (forces / g1 - vel) # equivalent
@@ -515,7 +472,7 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape, grad_fd=False, lap_fd=False):
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
-def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
+def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int=2,
               grad_fd=False, lap_fd=False, snapshots:int|list=None):
     """
     N-body simulation with BullFrog solver.
@@ -525,10 +482,10 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     dg = g / n_steps
     
     mesh_shape = ch2rshape(init_mesh.shape)
-    terms = ODETerm(bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd))
+    terms = ODETerm(bullfrog_vf(cosmo, dg, mesh_shape, paint_order, grad_fd=grad_fd, lap_fd=lap_fd))
     solver = Euler()
 
-    vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
+    vel = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     state = pos, vel
 
     if snapshots is None or (isinstance(snapshots, int) and snapshots <= 1): 
@@ -544,7 +501,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     return states
 
 
-def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
+def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int=2,
               grad_fd=False, lap_fd=False, snapshots:int|list=None):
     """
     No-diffrax version of N-body simulation with BullFrog solver. 
@@ -562,9 +519,9 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
     #     state = tree.map(lambda x, y: x + dg * y, state, vf)
     #     return state, None
     
-    step = bullfrog_vf(cosmo, dg, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd)
+    step = bullfrog_vf(cosmo, dg, mesh_shape, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     
-    vel = pm_forces(pos, mesh_shape, mesh=init_mesh, grad_fd=grad_fd, lap_fd=lap_fd)
+    vel = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     state = pos, vel
 
     state, _ = lax.scan(step, state, gs)
@@ -586,7 +543,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5,
 
 
 
-def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=False):
+def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int=2, grad_fd=True, lap_fd=False):
     """
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
@@ -599,11 +556,11 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=Fa
         delta_k = init_mesh
         mesh_shape = ch2rshape(init_mesh.shape)
 
-    init_force = pm_forces(pos, mesh_shape, mesh=delta_k, grad_fd=grad_fd, lap_fd=lap_fd)
+    init_force = pm_forces(pos, delta_k, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     dq = a2g(cosmo, a) * init_force
     p = a**2 * a2f(cosmo, a) * E * dq
 
-    if order == 2:
+    if lpt_order == 2:
         kvec = rfftk(mesh_shape)
         pot = delta_k * invlaplace_kernel(kvec, lap_fd)
 
@@ -621,7 +578,7 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=Fa
                 hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
-        init_force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
+        init_force2 = pm_forces(pos, np.fft.rfftn(delta2), paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
         dq2 = a2gg(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
         p2 = (a**2 * a2ff(cosmo, a) * E) * dq2
 
@@ -631,7 +588,7 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=Fa
     return dq, p
 
 
-def diffrax_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
+def diffrax_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=False):
     """
     N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
 
@@ -639,7 +596,7 @@ def diffrax_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
     """
     def vector_field(a, state, args):
         pos, vel = state
-        forces = pm_forces(pos, mesh_shape, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
+        forces = pm_forces(pos, mesh_shape, paint_order, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
         dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
@@ -649,13 +606,13 @@ def diffrax_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
     return vector_field
 
 
-def jax_ode_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
+def jax_ode_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=False):
     """
     Return N-body ODE vector field for jax.experimental.ode.odeint
 
     vector field signature is (state, a, *args) -> dstate, where state is a tuple (position, velocities)
     """
-    vf = diffrax_vf(cosmo, mesh_shape, grad_fd, lap_fd)
+    vf = diffrax_vf(cosmo, mesh_shape, paint_order, grad_fd, lap_fd)
     def vector_field(state, a, *args):
         return vf(a, state, args)
     return vector_field
@@ -663,12 +620,12 @@ def jax_ode_vf(cosmo:Cosmology, mesh_shape, grad_fd=True, lap_fd=False):
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PIDController, ConstantStepSize
-def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2,
-           grad_fd=True, lap_fd=False, snapshots:int|list=None):
+def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2, 
+                paint_order:int=2, grad_fd=True, lap_fd=False, snapshots:int|list=None):
     if a_lpt == a_obs:
         return tree.map(lambda x: x[None], particles)
     else:
-        terms = ODETerm(diffrax_vf(cosmo, mesh_shape, grad_fd, lap_fd))
+        terms = ODETerm(diffrax_vf(cosmo, mesh_shape, paint_order, grad_fd, lap_fd))
         solver = Tsit5() # Tsit5 usually better than Dopri5
         controller = PIDController(rtol=tol, atol=tol, pcoeff=0.4, icoeff=1, dcoeff=0)
 
@@ -688,8 +645,8 @@ def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2,
 
 
 from montecosmo.fpm import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
-def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5,
-           grad_fd=True, lap_fd=False, snapshots=None):
+def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5, 
+              paint_order:int=2, grad_fd=True, lap_fd=False, snapshots=None):
     if a_lpt == a_obs:
         return tree.map(lambda x: x[None], particles)
     else:
