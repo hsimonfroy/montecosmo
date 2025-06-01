@@ -437,9 +437,9 @@ def r2chshape(shape):
 
 
 
-#############################
-# Fourier reparametrization #
-#############################
+####################################
+# Fourier reparametrization Cuda11 #
+####################################
 def id_cgh(shape, part="real", norm="backward"):
     """
     Return indices and weights to permute a real Gaussian tensor of given shape (3D)

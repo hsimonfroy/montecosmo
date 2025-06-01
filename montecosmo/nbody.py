@@ -6,13 +6,14 @@ import jax_cosmo as jc
 from jax_cosmo import Cosmology
 from montecosmo.utils import ch2rshape, safe_div
 
-# from jaxpm.pm import pm_forces
 import jax_cosmo as jc
 from jaxpm.growth import _growth_factor_ODE
-from jaxpm.kernels import longrange_kernel
 from jaxpm.painting import cic_paint, cic_read
 
 
+###########
+# Kernels #
+###########
 def rfftk(shape):
     """
     Return wavevectors in cell units for rfftn.
@@ -75,6 +76,29 @@ def gradient_kernel(kvec, direction:int, fd=False):
     return 1j * ki
 
 
+def gaussian_kernel(kvec, kcut=np.inf):
+    """
+    Compute the gaussian kernel
+    
+    Parameters
+    -----------
+    kvec: list
+        List of wavevectors
+    kcut: float
+        Cutoff wavenumber for the gaussian kernel
+
+    Returns
+    --------
+    weights: array
+        Complex kernel values
+    """
+    if kcut == np.inf:
+        return 1.
+    else:
+        kk = sum(ki**2 for ki in kvec)
+        return np.exp(-kk / (2 * kcut**2)) 
+
+
 def paint_kernel(kvec, order:int=2):
     """
     Compute painting kernel of given order.
@@ -91,19 +115,126 @@ def paint_kernel(kvec, order:int=2):
         * 3: Triangular-Shape Cloud (TSC)
         * 4: Piecewise-Cubic Spline (PCS)
 
-        cf. [List and Hahn, 2024](https://arxiv.org/abs/2309.10865)
+        cf. [Sefusatti+2017](http://arxiv.org/abs/1512.07295), 
+        [List+Hahn2024](https://arxiv.org/abs/2309.10865)
 
     Returns
     -------
     weights: array
         Complex kernel values
     """
-    wts = [np.sinc(kvec[i] / (2 * np.pi)) for i in range(3)]
-    wts = (wts[0] * wts[1] * wts[2])**order
+    wts = 1.
+    for ki in kvec:
+        wts = wts * np.sinc(ki / (2 * np.pi))**order
     return wts
 
 
-def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, r_split=0):
+
+
+###################
+# Mass-assignment #
+###################
+"""
+Implementation of various resamplers, with attributes ``read``, ``paint`` and ``compensate``.
+"""
+import itertools
+from collections.abc import Callable
+
+
+def _kernel_ngp(shape: tuple, positions: jnp.ndarray):
+    shape = jnp.array(shape)
+
+    def wrap(idx):
+        return idx % shape
+
+    fidx = positions
+    idx = jnp.rint(fidx).astype('i4')
+
+    yield wrap(idx), 1
+
+
+def _kernel_cic(shape: tuple, positions: jnp.ndarray):
+    shape = jnp.array(shape)
+
+    def wrap(idx):
+        return idx % shape
+
+    fidx = positions
+    idx = jnp.floor(fidx).astype('i4')
+    dx_left = fidx - idx
+    dx_right = 1 - dx_left
+
+    for ishift in itertools.product(*([0, 1],) * len(shape)):
+        ishift = np.array(ishift)
+        s = jnp.where(ishift <= 0, dx_left, dx_right)  # absolute distance to mesh node, shape (N, 3)
+        kernel = 1 - s
+        yield wrap(idx + ishift), jnp.prod(kernel, axis=-1)
+
+
+def _kernel_tsc(shape: tuple, positions: jnp.ndarray):
+    shape = jnp.array(shape)
+
+    def wrap(idx):
+        return idx % shape
+
+    fidx = positions
+    idx = jnp.rint(fidx).astype('i4')
+    dx_left = fidx - idx
+    dx_right = - dx_left
+
+    for ishift in itertools.product(*([-1, 0, 1],) * len(shape)):
+        ishift = np.array(ishift)
+        s = jnp.where(ishift <= 0, dx_left, dx_right) + 1 * (np.abs(ishift) > 0.5) # absolute distance to mesh node, shape (N, 3)
+        kernel = (s <= 1/2) * (3/4 - s**2) + (s > 1/2) / 2. * (3/2 - s)**2
+        yield wrap(idx + ishift), jnp.prod(kernel, axis=-1)
+
+
+def _kernel_pcs(shape: tuple, positions: jnp.ndarray):
+    shape = jnp.array(shape)
+
+    def wrap(idx):
+        return idx % shape
+
+    fidx = positions
+    idx = jnp.floor(fidx).astype('i4')
+    dx_left = fidx - idx
+    dx_right = 1 - dx_left
+
+    for ishift in itertools.product(*([-1, 0, 1, 2],) * len(shape)):
+        ishift = np.array(ishift)
+        s = jnp.where(ishift <= 0, dx_left, dx_right) + 1 * (np.abs(ishift - 0.5) > 1)  # absolute distance to mesh node, shape (N, 3)
+        kernel = (s <= 1) / 6. * (4 - 6 * s**2 + 3 * s**3) + (s > 1) / 6. * (2 - s)**3
+        yield wrap(idx + ishift), jnp.prod(kernel, axis=-1)
+
+
+def _get_painter(kernel: Callable):
+    def fn(mesh, positions, weights=None):
+        for idx, ker in kernel(mesh.shape, positions):
+            idx = jnp.unstack(idx, axis=-1)
+            mesh = mesh.at[idx].add(ker if weights is None else weights * ker)
+        return mesh
+    return fn
+
+
+def _get_reader(kernel: Callable):
+    def fn(mesh, positions):
+        toret = 0.
+        for idx, ker in kernel(mesh.shape, positions):
+            idx = jnp.unstack(idx, axis=-1)
+            toret += mesh[idx] * ker
+        return toret
+    return fn
+
+
+
+
+
+
+
+##########
+# Forces #
+##########
+def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, kcut=np.inf):
     """
     Compute gravitational forces on particles using a PM scheme
     """
@@ -114,7 +245,7 @@ def pm_forces(pos, mesh_shape, mesh=None, grad_fd=False, lap_fd=False, r_split=0
 
     # Compute gravitational potential
     kvec = rfftk(mesh_shape)
-    pot_k = mesh * invlaplace_kernel(kvec, lap_fd) * longrange_kernel(kvec, r_split=r_split)
+    pot_k = mesh * invlaplace_kernel(kvec, lap_fd) * gaussian_kernel(kvec, kcut)
 
     # # If painted field, double deconvolution to account for both painting and reading 
     # if mesh is None:
@@ -134,13 +265,13 @@ def pm_forces2(pos, mesh_shape, mesh, lap_fd=False, grad_fd=False):
     pot = mesh * invlaplace_kernel(kvec, lap_fd)
 
     delta2 = 0
-    shear_acc = 0
+    hess_acc = 0
     for i in range(3):
-        # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-        shear_ii = gradient_kernel(kvec, i, grad_fd)**2
-        shear_ii = jnp.fft.irfftn(shear_ii * pot)
-        delta2 += shear_ii * shear_acc 
-        shear_acc += shear_ii
+        # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
+        hess_ii = gradient_kernel(kvec, i, grad_fd)**2
+        hess_ii = jnp.fft.irfftn(hess_ii * pot)
+        delta2 += hess_ii * hess_acc 
+        hess_acc += hess_ii
 
         for j in range(i+1, 3):
             # Substract squared strict-up-triangle terms
@@ -474,21 +605,21 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, order=1, grad_fd=True, lap_fd=Fa
 
     if order == 2:
         kvec = rfftk(mesh_shape)
-        pot_k = delta_k * invlaplace_kernel(kvec, lap_fd)
+        pot = delta_k * invlaplace_kernel(kvec, lap_fd)
 
         delta2 = 0
-        shear_acc = 0
+        hess_acc = 0
         for i in range(3):
-            # Add products of diagonal terms = 0 + s11*s00 + s22*(s11+s00)...
-            shear_ii = gradient_kernel(kvec, i, grad_fd)**2
-            shear_ii = jnp.fft.irfftn(shear_ii * pot_k)
-            delta2 += shear_ii * shear_acc 
-            shear_acc += shear_ii
+            # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
+            hess_ii = gradient_kernel(kvec, i, grad_fd)**2
+            hess_ii = jnp.fft.irfftn(hess_ii * pot)
+            delta2 += hess_ii * hess_acc 
+            hess_acc += hess_ii
 
             for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
                 hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
-                delta2 -= jnp.fft.irfftn(hess_ij * pot_k)**2
+                delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
         init_force2 = pm_forces(pos, mesh_shape, mesh=jnp.fft.rfftn(delta2), grad_fd=grad_fd, lap_fd=lap_fd)
         dq2 = a2gg(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second

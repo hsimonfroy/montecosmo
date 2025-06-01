@@ -44,6 +44,8 @@ default_config={
             'nbody_steps':5,
             'nbody_snapshots':None,
             'lpt_order':2,
+            'paint_order':2,
+            'oversampling':1., # particle grid to mesh grid 1D ratio
             # Observables
             'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
             'poles':(0,2,4),
@@ -88,6 +90,12 @@ default_config={
                                     },
                         'bn2': {'group':'bias',
                                     'label':'{b}_{\\nabla^2}',
+                                    'loc':0.,
+                                    'scale':5.,
+                                    'scale_fid':1e0,
+                                    },
+                        'bnp': {'group':'bias',
+                                    'label':'{b}_{\\nabla_\\parallel}',
                                     'loc':0.,
                                     'scale':5.,
                                     'scale_fid':1e0,
@@ -346,6 +354,8 @@ class FieldLevelModel(Model):
     nbody_steps:int
     nbody_snapshots:int|list
     lpt_order:int
+    paint_order:int
+    oversampling:float
     # Observable
     observable:str
     poles:tuple
@@ -389,7 +399,7 @@ class FieldLevelModel(Model):
             self.mask = self.wind_mesh > 0
 
         self.cosmo_fid = get_cosmology(**self.loc_fid)
-        a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
+        _, a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
                                 self.cosmo_fid, self.a_obs, self.curved_sky)
         self.a_fid = g2a(self.cosmo_fid, jnp.mean(a2g(self.cosmo_fid, a)))
 
@@ -446,24 +456,21 @@ class FieldLevelModel(Model):
         init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_shape)
 
         if self.evolution=='kaiser':
-            if self.curved_sky:
-                raise NotImplementedError("Kaiser model for curved-sky is undefined.")
-            # TODO: AP param Kaiser?
-
-            a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
+            # TODO: AP Kaiser?
+            los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
                                 cosmology, self.a_obs, self.curved_sky)
-            gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, box_center=self.box_center)
+            gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, los=los)
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
             return gxy_mesh, syst
                     
         # Create regular grid of particles, and get their scale factors
         pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
-        _, _, _, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
+        _, _, los, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
                                 cosmology, self.a_obs, self.curved_sky)
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, a, pos, self.box_shape, **bias, **init)
-        # TODO: gaussian lagrangian weights
+        lbe_weights = lagrangian_weights(cosmology, pos, los, a, self.box_shape, **bias, **init)
+        # TODO: gaussian lagrangian weights?
 
         if self.evolution=='lpt':
             # NOTE: lpt assumes given mesh is at a=1
@@ -483,24 +490,25 @@ class FieldLevelModel(Model):
                                       cosmology, self.a_obs, self.curved_sky)        
         vel = cell2phys_vel(vel, self.box_rot, self.box_shape, self.mesh_shape)
         vel *= a2g(cosmology, a) * a2f(cosmology, a)
-        # growth-time integrator vel := dq / dg = v / (H * g * f), so dq_rsd := v / H = vel * g * f
+        # Growth-time integrator vel := dq / dg = v / (H * g * f), so dq_rsd := v / H = vel * g * f
         # v in (Mpc/h)*(km/s/(Mpc/h)) = km/s, so dq_rsd in Mpc/h
 
         # RSD and Alcock-Paczynski effects
         if self.ap_auto:
-            pos = toredshift_auto(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) 
+            pos = toredshift_auto2(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) ####
+            # pos = toredshift_auto(pos, vel, rpos, los, a, cosmology, self.cosmo_fid, self.curved_sky) 
         else:
             pos = toredshift_param(pos, vel, los, ap, self.curved_sky)
 
-        # CIC paint weighted by Lagrangian bias expansion weights
+        # Painting weighted by Lagrangian bias expansion weights
         pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
         gxy_mesh = cic_paint(jnp.zeros(self.mesh_shape), pos, lbe_weights)
-        # gxy_mesh = deconv_paint(gxy_mesh, order=2); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+        gxy_mesh = deconv_paint(gxy_mesh, order=2); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
-        # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lb,e_weights))
+        # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
         return gxy_mesh, syst # NOTE: mesh is 1+delta_obs
 
 
@@ -514,11 +522,16 @@ class FieldLevelModel(Model):
 
         if self.observable == 'field':
             obs = mesh2masked(mesh, self.mask)
+            obs /= obs.mean()
+            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
+            # print(obs.mean(), obs.std(), obs.min(), obs.max())
+
             wind = mesh2masked(self.wind_mesh, self.mask)
             obs *= wind * syst['ngbar'] * self.cell_length**3
 
             # Gaussian noise
             obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5))
+            # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
             # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
             # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
 
