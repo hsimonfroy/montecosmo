@@ -42,8 +42,11 @@ class Samples(UserDict):
         selfdict = {field.name: (getattr(self, field.name) or {}).copy() for field in fields(self)} # handle None and shallow copy
         for k in selfdict:
             self.__setattr__(k, otherdict.get(k, {}) | selfdict[k]) # inherit attributes if not updated
+        
 
-
+    ############
+    # Querying #
+    ############
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
         if self._istreeof(key, (int, slice, type(Ellipsis), np.ndarray, jnp.ndarray)):
@@ -119,8 +122,11 @@ class Samples(UserDict):
         and empty dict when asked for subdict. To get subdict with None value, use `default_fn=lambda k:None`.
         """
         return self.__getitem__(key, default_fn)
-     
 
+
+    #########
+    # Utils #
+    #########
     def asdict(self):
         # NOTE: dataclasses.asdict makes deepcopy, cf. https://github.com/python/cpython/issues/88071
         # here, attributes are only shallow copied
@@ -129,7 +135,20 @@ class Samples(UserDict):
     def __copy__(self): 
         # NOTE: UserDict copy() would not copy other attributes than data
         return type(self)(**self.asdict())
+                 
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_flatten(self):
+        return (self.data,), (self.groups,)
+    
+    @classmethod
+    # NOTE: no need with register_dataclass JAX >=0.4.27
+    def tree_unflatten(cls, aux, data):
+        return cls(*data, *aux)
+    
 
+    ##############
+    # Properties #
+    ##############
     @property
     def shape(self):
         return tree.map(jnp.shape, self.data)
@@ -146,16 +165,10 @@ class Samples(UserDict):
     def size(self):
         return tree.map(jnp.size, self.data)
     
-    # NOTE: no need with register_dataclass JAX >=0.4.27
-    def tree_flatten(self):
-        return (self.data,), (self.groups,)
-    
-    @classmethod
-    # NOTE: no need with register_dataclass JAX >=0.4.27
-    def tree_unflatten(cls, aux, data):
-        return cls(*data, *aux)
-    
-    
+
+    ##############
+    # Operations #
+    ##############
     def __or__(self, other):
         newdict = self.asdict()
         if isinstance(other, Samples):
@@ -200,34 +213,43 @@ class Samples(UserDict):
             return self
         else:
             return super().__ior__(other)
-
+        
 
     ##############
     # Transforms #
     ##############
+    def prune(self):
+        """
+        Remove keys in groups that are not in data.
+        """
+        new = self.copy()
+        new.groups = {g: [k for k in gl if k in new.data] for g, gl in new.groups.items()}
+        return new
+    
     def concat(self, *others, axis=0):
         return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
     def stackby(self, names:str|list=None, remove=True, axis=-1):
         """
-        Stack variables by groups, optionally removing individual variables.
+        Stack variables by groups, optionally removing unstacked variables.
 
         names can be variable names (no stacking) or group names.
+        If names is None, all groups are stacked.
         """
         if names is None:
-            names = self.groups
+            names = list(self.groups)
         elif isinstance(names, str):
             names = [names]
 
         new = self.copy()
         for k in names:
-            if k not in self: # if name is a variable do noting
+            if k not in self: # if name is a variable, do nothing
                 if len(self.groups[k]) == 1:
                     new.data[k] = self[k]
                 else:
                     new.data[k] = jnp.stack(self[k], axis=axis)
 
-                # Remove individual variables
+                # Remove unstacked variables
                 if remove:
                     for k in self.groups[k]:
                         new.data.pop(k)
@@ -307,7 +329,7 @@ class Chains(Samples):
         Apply transform on n splits along given axis.
         Stack n values along first axis.
         """
-        assert n <= jnp.shape(self[next(iter(self))])[axis], "n should be less (<=) than the length of given axis."
+        assert n <= np.shape(self[next(iter(self))])[axis], "n should be less (<=) than the length of given axis."
         out = tree.map(lambda x: jnp.array_split(x, n, axis), self)
         out = transform(out)
         
@@ -320,8 +342,8 @@ class Chains(Samples):
         Apply transform on n cumulative slices along given axis.
         Stack n values along first axis.
         """
-        length = jnp.shape(self[next(iter(self))])[axis]
-        ends = jnp.rint(jnp.arange(1,n+1) / n * length).astype(int)
+        length = np.shape(self[next(iter(self))])[axis]
+        ends = np.rint(np.arange(1,n+1) / n * length).astype(int)
         out = tree.map(lambda x: [], self)
         for end in ends:
             part = tree.map(lambda x: x[axis*(slice(None),) + (slice(None,end),)], self)
@@ -348,9 +370,10 @@ class Chains(Samples):
         fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=replace)
         fn = nvmap(fn, batch_ndim)
 
+        new = self.copy()
         for k in names:
-            self |= tree.map(fn, self.get([k]))
-        return self
+            new |= tree.map(fn, new.get([k]))
+        return new
 
     def thin(self, thinning=None, moment=None, axis:int=1):
         # All item shapes should match on given axis so take the first item shape

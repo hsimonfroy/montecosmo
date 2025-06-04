@@ -130,11 +130,26 @@ def paint_kernel(kvec, order:int=2):
     return wts
 
 
+def deconv_paint(mesh, order:int=2):
+    """
+    Deconvolve the mesh by the paint kernel of given order.
+    """
+    if jnp.isrealobj(mesh):
+        kvec = rfftk(mesh.shape)
+        mesh = jnp.fft.rfftn(mesh)
+        mesh /= paint_kernel(kvec, order)
+        mesh = jnp.fft.irfftn(mesh)
+    else:
+        kvec = rfftk(ch2rshape(mesh.shape))
+        mesh /= paint_kernel(kvec, order)
+    return mesh
 
 
 ###################
 # Mass-assignment #
 ###################
+# See also https://github.com/adematti/jax-power/blob/45edcda356d29f337fc276044e77cf3363b92820/jaxpower/resamplers.py
+
 paint_kernels = [
     lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
     lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
@@ -147,7 +162,7 @@ def mass_assignment(pos, shape, order:int=2):
     """
     Compute mass assignment of particles onto a mesh.
     """
-    dtype = 'int16' # int16 -> +/- 32_767
+    dtype = 'int16' # int16 -> +/- 32_767, trkl
     shape = np.asarray(shape, dtype=dtype)
     def wrap(idx):
         return idx % shape
@@ -256,8 +271,8 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=2, paint_order:int=2, 
 
     if lpt_order == 2:
         force2 = pm_forces2(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
-        dpos -= a2gg(cosmo, a) * force2
-        vel  -= a2dggdg(cosmo, a) * force2
+        dpos -= a2g2(cosmo, a) * force2
+        vel  -= a2dg2dg(cosmo, a) * force2
 
     return dpos, vel
 
@@ -277,11 +292,11 @@ def a2g(cosmo, a):
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["g"])
 
-def a2gg(cosmo, a):
+def a2g2(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
-    # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
+    # NOTE: "g2" is normalized such that g2 = -3/7 * "g2" ~ -3/7 * g^2
     return jnp.interp(a, cache["a"], cache["g2"]) * -3/7
 
 def a2f(cosmo, a):
@@ -290,15 +305,15 @@ def a2f(cosmo, a):
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["f"])
 
-def a2ff(cosmo, a):
+def a2f2(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["f2"])
 
-def a2dggdg(cosmo, a):
-    g, gg, f, ff = a2g(cosmo, a), a2gg(cosmo, a), a2f(cosmo, a), a2ff(cosmo, a)
-    return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
+def a2dg2dg(cosmo, a):
+    g, g2, f, f2 = a2g(cosmo, a), a2g2(cosmo, a), a2f(cosmo, a), a2f2(cosmo, a)
+    return safe_div(g2 * f2, g * f) # NOTE: dggdg(0) = 0
 
 
 # Growth from growth factor
@@ -308,11 +323,11 @@ def g2a(cosmo, g):
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["a"])
 
-def g2gg(cosmo, g):
+def g2g2(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
-    # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
+    # NOTE: "g2" is normalized such that g2 = -3/7 * "g2" ~ -3/7 * g^2
     return jnp.interp(g, cache["g"], cache["g2"]) * -3/7
 
 def g2f(cosmo, g):
@@ -321,15 +336,15 @@ def g2f(cosmo, g):
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f"])
 
-def g2ff(cosmo, g):
+def g2f2(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f2"])
 
-def g2dggdg(cosmo, g):
-    gg, f, ff = g2gg(cosmo, g), g2f(cosmo, g), g2ff(cosmo, g)
-    return safe_div(gg * ff, g * f) # NOTE: dggdg(0) = 0
+def g2dg2dg(cosmo, g):
+    g2, f, f2 = g2g2(cosmo, g), g2f(cosmo, g), g2f2(cosmo, g)
+    return safe_div(g2 * f2, g * f) # NOTE: dggdg(0) = 0
 
 
 #############
@@ -424,10 +439,10 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, grad_f
         g1 = g0 + dg / 2
         g2 = g0 + dg
 
-        dggdg0, dggdg2 = g2dggdg(cosmo, g0), g2dggdg(cosmo, g2)
-        lin_ratio = (g2gg(cosmo, g0) + dggdg0 * dg / 2) / g1 - g1
-        # NOTE: linearization of ratio (gg - g^2)/g aroung g0, evaluated at g1
-        return (dggdg2 - lin_ratio) / (dggdg0 - lin_ratio)
+        dg2dg0, dg2dg2 = g2dg2dg(cosmo, g0), g2dg2dg(cosmo, g2)
+        lin_ratio = (g2g2(cosmo, g0) + dg2dg0 * dg / 2) / g1 - g1
+        # NOTE: linearization of ratio (g2 - g^2)/g aroung g0, evaluated at g1
+        return (dg2dg2 - lin_ratio) / (dg2dg0 - lin_ratio)
     
     def alpha_fpm(cosmo, g0, dg):
         '''
@@ -543,6 +558,8 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int
 
 
 
+
+
 def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int=2, grad_fd=True, lap_fd=False):
     """
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
@@ -579,8 +596,8 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int
                 delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
         init_force2 = pm_forces(pos, np.fft.rfftn(delta2), paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
-        dq2 = a2gg(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
-        p2 = (a**2 * a2ff(cosmo, a) * E) * dq2
+        dq2 = a2g2(cosmo, a) * init_force2 # D2 is renormalized: - D2 = 3/7 * growth_factor_second
+        p2 = (a**2 * a2f2(cosmo, a) * E) * dq2
 
         dq -= dq2
         p  -= p2
@@ -698,4 +715,6 @@ def rsd_fpm(cosmo:Cosmology, a, vel, los:np.ndarray):
     # Project velocity on line-of-sight
     dpos = (dpos * los).sum(-1, keepdims=True) * los
     return dpos
+
+
 

@@ -1,16 +1,14 @@
 from functools import partial
 import numpy as np
-
-from jax import numpy as jnp, tree, debug
-import jax_cosmo as jc
-from jax_cosmo import Cosmology, background, constants
-from jaxpm.painting import cic_read, cic_paint
-import fitsio
+from jax import numpy as jnp
 from jax.scipy.spatial.transform import Rotation
+
+from jax_cosmo import Cosmology, background, constants, power
+import fitsio
 from scipy.interpolate import SmoothSphereBivariateSpline
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
-from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a
+from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a, paint, read
 
 #############
 # Cosmology #
@@ -56,12 +54,14 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     Return a light emulation of the linear matter power spectrum.
     """
     ks = jnp.logspace(-4, 1, n_interp)
-    # logpows = jnp.log(jc.power.linear_matter_power(cosmo, ks, a=a))
+    # logpows = jnp.log(power.linear_matter_power(cosmo, ks, a=a))
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
     # as interpolation in loglog space can produce nan gradients
     # pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), ks, logpows, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
-    pows = jc.power.linear_matter_power(cosmo, ks, a=a)
+    pows = power.linear_matter_power(cosmo, ks, a=a)
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
+
+    # pow_fn = lambda x: jnp.ones_like(x) * cosmo.sigma8**2
     return pow_fn
 
 
@@ -118,11 +118,10 @@ def add_png(cosmo:Cosmology, fNL, init_mesh, box_shape):
 ##########
 # Kaiser #
 ##########
-def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, box_center=(0,0,0)):
+def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, los=(0,0,0)):
     """
     Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, and RSD.
     """
-    los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
     kvec = rfftk(mesh_shape)
     kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
     mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
@@ -131,16 +130,28 @@ def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, box_center=(0,0,0)):
     return a2g(cosmo, a) * (bE + a2f(cosmo, a) * mumesh**2)
 
 
-def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los):
+def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0,0,0)):
     """
-    Kaiser model, with linear growth, Eulerian linear bias, and RSD.
+    Kaiser model, i.e. growth, Eulerian bias, and RSD, are linear.
+    For flat-sky with no light-cone, this linear model is moreover diagonal in Fourier space.
     """
     mesh_shape = ch2rshape(init_mesh.shape)
 
-    if jnp.shape(los) == (3,) and jnp.shape(a) == ():
+    if jnp.shape(los) == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
+        print("kai")
         init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, los)
-        return 1 + jnp.fft.irfftn(init_mesh) #  1 + delta
-    else:
+        return 1 + jnp.fft.irfftn(init_mesh) # 1 + delta
+    
+    elif jnp.shape(los) == (3,): # flat-sky, light-cone
+        kvec = rfftk(mesh_shape)
+        kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
+        mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+        mumesh = safe_div(mumesh, kmesh)
+
+        delta = (bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh))
+        return 1 + a2g(cosmo, a) * delta # 1 + delta
+    
+    else: # curved-sky
         kvec = rfftk(mesh_shape)
         kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
 
@@ -156,12 +167,10 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los):
         mu2_delta = (mu2_delta * los).sum(-1)
 
         delta = (bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * mu2_delta)
-        # delta = (bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh))
-        return 1 + a2g(cosmo, a) * delta #  1 + delta
+        return 1 + a2g(cosmo, a) * delta # 1 + delta
 
 
-
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, wind_mesh, a, box_shape, box_center=(0,0,0)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, wind_mesh, a, box_shape, los=(0,0,0)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -169,11 +178,8 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, wind_mesh, a, box_sh
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
     pmesh = lin_power_mesh(cosmo, mesh_shape, box_shape)
-    boost = kaiser_boost(cosmo, a, bE, mesh_shape, box_center)
-
+    boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
     wind = (wind_mesh**2).mean()**.5
-    # wind = 1.
-    # print("wind", wind)
 
     stds = (pmesh / (1 + wind * count * boost**2 * pmesh))**.5
     means = stds**2 * boost * count * wind * delta_obs
@@ -253,7 +259,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 # Bias #
 ########
 def lagrangian_weights(cosmo:Cosmology, pos, los, a, box_shape, 
-                       b1, b2, bs2, bn2, bnp, fNL, init_mesh):
+                       b1, b2, bs2, bn2, bnp, fNL, init_mesh, paint_order:int=2):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -276,7 +282,7 @@ def lagrangian_weights(cosmo:Cosmology, pos, los, a, box_shape,
     weights = 1.
     
     # Apply b1, punctual term
-    delta_pos = cic_read(delta, pos) * growths
+    delta_pos = read(pos, delta, paint_order) * growths
     weights += b1 * delta_pos
 
     # Apply b2, punctual term
@@ -297,20 +303,20 @@ def lagrangian_weights(cosmo:Cosmology, pos, los, a, box_shape,
             nabj = gradient_kernel(kvec, j)
             shear2 = shear2 + 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
 
-    shear2_pos = cic_read(shear2, pos) * growths**2
+    shear2_pos = read(pos, shear2, paint_order) * growths**2
     weights += bs2 * (shear2_pos - shear2_pos.mean())
 
     # Apply bnabla2, higher-order term
     delta_nab2 = jnp.fft.irfftn( - kmesh**2 * init_mesh)
 
-    delta_nab2_pos = cic_read(delta_nab2, pos) * growths
+    delta_nab2_pos = read(pos, delta_nab2, paint_order) * growths
     weights += bn2 * delta_nab2_pos
 
     # Apply bnablapar, velocity term
-    delta_nabpar = jnp.stack([cic_read(jnp.fft.irfftn(gradient_kernel(kvec, i) * (m / b) * init_mesh), pos) 
+    delta_nabpar_pos = jnp.stack([read(pos, jnp.fft.irfftn(gradient_kernel(kvec, i) * (m / b) * init_mesh), paint_order) 
                       for i, (m, b) in enumerate(zip(mesh_shape, box_shape))], axis=-1) # in h/Mpc 
-    delta_nabpar = (delta_nabpar * los).sum(-1) * growths
-    weights += bnp * delta_nabpar
+    delta_nabpar_pos = (delta_nabpar_pos * los).sum(-1) * growths
+    weights += bnp * delta_nabpar_pos
 
     # Apply bphi, primordial term
     trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
@@ -318,7 +324,7 @@ def lagrangian_weights(cosmo:Cosmology, pos, los, a, box_shape,
     p = 1. # tracer parameter
     bp = b_phi(b1, p)
 
-    phi_pos = cic_read(phi, pos)
+    phi_pos = read(pos, phi, paint_order)
     weights += bp * fNL * phi_pos
     
     # Apply bphidelta, primordial term
@@ -462,6 +468,14 @@ def isoap2parperp(alpha_iso, alpha_ap):
 ################################
 # Cell to Physical to Redshift #
 ################################
+def regular_pos(mesh_shape, ptcl_shape):
+    """
+    Return regularly spaced positions in cell coordinates.
+    """
+    pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape)]
+    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
+    return pos
+
 def tophysical_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, 
                     cosmology:Cosmology, a_obs=None, curved_sky=True):
     """
@@ -536,6 +550,24 @@ def toredshift_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology
     return pos
 
 
+def toredshift_aponly(pos, los, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky=True):
+    """
+    Redshift-Space Distortions and automatic Alcock-Paczynski effect.
+    """
+    if curved_sky:
+        rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
+        rpos_new = a2chi(cosmo_fid, chi2a(cosmo, rpos))
+        alpha = safe_div(rpos_new, rpos)
+        pos *= alpha
+    else:
+        rpos = jnp.abs((pos * los).sum(-1, keepdims=True))
+        rpos_new = a2chi(cosmo_fid, chi2a(cosmo, rpos))
+        alpha = safe_div(rpos_new, rpos)
+        pos = scale_pos(pos, los, alpha, 1)
+    return pos
+
+
+
 def toredshift_auto2(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky=True):
     """
     Redshift-Space Distortions and automatic Alcock-Paczynski effect.
@@ -543,15 +575,18 @@ def toredshift_auto2(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmolog
     vel_los = (vel * los).sum(-1, keepdims=True)
     pos += vel_los * los
 
-    rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
-    a = chi2a(cosmo, rpos)
-    rpos_new = a2chi(cosmo_fid, a)
-    alpha = safe_div(rpos_new, rpos)
     if curved_sky:
+        rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
+        rpos_new = a2chi(cosmo_fid, chi2a(cosmo, rpos))
+        alpha = safe_div(rpos_new, rpos)
         pos *= alpha
     else:
+        rpos = jnp.abs((pos * los).sum(-1, keepdims=True))
+        rpos_new = a2chi(cosmo_fid, chi2a(cosmo, rpos))
+        alpha = safe_div(rpos_new, rpos)
         pos = scale_pos(pos, los, alpha, 1)
     return pos
+
 
 
 
@@ -669,7 +704,7 @@ def simple_window(mesh_shape, padding=0., ord:float=np.inf):
         rmesh = sum(ri**ord for ri in rvec)**(1 / ord)
 
     wind_mesh = (rmesh < 1 / (1 + padding)).astype(float)
-    # NOTE: normalization to mean window equal 1 within its support.
+    # NOTE: normalization to unit mean window within its support.
     wind_mesh /= wind_mesh[wind_mesh > 0].mean()
     return wind_mesh
 
@@ -702,7 +737,7 @@ def get_ptcl_shape(mesh_shape, oversampling=1.):
     return np.rint(mesh_shape / oversampling).astype(int)
 
 
-def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_shape):
+def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_shape, paint_order:int=2):
     """
     Return painted mesh from a given path to RA, DEC, Z data.
     """
@@ -710,10 +745,10 @@ def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_sha
     pos = radecz2cart(cosmo, data)
 
     pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
-    mesh = cic_paint(jnp.zeros(mesh_shape), pos)
+    mesh = paint(pos, tuple(mesh_shape), paint_order)
     return mesh
 
-def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0.):
+def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:int=2):
     """
     Return painted window mesh and box configuration from a given path to RA, DEC, Z data.
     """
@@ -725,8 +760,10 @@ def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0.):
     box_rot = Rotation.from_rotvec(box_rotvec)
 
     pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
-    wind_mesh = cic_paint(jnp.zeros(mesh_shape), pos)
+    wind_mesh = paint(pos, tuple(mesh_shape), paint_order)
 
-    # NOTE: normalization to mean window equal 1 within its support.
+    # NOTE: normalization to unit mean window within its support.
     wind_mesh /= wind_mesh[wind_mesh > 0].mean()
     return wind_mesh, cell_length, box_center, box_rotvec
+
+

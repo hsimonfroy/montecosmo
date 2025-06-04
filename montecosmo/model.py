@@ -5,8 +5,7 @@ from dataclasses import dataclass, asdict
 from IPython.display import display
 from pprint import pformat
 
-import numpyro.distributions as dist
-from numpyro import sample, deterministic, render_model
+from numpyro import sample, deterministic, render_model, distributions as dist
 from numpyro.handlers import seed, condition, block, trace
 from numpyro.infer.util import log_density
 import numpy as np
@@ -14,20 +13,18 @@ import numpy as np
 from jax import numpy as jnp, random as jr, vmap, tree, grad, debug
 from jax.scipy.spatial.transform import Rotation
 
-# from jaxpm.painting import cic_paint
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_weights,
                                simple_window, mesh2masked, masked2mesh,
-                               tophysical_mesh, tophysical, toredshift_param, toredshift_auto, toredshift_auto2,
+                               tophysical_mesh, tophysical, toredshift_param, toredshift_auto, toredshift_auto2, toredshift_aponly,
                                phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                catalog2mesh, catalog2window, pos_mesh, get_ptcl_shape)
-from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, paint
-from montecosmo.metrics import spectrum, powtranscoh, deconv_paint
-from montecosmo.utils import ysafe_dump, ysafe_load, Path
-
-from montecosmo.utils import cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2
+from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, paint, read, deconv_paint
+from montecosmo.metrics import spectrum, powtranscoh
+from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
+                              cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
 from montecosmo.chains import Chains
 
 
@@ -59,7 +56,6 @@ default_config={
             'latents': {'Omega_m': {'group':'cosmo', 
                                     'label':'{\\Omega}_m', 
                                     'loc':0.3111, 
-                                    # 'loc':0.3, 
                                     'scale':0.5,
                                     'scale_fid':1e-2,
                                     'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -404,6 +400,8 @@ class FieldLevelModel(Model):
         _, a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
                                 self.cosmo_fid, self.a_obs, self.curved_sky)
         self.a_fid = g2a(self.cosmo_fid, jnp.mean(a2g(self.cosmo_fid, a)))
+        los = safe_div(self.box_center, np.linalg.norm(self.box_center))
+        self.los_fid = self.box_rot.apply(los, inverse=True) # cell los
 
     def __str__(self):
         out = ""
@@ -462,29 +460,45 @@ class FieldLevelModel(Model):
             # TODO: AP Kaiser?
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
                                 cosmology, self.a_obs, self.curved_sky)
-            gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, los=los)
+            cell_los = self.box_rot.apply(los, inverse=True) # cell los
+
+            gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, los=cell_los)
+
+            if self.ap_auto is not None:
+                # Create regular grid of particles, and get their scale factors and line-of-sights
+                pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(self.mesh_shape, self.ptcl_shape)]
+                pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
+                weights = read(pos, gxy_mesh, self.paint_order)
+                pos = cell2phys_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+
+                if self.ap_auto:
+                    pos = toredshift_aponly(pos, los, cosmology, self.cosmo_fid, self.curved_sky)
+                    # print("noap", los)
+
+                pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+                gxy_mesh = paint(pos, tuple(self.mesh_shape), weights, self.paint_order)
+
             gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
             return gxy_mesh, syst
                     
-        # Create regular grid of particles, and get their scale factors
-        # pos = jnp.indices(self.mesh_shape, dtype=float).reshape(3,-1).T
-        # print("oldy")
-
+        # Create regular grid of particles, and get their scale factors and line-of-sights
         pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(self.mesh_shape, self.ptcl_shape)]
         pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
 
         _, _, los, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
                                 cosmology, self.a_obs, self.curved_sky)
+        cell_los = self.box_rot.apply(los, inverse=True) # cell los
 
         # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-        lbe_weights = lagrangian_weights(cosmology, pos, los, a, self.box_shape, **bias, **init)
+        lbe_weights = lagrangian_weights(cosmology, pos, cell_los, a, self.box_shape, **bias, **init)
         # TODO: gaussian lagrangian weights?
 
         if self.evolution=='lpt':
             # NOTE: lpt assumes given mesh is at a=1
-            cosmology._workspace = {}  # HACK: temporary fix
+            cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
             dpos, vel = lpt(cosmology, **init, pos=pos, a=a, 
-                            lpt_order=self.lpt_order, paint_order=self.paint_order, grad_fd=False, lap_fd=False)
+                            # lpt_order=self.lpt_order, paint_order=self.paint_order, grad_fd=False, lap_fd=False)
+                            lpt_order=self.lpt_order, paint_order=2, grad_fd=False, lap_fd=False)
             # print("ratio", (self.mesh_shape / self.ptcl_shape).prod() )
             # pos += dpos * (self.mesh_shape / self.ptcl_shape).prod()
 
@@ -492,7 +506,7 @@ class FieldLevelModel(Model):
             pos, vel = deterministic('lpt_ptcl', jnp.array((pos, vel)))
 
         elif self.evolution=='nbody':
-            cosmology._workspace = {}  # HACK: temporary fix
+            cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
             assert jnp.ndim(a) == 0, "N-body light-cone not implemented yet"
             pos, vel = nbody_bf(cosmology, **init, pos=pos, a=a, n_steps=self.nbody_steps, 
                                 paint_order=self.paint_order, grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
@@ -534,22 +548,34 @@ class FieldLevelModel(Model):
         mesh, syst = params
 
         if self.observable == 'field':
+            mean_count = syst['ngbar'] * self.cell_length**3
+
+            # obs = mesh2masked(mesh, self.mask)
+            # obs /= obs.mean()
+            # # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
+            # # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
+
+            # wind = mesh2masked(self.wind_mesh, self.mask)
+            # obs *= wind * mean_count
+
+            # # Gaussian noise
+            # obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
+            # # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
+            # # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
+            # # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
+
+            # # Poisson noise
+            # # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
+
+
+
             obs = mesh2masked(mesh, self.mask)
             obs /= obs.mean()
-            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            # print(obs.mean(), obs.std(), obs.min(), obs.max())
-
             wind = mesh2masked(self.wind_mesh, self.mask)
-            obs *= wind * syst['ngbar'] * self.cell_length**3
+            obs *= wind * mean_count
+            obs = masked2mesh(obs, self.mask)
+            obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
 
-            # Gaussian noise
-            # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5))
-            obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
-            # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
-            # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
-
-            # Poisson noise
-            # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
             return obs 
 
         # elif self.obs == 'pk':
@@ -677,7 +703,7 @@ class FieldLevelModel(Model):
 
         elif self.precond=='kaiser':
             bE_fid = 1 + self.loc_fid['b1']
-            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.mesh_shape, self.box_center)
+            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.mesh_shape, self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.mesh_shape, self.box_shape)
             wind = (self.wind_mesh**2).mean()**.5
 
@@ -688,7 +714,7 @@ class FieldLevelModel(Model):
         elif self.precond=='kaiser_dyn':
             bE = 1 + bias['b1']
             count = syst['ngbar'] * self.cell_length**3
-            boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.box_center)
+            boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.los_fid)
             wind = (self.wind_mesh**2).mean()**.5
 
             scale = (1 + wind * count * boost**2 * pmesh)**.5
@@ -748,7 +774,7 @@ class FieldLevelModel(Model):
             mesh = self.masked2mesh(mesh)
 
         # NOTE: equivalent to:
-        # mesh = self.mesh2masked(count_obs)
+        # mesh = self.mesh2masked(mesh)
         # mesh = (mesh / mesh.mean() - self.mesh2masked(model.wind_mesh))
         # return self.masked2mesh(mesh) / (model.wind_mesh**2).mean()**.5
 
@@ -760,7 +786,7 @@ class FieldLevelModel(Model):
         """
         Compute and save a painted window mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
         """
-        wind_mesh, cell_length, box_center, box_rotvec = catalog2window(load_path, self.cosmo_fid, cell_budget, padding)
+        wind_mesh, cell_length, box_center, box_rotvec = catalog2window(load_path, self.cosmo_fid, cell_budget, padding, self.paint_order)
         if save_path is None:
             save_path = Path(load_path).with_suffix('.npy')
         save_path = str(save_path) # cast to str to allow yaml saving
@@ -777,7 +803,7 @@ class FieldLevelModel(Model):
         """
         Compute a painted mesh from a RA, DEC, Z .fits catalog.
         """
-        return catalog2mesh(path, self.cosmo_fid, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+        return catalog2mesh(path, self.cosmo_fid, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, self.paint_order)
 
 
     ###########
@@ -826,7 +852,7 @@ class FieldLevelModel(Model):
 
         bE_fid = 1 + self.loc_fid['b1']
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.count_fid, 
-                                       self.wind_mesh, self.a_fid, self.box_shape, self.box_center)
+                                       self.wind_mesh, self.a_fid, self.box_shape, self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
         # post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))

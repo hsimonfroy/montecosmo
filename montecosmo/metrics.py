@@ -5,7 +5,7 @@ from functools import partial
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 from montecosmo.nbody import rfftk, paint_kernel
-from montecosmo.utils import safe_div, ch2rshape
+from montecosmo.utils import safe_div
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size as effective_sample_size2
@@ -195,7 +195,6 @@ def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, pow01 / (pow0 * pow1)**.5
 
-
 def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
@@ -207,25 +206,6 @@ def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 
     coh = pow01 / (pow0 * pow1)**.5
     return ks, pow1, trans, coh
     
-
-
-
-
-def deconv_paint(mesh, order=2):
-    """
-    Deconvolve the mesh by the paint kernel of given order.
-    """
-    if jnp.isrealobj(mesh):
-        kvec = rfftk(mesh.shape)
-        mesh = jnp.fft.rfftn(mesh)
-        mesh /= paint_kernel(kvec, order)
-        mesh = jnp.fft.irfftn(mesh)
-    else:
-        kvec = rfftk(ch2rshape(mesh.shape))
-        mesh /= paint_kernel(kvec, order)
-    return mesh
-
-
 
 
 
