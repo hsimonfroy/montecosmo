@@ -14,9 +14,9 @@ from numpyro.infer import MCMC
 #########################
 # HMC/NUTS within Gibbs #
 #########################
-def mwg_warmup(rng_key, state, logdf, config, n_samples=0, progress_bar=True):
-    rng_keys = jr.split(rng_key, num=len(state))
-    rng_keys = dict(zip(state.keys(), rng_keys))
+def mwg_warmup(seed, state, logdf, config, n_samples=0, progress_bar=True):
+    seeds = jr.split(seed, num=len(state))
+    seeds = dict(zip(state.keys(), seeds))
 
     # avoid modifying argument state as JAX functions should be pure
     state = state.copy()
@@ -44,8 +44,8 @@ def mwg_warmup(rng_key, state, logdf, config, n_samples=0, progress_bar=True):
         wind_adapt = blackjax.window_adaptation(blackjax.nuts, logdf_k, **config[k], progress_bar=progress_bar) 
         # NOTE: window adapt progress bar yield "NotImplementedError: IO effect not supported in vmap-of-cond"
         # for blackjax==1.2.4 due to progress bar update
-        rng_keys[k], warmup_key = jr.split(rng_keys[k], 2)
-        (state[k], params[k]), info = wind_adapt.run(warmup_key, state[k].position, num_steps=n_samples)
+        seeds[k], warmup_seed = jr.split(seeds[k], 2)
+        (state[k], params[k]), info = wind_adapt.run(warmup_seed, state[k].position, num_steps=n_samples)
 
         # register only relevant infos
         n_evals = info.info.num_integration_steps
@@ -59,7 +59,7 @@ def mwg_warmup(rng_key, state, logdf, config, n_samples=0, progress_bar=True):
 
 
 
-def mwg_kernel_general(rng_key, state, logdf, step_fn, init_fn, config):
+def mwg_kernel_general(seed, state, logdf, step_fn, init_fn, config):
     """
     General MWG kernel.
 
@@ -67,7 +67,7 @@ def mwg_kernel_general(rng_key, state, logdf, step_fn, init_fn, config):
 
     Parameters
     ----------
-    rng_key
+    seed
         The PRNG key.
     state
         Dictionary where each item is the state of an MCMC algorithm, i.e., an object of type ``AlgorithmState``.
@@ -87,8 +87,8 @@ def mwg_kernel_general(rng_key, state, logdf, step_fn, init_fn, config):
     -------
     Dictionary containing the updated ``state``.
     """
-    rng_keys = jr.split(rng_key, num=len(state))
-    rng_keys = dict(zip(state.keys(), rng_keys))
+    seeds = jr.split(seed, num=len(state))
+    seeds = dict(zip(state.keys(), seeds))
 
     # avoid modifying argument state as JAX functions should be pure
     state = state.copy()
@@ -112,7 +112,7 @@ def mwg_kernel_general(rng_key, state, logdf, step_fn, init_fn, config):
 
         # update state[k]
         state[k], info = step_fn[k](
-            rng_key=rng_keys[k],
+            rng_key=seeds[k],
             state=state[k],
             logdensity_fn=logdf_k,
             **config[k]
@@ -128,12 +128,12 @@ def mwg_kernel_general(rng_key, state, logdf, step_fn, init_fn, config):
     
 
 
-def sampling_loop_general(rng_key, initial_state, logdf, step_fn, init_fn, config, n_samples, progress_bar=True):
+def sampling_loop_general(seed, initial_state, logdf, step_fn, init_fn, config, n_samples, progress_bar=True):
     
     def one_step(state, xs):
-        _, rng_key = xs
+        _, seed = xs
         state, infos = mwg_kernel_general(
-            rng_key=rng_key,
+            seed=seed,
             state=state,
             logdf=logdf,
             step_fn=step_fn,
@@ -147,8 +147,8 @@ def sampling_loop_general(rng_key, initial_state, logdf, step_fn, init_fn, confi
             union |= state[k].position
         return state, (union, infos)
 
-    keys = jr.split(rng_key, n_samples)
-    xs = jnp.arange(n_samples), keys
+    seeds = jr.split(seed, n_samples)
+    xs = jnp.arange(n_samples), seeds
 
     # last_state, (positions, infos) = lax.scan(one_step, initial_state, xs) # XXX: blackjax < 1.2.3
   
@@ -236,9 +236,9 @@ def get_init_state(init_pos, logdf, init_fn):
     return init_state
 
 
-def nutswg_run(rng_key, init_state, config, logdf, step_fn, init_fn, n_samples, progress_bar=True):
+def nutswg_run(seed, init_state, config, logdf, step_fn, init_fn, n_samples, progress_bar=True):
     last_state, (samples, infos) = sampling_loop_general(
-                                rng_key=rng_key,
+                                seed=seed,
                                 initial_state=init_state,
                                 logdf=logdf,
                                 step_fn=step_fn,
@@ -257,8 +257,8 @@ def get_nutswg_run(logdf, step_fn, init_fn, n_samples, progress_bar=True):
                    progress_bar=progress_bar)
 
 
-def nutswg_warm(rng_key, init_state, logdf, config, n_samples, progress_bar=True):
-    (last_state, config), (samples, infos) = mwg_warmup(rng_key, init_state, logdf, config, n_samples, progress_bar=progress_bar)
+def nutswg_warm(seed, init_state, logdf, config, n_samples, progress_bar=True):
+    (last_state, config), (samples, infos) = mwg_warmup(seed, init_state, logdf, config, n_samples, progress_bar=progress_bar)
     return samples, infos, last_state, config
 
 def get_nutswg_warm(logdf, config, n_samples, progress_bar=True):
@@ -282,13 +282,13 @@ def get_nutswg_warm(logdf, config, n_samples, progress_bar=True):
 #########
 # MCLMC #
 #########
-def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None, 
+def mclmc_warmup(seed, init_pos, logdf, n_steps=0, config=None, 
               desired_energy_var=5e-4, diagonal_preconditioning=False):
-    init_key, tune_key = jr.split(rng, 2)
+    init_seed, tune_seed = jr.split(seed, 2)
 
     # Create an initial state for the sampler
     state = blackjax.mcmc.mclmc.init(
-        position=init_pos, logdensity_fn=logdf, rng_key=init_key
+        position=init_pos, logdensity_fn=logdf, rng_key=init_seed
     )
 
     if config is None:
@@ -326,7 +326,7 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             mclmc_kernel=kernel,
             num_steps=num_steps,
             state=state,
-            rng_key=tune_key,
+            rng_key=tune_seed,
             desired_energy_var=desired_energy_var,
             diagonal_preconditioning=diagonal_preconditioning,
             frac_tune1=frac_tune1,
@@ -341,7 +341,7 @@ def mclmc_warmup(rng, init_pos, logdf, n_steps=0, config=None,
 
 
 
-def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
+def mclmc_run(seed, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
               transform=None, thinning=1, progress_bar=True):
     integrator = isokinetic_mclachlan
 
@@ -379,7 +379,7 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     # Run the sampler
     if thinning==1:
         state, history = run_inference_algorithm(
-            rng_key=rng,
+            rng_key=seed,
             initial_state=state,
             inference_algorithm=sampler,
             num_steps=n_samples,
@@ -388,7 +388,7 @@ def mclmc_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
         )
     else:
         state, history = run_with_thinning(
-            rng_key=rng,
+            seed=seed,
             inference_algorithm=sampler,
             num_steps=n_samples,
             initial_state=state,
@@ -431,15 +431,15 @@ def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=Tru
 from blackjax.mcmc.adjusted_mclmc_dynamic import rescale
 from blackjax.util import run_inference_algorithm
 
-def mams_warmup(rng, init_pos, logdf, n_steps=0, config=None, 
+def mams_warmup(seed, init_pos, logdf, n_steps=0, config=None, 
               diagonal_preconditioning=False, 
               random_trajectory_length=True,
                 L_proposal_factor=jnp.inf):
-    init_key, tune_key = jr.split(rng, 2)
+    init_seed, tune_seed = jr.split(seed, 2)
 
     # Create an initial state for the sampler
     state = blackjax.mcmc.adjusted_mclmc_dynamic.init(
-        position=init_pos, logdensity_fn=logdf, random_generator_arg=init_key
+        position=init_pos, logdensity_fn=logdf, random_generator_arg=init_seed
     )
 
     if config is None:
@@ -466,13 +466,13 @@ def mams_warmup(rng, init_pos, logdf, n_steps=0, config=None,
         else:
             integration_steps_fn = lambda avg_num_integration_steps: lambda _: jnp.ceil(avg_num_integration_steps)
 
-        kernel = lambda rng_key, state, avg_num_integration_steps, step_size, inverse_mass_matrix: blackjax.mcmc.adjusted_mclmc_dynamic.build_kernel(
+        kernel = lambda seed, state, avg_num_integration_steps, step_size, inverse_mass_matrix: blackjax.mcmc.adjusted_mclmc_dynamic.build_kernel(
             integration_steps_fn=integration_steps_fn(avg_num_integration_steps),
             inverse_mass_matrix=inverse_mass_matrix,
             integrator=isokinetic_mclachlan,
             # integrator=isokinetic_omelyan,
         )(
-            rng_key=rng_key,
+            rng_key=seed,
             state=state,
             step_size=step_size,
             logdensity_fn=logdf,
@@ -486,7 +486,7 @@ def mams_warmup(rng, init_pos, logdf, n_steps=0, config=None,
             mclmc_kernel=kernel,
             num_steps=n_steps,
             state=state,
-            rng_key=tune_key,
+            rng_key=tune_seed,
             target=target_acc_rate,
             frac_tune1=0.1,
             frac_tune2=0.1,
@@ -499,7 +499,7 @@ def mams_warmup(rng, init_pos, logdf, n_steps=0, config=None,
     return state, config
 
 
-def mams_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
+def mams_run(seed, state, config:dict|MCLMCAdaptationState, logdf, n_samples,  
               transform=None, thinning=1, progress_bar=True, L_proposal_factor=jnp.inf):
     integrator = isokinetic_mclachlan
 
@@ -531,8 +531,8 @@ def mams_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     sampler = blackjax.adjusted_mclmc_dynamic(
         logdensity_fn=logdf,
         step_size=step_size,
-        integration_steps_fn=lambda key: jnp.ceil(
-            jr.uniform(key) * rescale(L / step_size)
+        integration_steps_fn=lambda seed: jnp.ceil(
+            jr.uniform(seed) * rescale(L / step_size)
         ),
         inverse_mass_matrix=inverse_mass_matrix,
         L_proposal_factor=L_proposal_factor,
@@ -542,7 +542,7 @@ def mams_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
      # Run the sampler
     if thinning==1:
         state, history = run_inference_algorithm(
-            rng_key=rng,
+            rng_key=seed,
             initial_state=state,
             inference_algorithm=sampler,
             num_steps=n_samples,
@@ -551,7 +551,7 @@ def mams_run(rng, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
         )
     else:
         state, history = run_with_thinning(
-            rng_key=rng,
+            seed=seed,
             inference_algorithm=sampler,
             num_steps=n_samples,
             initial_state=state,
@@ -604,7 +604,7 @@ from blackjax.progress_bar import progress_bar_scan
 from blackjax.types import ArrayLikeTree, PRNGKey
 
 def run_with_thinning(
-    rng_key: PRNGKey,
+    seed: PRNGKey,
     inference_algorithm: SamplingAlgorithm|VIAlgorithm,
     num_steps: int,
     initial_state: ArrayLikeTree = None,
@@ -622,7 +622,7 @@ def run_with_thinning(
 
     Parameters
     ----------
-    rng_key
+    seed
         The random state used by JAX's random numbers generator.
     initial_state
         The initial state of the inference algorithm.
@@ -653,22 +653,22 @@ def run_with_thinning(
         )
 
     if initial_state is None:
-        rng_key, init_key = jr.split(rng_key, 2)
-        initial_state = inference_algorithm.init(initial_position, init_key)
+        seed, init_seed = jr.split(seed, 2)
+        initial_state = inference_algorithm.init(initial_position, init_seed)
 
 
-    def one_sub_step(state, rng_key):
-        state, info = inference_algorithm.step(rng_key, state)
+    def one_sub_step(state, seed):
+        state, info = inference_algorithm.step(seed, state)
         return state, info
     
     def one_step(state, xs):
-        _, rng_key = xs
-        keys = jr.split(rng_key, thinning)
-        state, info = lax.scan(one_sub_step, state, keys)
+        _, seed = xs
+        seeds = jr.split(seed, thinning)
+        state, info = lax.scan(one_sub_step, state, seeds)
         return state, transform(state, info)
 
-    keys = jr.split(rng_key, num_steps)
-    xs = jnp.arange(num_steps), keys
+    seeds = jr.split(seed, num_steps)
+    xs = jnp.arange(num_steps), seeds
     
     scan_fn = gen_scan_fn(num_steps, progress_bar)
     final_state, history = scan_fn(one_step, initial_state, xs)
@@ -709,7 +709,7 @@ def save_run(mcmc:MCMC, i_run:int, path:str, extra_fields:list=None, group_by_ch
 
 
 def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=(),
-                    rng=42, group_by_chain:bool=True, init_params=None) -> MCMC:
+                    seed=42, group_by_chain:bool=True, init_params=None) -> MCMC:
     """
     Warmup and run MCMC, saving the specified variables and extra fields.
     If `mcmc.num_warmup > 0`, first step is a warmup step.
@@ -719,15 +719,15 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
     mcmc.post_warmup_state = last_state
     ```
     """
-    if isinstance(rng, int):
-        rng = jr.key(rng)
+    if isinstance(seed, int):
+        seed = jr.key(seed)
 
     # Warmup sampling
     if mcmc.num_warmup > 0:
         print(f"\nrun {start}/{end} (warmup)")
 
         # Warmup
-        mcmc.warmup(rng, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
+        mcmc.warmup(seed, collect_warmup=True, extra_fields=extra_fields, init_params=init_params)
         save_run(mcmc, start, path, extra_fields, group_by_chain)
 
         # Print warmup last state infos
@@ -735,24 +735,24 @@ def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=()
             "\nstep_size:", mcmc.last_state.adapt_state.step_size,
             "\nsqrt_invmm:", mcmc.last_state.adapt_state.mass_matrix_sqrt_inv)
 
-        # Handling rng key and destroy init_params
-        rng_run = mcmc.post_warmup_state.rng_key
+        # Handling rng seed and destroy init_params
+        seed_run = mcmc.post_warmup_state.rng_key
         init_params = None
         start += 1
     else:
-        rng_run = rng
+        seed_run = seed
 
     # Run sampling
     for i_run in range(start, end+1):
         print(f"\nrun {i_run}/{end}")
 
         # Run
-        mcmc.run(rng_run, extra_fields=extra_fields, init_params=init_params)
+        mcmc.run(seed_run, extra_fields=extra_fields, init_params=init_params)
         save_run(mcmc, i_run, path, extra_fields)
 
         # Init next run at last state
         mcmc.post_warmup_state = mcmc.last_state
-        rng_run = mcmc.post_warmup_state.rng_key
+        seed_run = mcmc.post_warmup_state.rng_key
     return mcmc
 
 

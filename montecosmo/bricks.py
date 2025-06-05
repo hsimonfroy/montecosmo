@@ -60,8 +60,6 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     # pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), ks, logpows, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
     pows = power.linear_matter_power(cosmo, ks, a=a)
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
-
-    # pow_fn = lambda x: jnp.ones_like(x) * cosmo.sigma8**2
     return pow_fn
 
 
@@ -355,6 +353,33 @@ def b_phi_delta(b1, b2, bp, delta_c=1.686):
 ##############################
 # Distance and Line-Of-Sight #
 ##############################
+def regular_pos(mesh_shape, ptcl_shape):
+    """
+    Return regularly spaced positions in cell coordinates.
+    """
+    pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape)]
+    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
+    return pos
+
+def unif_pos(mesh_shape, ptcl_shape, seed=42):
+    """
+    Return uniformly distributed positions in cell coordinates.
+    """
+    from jax import random as jr
+    if isinstance(seed, int):
+        seed = jr.key(seed)
+    pos = jr.uniform(seed, shape=(ptcl_shape.prod(), 3), minval=0., maxval=mesh_shape)
+    return pos
+
+def sobol_pos(mesh_shape, ptcl_shape, seed=42):
+    """
+    Return Sobol sequence of positions in cell coordinates.
+    """
+    from scipy.stats import qmc
+    sampler = qmc.Sobol(d=3, scramble=True, seed=seed)
+    return jnp.array(sampler.random(n=ptcl_shape.prod()) * mesh_shape)
+
+
 def cell2phys_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape):
     """
     Cell positions to physical positions.
@@ -436,7 +461,7 @@ def pos_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape):
 
 def scalefactors_and_redges(cosmo, rmin, rmax, n_shells):
     """
-    Return radius shell edges and corresponding scale factors.
+    Return radius shell edges and their effective scale factors.
     """
     gmin, gmax = a2g(cosmo, chi2a(cosmo, rmax)), a2g(cosmo, chi2a(cosmo, rmin))
     gs = np.linspace(gmin, gmax, n_shells+1)
@@ -468,14 +493,6 @@ def isoap2parperp(alpha_iso, alpha_ap):
 ################################
 # Cell to Physical to Redshift #
 ################################
-def regular_pos(mesh_shape, ptcl_shape):
-    """
-    Return regularly spaced positions in cell coordinates.
-    """
-    pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape)]
-    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
-    return pos
-
 def tophysical_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, 
                     cosmology:Cosmology, a_obs=None, curved_sky=True):
     """

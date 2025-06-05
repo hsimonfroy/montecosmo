@@ -355,7 +355,7 @@ class Chains(Samples):
             out[k] = jnp.stack(out[k])
         return out
     
-    def choice(self, n, names:str|list=None, rng=42, batch_ndim=2, replace=False):
+    def choice(self, n, names:str|list=None, seed=42, batch_ndim=2, replace=False):
         """
         Select a random subsample of size n along given axis for variables selected by names.
         names can be variable names or group names.
@@ -365,9 +365,9 @@ class Chains(Samples):
         else:
             names = np.atleast_1d(names)
 
-        if isinstance(rng, int):
-            rng = jr.key(rng)
-        fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=replace)
+        if isinstance(seed, int):
+            seed = jr.key(seed)
+        fn = lambda x: jr.choice(seed, x.reshape(-1), shape=(n,), replace=replace)
         fn = nvmap(fn, batch_ndim)
 
         new = self.copy()

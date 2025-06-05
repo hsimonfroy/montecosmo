@@ -3,13 +3,10 @@ from itertools import product
 import numpy as np
 
 from jax import numpy as jnp, tree, debug, lax
-import jax_cosmo as jc
-from jax_cosmo import Cosmology
-from montecosmo.utils import ch2rshape, safe_div
-
-import jax_cosmo as jc
+from jax_cosmo import Cosmology, background
+from jax_cosmo.scipy.ode import odeint
 from jaxpm.growth import _growth_factor_ODE
-from jaxpm.painting import cic_paint, cic_read
+from montecosmo.utils import ch2rshape, safe_div
 
 
 ###########
@@ -213,20 +210,16 @@ def pm_forces(pos, mesh:tuple|jnp.ndarray, paint_order:int=2, grad_fd=False, lap
     """
     if isinstance(mesh, tuple):
         mesh = jnp.fft.rfftn(paint(pos, mesh, order=paint_order))
-    # elif jnp.isrealobj(mesh):
-    #     mesh = jnp.fft.rfftn(mesh)
+        # If painted field, double deconv to account for both painting and reading 
+        # mesh /= paint_kernel(kvec, order=paint_order)**2
 
     # Compute gravitational potential
     kvec = rfftk(ch2rshape(mesh.shape))
-    pot_k = mesh * invlaplace_kernel(kvec, lap_fd) * gaussian_kernel(kvec, kcut)
-
-    # # If painted field, double deconvolution to account for both painting and reading 
-    # if mesh is None:
-    #     print("deconv")
-    #     pot_k /= paint_kernel(kvec, order=paint_order)**2
+    pot = mesh * invlaplace_kernel(kvec, lap_fd) * gaussian_kernel(kvec, kcut)
 
     # Compute gravitational forces
-    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot_k), paint_order) 
+    # NOTE: for regularly spaced positions, reading with paint_order=2 <=> paint_order=1
+    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot), paint_order) 
                       for i in range(3)], axis=-1)
 
 
@@ -255,15 +248,25 @@ def pm_forces2(pos, mesh:jnp.ndarray, paint_order:int=2, lap_fd=False, grad_fd=F
     return force2
 
 
-def lpt(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=2, paint_order:int=2, grad_fd=False, lap_fd=False):
+def lpt(
+    cosmo: Cosmology,
+    init_mesh: jnp.ndarray,
+    pos: jnp.ndarray,
+    a: float| jnp.ndarray,
+    lpt_order: int = 2,
+    paint_order: int = 2,
+    grad_fd: bool = False,
+    lap_fd: bool = False,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute first or second order LPT displacement, at given scale factor(s).
     See e.g. Eq. 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
     or Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
+
+    If `init_mesh` is provided in real space, perform an additional rfftn.
     """
-    # if jnp.isrealobj(init_mesh):
-    #     mesh_shape = init_mesh.shape
-    #     init_mesh = jnp.fft.rfftn(init_mesh)
+    if jnp.isrealobj(init_mesh):
+        init_mesh = jnp.fft.rfftn(init_mesh)
 
     force1 = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
@@ -282,32 +285,32 @@ def lpt(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=2, paint_order:int=2, 
 ###########
 # Growths #
 ###########
-log10_amin: int = -3
-steps: int = 128
+growth_log10_amin: float = -3.
+growth_steps: int = 128
 
 # Growth from scale factor
 def a2g(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["g"])
 
 def a2g2(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     # NOTE: "g2" is normalized such that g2 = -3/7 * "g2" ~ -3/7 * g^2
     return jnp.interp(a, cache["a"], cache["g2"]) * -3/7
 
 def a2f(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["f"])
 
 def a2f2(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(a, cache["a"], cache["f2"])
 
@@ -319,26 +322,26 @@ def a2dg2dg(cosmo, a):
 # Growth from growth factor
 def g2a(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["a"])
 
 def g2g2(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     # NOTE: "g2" is normalized such that g2 = -3/7 * "g2" ~ -3/7 * g^2
     return jnp.interp(g, cache["g"], cache["g2"]) * -3/7
 
 def g2f(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f"])
 
 def g2f2(cosmo, g):
     if not "background.growth_factor" in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
+        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
     cache = cosmo._workspace["background.growth_factor"]
     return jnp.interp(g, cache["g"], cache["f2"])
 
@@ -350,9 +353,10 @@ def g2dg2dg(cosmo, g):
 #############
 # Distances #
 #############
-from jax_cosmo.scipy.ode import odeint
-from jax_cosmo.background import dchioverda
-def a2chi(cosmo, a, log10_amin=-3, steps=256):
+dist_log10_amin: float = -3.
+dist_steps: int = 256
+
+def a2chi(cosmo, a, log10_amin=dist_log10_amin, steps=dist_steps):
     r"""Radial comoving distance in [Mpc/h] for a given scale factor.
 
     Parameters
@@ -382,7 +386,7 @@ def a2chi(cosmo, a, log10_amin=-3, steps=256):
 
         def dchioverdlna(y, x):
             xa = jnp.exp(x)
-            return dchioverda(cosmo, xa) * xa
+            return background.dchioverda(cosmo, xa) * xa
 
         chitab = odeint(dchioverdlna, 0.0, jnp.log(atab))
         chitab = chitab[-1] - chitab
@@ -396,7 +400,7 @@ def a2chi(cosmo, a, log10_amin=-3, steps=256):
     return jnp.clip(jnp.interp(a, cache["a"], cache["chi"]), 0.0)
 
 
-def chi2a(cosmo, chi):
+def chi2a(cosmo, chi, log10_amin=dist_log10_amin, steps=dist_steps):
     r"""Computes the scale factor for corresponding (array) of radial comoving
     distance by reverse linear interpolation.
 
@@ -415,7 +419,7 @@ def chi2a(cosmo, chi):
     """
     # Check if distances have already been computed, force computation otherwise
     if not "background.radial_comoving_distance" in cosmo._workspace.keys():
-        a2chi(cosmo, 1.0)
+        a2chi(cosmo, 1.0, log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.radial_comoving_distance"]
     return jnp.interp(chi, cache["chi"][::-1], cache["a"][::-1])
 
@@ -452,8 +456,8 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, grad_f
         '''
         g2 = g0 + dg
         a0, a2 = g2a(cosmo, g0), g2a(cosmo, g2)
-        coeff0 = jc.background.Esqr(cosmo, a0)**.5 * g0 * g2f(cosmo, g0) * a0**2
-        coeff2 = jc.background.Esqr(cosmo, a2)**.5 * g2 * g2f(cosmo, g2) * a2**2
+        coeff0 = background.Esqr(cosmo, a0)**.5 * g0 * g2f(cosmo, g0) * a0**2
+        coeff2 = background.Esqr(cosmo, a2)**.5 * g2 * g2f(cosmo, g2) * a2**2
         return coeff0 / coeff2
 
     def kick(state, g0, cosmo, dg):
@@ -565,7 +569,7 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int
     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
     """
     a = jnp.atleast_1d(a)
-    E = jc.background.Esqr(cosmo, a)**.5
+    E = background.Esqr(cosmo, a)**.5
     if jnp.isrealobj(init_mesh):
         delta_k = jnp.fft.rfftn(init_mesh)
         mesh_shape = init_mesh.shape
@@ -616,9 +620,9 @@ def diffrax_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=Fa
         forces = pm_forces(pos, mesh_shape, paint_order, grad_fd=grad_fd, lap_fd=lap_fd) * 1.5 * cosmo.Omega_m
 
         # Computes the update of position (drift)
-        dpos = 1. / (a**3 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * vel
+        dpos = 1. / (a**3 * jnp.sqrt(background.Esqr(cosmo, a))) * vel
         # Computes the update of velocity (kick)
-        dvel = 1. / (a**2 * jnp.sqrt(jc.background.Esqr(cosmo, a))) * forces
+        dvel = 1. / (a**2 * jnp.sqrt(background.Esqr(cosmo, a))) * forces
         return dpos, dvel
     return vector_field
 
@@ -711,7 +715,7 @@ def rsd_fpm(cosmo:Cosmology, a, vel, los:np.ndarray):
     """
     # Divide PM momentum by scale factor once to retrieve velocity, and once again for comobile velocity  
     a = jnp.expand_dims(a, -1)
-    dpos = vel / (jc.background.Esqr(cosmo, a)**.5 * a**2)
+    dpos = vel / (background.Esqr(cosmo, a)**.5 * a**2)
     # Project velocity on line-of-sight
     dpos = (dpos * los).sum(-1, keepdims=True) * los
     return dpos

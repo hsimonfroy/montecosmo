@@ -5,8 +5,7 @@ from dataclasses import dataclass, asdict
 from IPython.display import display
 from pprint import pformat
 
-from numpyro import sample, deterministic, render_model, distributions as dist
-from numpyro.handlers import seed, condition, block, trace
+from numpyro import sample, deterministic, render_model, handlers, distributions as dist
 from numpyro.infer.util import log_density
 import numpy as np
 
@@ -20,7 +19,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
                                simple_window, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical, toredshift_param, toredshift_auto, toredshift_auto2, toredshift_aponly,
                                phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
-                               catalog2mesh, catalog2window, pos_mesh, get_ptcl_shape)
+                               catalog2mesh, catalog2window, pos_mesh, regular_pos, get_ptcl_shape)
 from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, paint, read, deconv_paint
 from montecosmo.metrics import spectrum, powtranscoh
 from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
@@ -171,42 +170,42 @@ class Model():
                 hide_fn = lambda site: site['type'] == 'deterministic' and site['name'] not in base_name
             else:
                 hide_fn = lambda site: False
-        return block(model, hide_fn=hide_fn)
+        return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, rng=42, samples:int|tuple|dict=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, from_base=False):
+    def predict(self, seed=42, samples:int|tuple|dict=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, from_base=False):
         """
         Run model conditioned on samples.
         * If samples is None, return a single prediction.
         * If samples is an int or tuple, return a prediction of such shape.
         * If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
         """
-        if isinstance(rng, int):
-            rng = jr.key(rng)
+        if isinstance(seed, int):
+            seed = jr.key(seed)
 
-        def single_prediction(rng, sample={}):
+        def single_prediction(seed, sample={}):
             # Optionally reparametrize base to sample params
             if from_base:
                 sample = self.reparam(sample, inv=True) 
                 # NOTE: deterministic sites have no effects with handlers.condition, but do with handlers.subsitute
 
             # Condition then block
-            model = condition(self.model, data=sample)
+            model = handlers.condition(self.model, data=sample)
             if hide_samp:
-                model = block(model, hide=sample.keys())
+                model = handlers.block(model, hide=sample.keys())
             model = self._block_det(model, hide_base=hide_base, hide_det=hide_det)
 
             # Trace and return values
-            tr = trace(seed(model, rng_seed=rng)).get_trace()
+            tr = handlers.trace(handlers.seed(model, rng_seed=seed)).get_trace()
             return {k: v['value'] for k, v in tr.items()}
 
         if samples is None:
-            return single_prediction(rng)
+            return single_prediction(seed)
         
         elif isinstance(samples, (int, tuple)):
             if isinstance(samples, int):
                 samples = (samples,)
-            rng = jr.split(rng, samples)
-            return nvmap(single_prediction, len(samples))(rng)
+            seed = jr.split(seed, samples)
+            return nvmap(single_prediction, len(samples))(seed)
         
         elif isinstance(samples, dict):
             if len(samples) == 0:
@@ -215,8 +214,8 @@ class Model():
                 # All item shapes should match on the first batch_ndim dimensions,
                 # so take the first item shape
                 shape = jnp.shape(next(iter(samples.values())))[:batch_ndim]
-                rng = jr.split(rng, shape)
-                return nvmap(single_prediction, len(shape))(rng, samples)
+                seed = jr.split(seed, shape)
+                return nvmap(single_prediction, len(shape))(seed, samples)
         
 
 
@@ -238,11 +237,11 @@ class Model():
     def force(self, params={}):
         return grad(self.logpdf)(params) # force = - grad potential = grad logpdf
     
-    def trace(self, rng):
-        return trace(seed(self.model, rng_seed=rng)).get_trace()
+    def trace(self, seed):
+        return handlers.trace(handlers.seed(self.model, rng_seed=seed)).get_trace()
     
-    def seed(self, rng):
-        self.model = seed(self.model, rng_seed=rng)
+    def seed(self, seed):
+        self.model = handlers.seed(self.model, rng_seed=seed)
 
     def condition(self, data={}, from_base=False):
         """
@@ -254,7 +253,7 @@ class Model():
             self.data |= data
             data = self.reparam(data, inv=True)
         self.data |= data
-        self.model = condition(self.model, data=data)
+        self.model = handlers.condition(self.model, data=data)
 
     def block(self, hide_fn=None, hide=None, expose_types=None, expose=None, hide_base=True, hide_det=True):
         """
@@ -267,7 +266,7 @@ class Model():
         if all(x is None for x in (hide_fn, hide, expose_types, expose)):
             self.model = self._block_det(self.model, hide_base=hide_base, hide_det=hide_det)
         else:
-            self.model = block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
+            self.model = handlers.block(self.model, hide_fn=hide_fn, hide=hide, expose_types=expose_types, expose=expose)
 
     def render(self, filename=None, render_dist=False, render_params=False):
         # NOTE: filename ignores path
@@ -451,6 +450,7 @@ class FieldLevelModel(Model):
         return cosmology, bias, ap, syst, init
 
 
+
     def evolve(self, params:tuple):
         cosmology, bias, ap, syst, init = params
 
@@ -466,12 +466,12 @@ class FieldLevelModel(Model):
 
             if self.ap_auto is not None:
                 # Create regular grid of particles, and get their scale factors and line-of-sights
-                pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(self.mesh_shape, self.ptcl_shape)]
-                pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
+                pos = regular_pos(self.mesh_shape, self.ptcl_shape)
                 weights = read(pos, gxy_mesh, self.paint_order)
                 pos = cell2phys_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
 
                 if self.ap_auto:
+                    # los particles
                     pos = toredshift_aponly(pos, los, cosmology, self.cosmo_fid, self.curved_sky)
                     # print("noap", los)
 
@@ -482,9 +482,7 @@ class FieldLevelModel(Model):
             return gxy_mesh, syst
                     
         # Create regular grid of particles, and get their scale factors and line-of-sights
-        pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(self.mesh_shape, self.ptcl_shape)]
-        pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
-
+        pos = regular_pos(self.mesh_shape, self.ptcl_shape)
         _, _, los, a = tophysical(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
                                 cosmology, self.a_obs, self.curved_sky)
         cell_los = self.box_rot.apply(los, inverse=True) # cell los
@@ -497,7 +495,6 @@ class FieldLevelModel(Model):
             # NOTE: lpt assumes given mesh is at a=1
             cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
             dpos, vel = lpt(cosmology, **init, pos=pos, a=a, 
-                            # lpt_order=self.lpt_order, paint_order=self.paint_order, grad_fd=False, lap_fd=False)
                             lpt_order=self.lpt_order, paint_order=2, grad_fd=False, lap_fd=False)
             # print("ratio", (self.mesh_shape / self.ptcl_shape).prod() )
             # pos += dpos * (self.mesh_shape / self.ptcl_shape).prod()
@@ -530,7 +527,7 @@ class FieldLevelModel(Model):
         # Painting weighted by Lagrangian bias expansion weights
         pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
         gxy_mesh = paint(pos, tuple(self.mesh_shape), lbe_weights, self.paint_order)
-        gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+        # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
 
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
@@ -550,31 +547,31 @@ class FieldLevelModel(Model):
         if self.observable == 'field':
             mean_count = syst['ngbar'] * self.cell_length**3
 
-            # obs = mesh2masked(mesh, self.mask)
-            # obs /= obs.mean()
-            # # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            # # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
-
-            # wind = mesh2masked(self.wind_mesh, self.mask)
-            # obs *= wind * mean_count
-
-            # # Gaussian noise
-            # obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
-            # # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
-            # # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
-            # # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
-
-            # # Poisson noise
-            # # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
-
-
-
             obs = mesh2masked(mesh, self.mask)
             obs /= obs.mean()
+            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
+            # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
+
             wind = mesh2masked(self.wind_mesh, self.mask)
             obs *= wind * mean_count
-            obs = masked2mesh(obs, self.mask)
+
+            # Gaussian noise
             obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
+            # obs = sample('obs', dist.Normal(obs, (temp * syst['ngbar'] * self.cell_length**3)**.5 / 1e9))
+            # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
+            # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
+
+            # Poisson noise
+            # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
+
+
+
+            # obs = mesh2masked(mesh, self.mask)
+            # obs /= obs.mean()
+            # wind = mesh2masked(self.wind_mesh, self.mask)
+            # obs *= wind * mean_count
+            # obs = masked2mesh(obs, self.mask)
+            # obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
 
             return obs 
 
@@ -832,10 +829,10 @@ class FieldLevelModel(Model):
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     
-    # def predict_chains(self, chains:Chains, rng=42, batch_ndim=2, 
+    # def predict_chains(self, chains:Chains, seed=42, batch_ndim=2, 
     #                    hide_base=True, hide_det=True, hide_samp=True, from_base=False) -> Chains:
     #     chains = chains.copy() # TODO: tree.map
-    #     chains.data = self.predict(rng=rng, samples=chains.data, batch_ndim=batch_ndim, 
+    #     chains.data = self.predict(seed=seed, samples=chains.data, batch_ndim=batch_ndim, 
     #                                hide_base=hide_base, hide_det=hide_det, hide_samp=hide_samp, from_base=from_base)
     #     return chains
     
@@ -846,7 +843,7 @@ class FieldLevelModel(Model):
         chains.data['kptc'] = fn(chains.data[name])
         return chains
     
-    def kaiser_post(self, rng, delta_obs, base=False, temp=1., scale_field=1.):
+    def kaiser_post(self, seed, delta_obs, base=False, temp=1., scale_field=1.):
         if jnp.isrealobj(delta_obs):
             delta_obs = jnp.fft.rfftn(delta_obs)
 
@@ -855,8 +852,8 @@ class FieldLevelModel(Model):
                                        self.wind_mesh, self.a_fid, self.box_shape, self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
-        # post_mesh = rg2cgh2(jr.normal(rng, ch2rshape(means.shape)))
-        post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
+        # post_mesh = rg2cgh2(jr.normal(seed, ch2rshape(means.shape)))
+        post_mesh = rg2cgh(jr.normal(seed, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
         # NOTE: scaling down the field is recommended when the Kaiser posterior approximation becomes less valid
         # because many high-wavevector amplitudes can be set to high.
