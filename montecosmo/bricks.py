@@ -266,9 +266,10 @@ def lagrangian_weights(cosmo:Cosmology, pos, los, a, box_shape,
         + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta_L
         + b_{\\phi} f_\\mathrm{NL} \\phi + b_{\\phi \\delta} f_\\mathrm{NL} (\\phi \\delta_L - \\braket{\\phi \\delta_L})
     """    
-    # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases
+    # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases?
     # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
-    # init_mesh *= jnp.exp( - kk_box / k_nyquist**2)
+    # init_mesh *= gaussian_kernel(kvec, kcut=k_nyquist)
+
     delta = jnp.fft.irfftn(init_mesh)
     growths = a2g(cosmo, a).squeeze()
 
@@ -459,15 +460,16 @@ def pos_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape):
 
 
 
-def scalefactors_and_redges(cosmo, rmin, rmax, n_shells):
+def redges_and_scalefactors(cosmo, rmin, rmax, n_shells):
     """
     Return radius shell edges and their effective scale factors.
+    Shell edges are linearly spaced in growth factor.
     """
     gmin, gmax = a2g(cosmo, chi2a(cosmo, rmax)), a2g(cosmo, chi2a(cosmo, rmin))
     gs = np.linspace(gmin, gmax, n_shells+1)
     redges = a2chi(cosmo, g2a(cosmo, gs)) # decreasing distance
     a = g2a(cosmo, (gs[:-1] + gs[1:]) / 2)
-    return a, redges
+    return redges, a
 
 
 def parperp2isoap(alpha_par, alpha_perp):
@@ -749,7 +751,7 @@ def get_mesh_shape(box_shape, cell_budget, padding=0.):
 def get_ptcl_shape(mesh_shape, oversampling=1.):
     """
     Return particle grid shape for a given mesh shape 
-    and a 1D oversampling factor of the particle grid by the mesh grid.
+    and a 1D oversampling factor of the particle density by the mesh grid.
     """
     return np.rint(mesh_shape / oversampling).astype(int)
 

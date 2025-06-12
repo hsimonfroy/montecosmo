@@ -94,7 +94,10 @@ def gaussian_kernel(kvec, kcut=np.inf):
         return 1.
     else:
         kk = sum(ki**2 for ki in kvec)
-        return np.exp(-kk / (2 * kcut**2)) 
+        # return np.exp(-kk / kcut**2)
+        rcut = 2 * np.pi / kcut
+        return np.exp(-kk * rcut**2 / 2)
+    
 
 
 def paint_kernel(kvec, order:int=2):

@@ -85,16 +85,19 @@ def _waves(mesh_shape, box_shape, kedges, los):
     rfftw : ndarray
         RFFT weights accounting for Hermitian symmetry.
     """
-    kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
-
     if isinstance(kedges, (type(None), int, float)):
+        kmin = 0.
+        kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
         if kedges is None:
-            dk = 2*np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
+            dk = 2 * np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
+            kedges = np.arange(kmin, kmax, dk)
         if isinstance(kedges, int):
-            dk = kmax / kedges # final number of bins will be kedges-1
+            dk = (kmax - kmin) / kedges # final number of bins will be kedges-1
+            kedges = np.linspace(kmin, kmax, kedges, endpoint=False)
         elif isinstance(kedges, float):
             dk = kedges
-        kedges = np.arange(0, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
+            kedges = np.arange(kmin, kmax, dk)
+        kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
 
     kvec = rfftk(mesh_shape) # cell units
     kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_shape)] # h/Mpc physical units
