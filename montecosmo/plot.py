@@ -15,7 +15,7 @@ from montecosmo.bdec import credint
 # General #
 ###########
 # TODO: create another function to plot 3d scatter
-def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
+def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
     """
     Plot bivariate function fn, that should be vectorized first.
     type can be 'mesh', 'contour', 'contourf', 'surf'.
@@ -30,7 +30,7 @@ def plot_bivar(fn, box=[[-1,1],[-1,1]], n=50, type='mesh', **kwargs):
     ```
     """
     if isinstance(box, (int, float)):
-        box = [[-box, box], [-box, box]]
+        box = ((-box, box), (-box, box))
 
     xs, ys = np.linspace(*box[0], n), np.linspace(*box[1], n)
     xx, yy = np.meshgrid(xs, ys)
@@ -357,15 +357,23 @@ def theme(dark=False, usetex=False, font_size=10, cmap='SetDark2'):
     return theme
 
 
-def invert_bw(path, epsilon=30):
+def invert_bw(path, eps=30):
     """
     Invert black and white in image, without affecting other colors.
+    ```
+    img = invert_bw(path)
+    img.save(save_path)
+    img.show()
+    ```
     """
     img = Image.open(path).convert("RGB")
     img = np.array(img)
 
-    white_mask = np.all(img >= 255 - epsilon, axis=-1)
-    black_mask = np.all(img <= epsilon, axis=-1)
+    white_mask = np.all(img >= 255 - eps, axis=-1)
+    black_mask = np.all(img <= eps, axis=-1)
     img[white_mask] = 255 - img[white_mask]
     img[black_mask] = 255 - img[black_mask]
+    
+    # greys = img.mean(-1)
+    # mask = np.linalg.norm(img - greys[..., None], axis=-1) < eps
     return Image.fromarray(img)

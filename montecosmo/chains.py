@@ -1,10 +1,11 @@
 
 import os
 from itertools import product
+from typing import Self
 
 import numpy as np
 import matplotlib.pyplot as plt
-from jax import numpy as jnp, random as jr, jit
+from jax import numpy as jnp, random as jr, jit, tree, tree_util
 
 from numpyro.diagnostics import print_summary
 from getdist import MCSamples
@@ -14,7 +15,6 @@ from montecosmo.metrics import multi_ess, multi_gr
 
 from dataclasses import dataclass, fields
 from collections import UserDict
-from jax import tree, tree_util
 
 
 
@@ -132,7 +132,7 @@ class Samples(UserDict):
         # here, attributes are only shallow copied
         return {field.name: getattr(self, field.name).copy() for field in fields(self)}
 
-    def __copy__(self): 
+    def __copy__(self) -> Self: 
         # NOTE: UserDict copy() would not copy other attributes than data
         return type(self)(**self.asdict())
                  
@@ -150,26 +150,26 @@ class Samples(UserDict):
     # Properties #
     ##############
     @property
-    def shape(self):
+    def shape(self) -> Self:
         return tree.map(jnp.shape, self.data)
     
     @property
-    def ndim(self):
+    def ndim(self) -> Self:
         return tree.map(jnp.ndim, self.data)
     
     @property
-    def dtype(self):
+    def dtype(self) -> Self:
         return tree.map(jnp.dtype, self.data)
     
     @property
-    def size(self):
+    def size(self) -> Self:
         return tree.map(jnp.size, self.data)
     
 
     ##############
     # Operations #
     ##############
-    def __or__(self, other):
+    def __or__(self, other) -> Self:
         newdict = self.asdict()
         if isinstance(other, Samples):
             otherdict = other.asdict()
@@ -186,7 +186,7 @@ class Samples(UserDict):
             return NotImplemented
         return type(self)(**newdict)
     
-    def __ror__(self, other):
+    def __ror__(self, other) -> Self:
         newdict = self.asdict()
         if isinstance(other, Samples):
             otherdict = other.asdict()
@@ -203,8 +203,8 @@ class Samples(UserDict):
             return NotImplemented
         return type(self)(**newdict)
 
-    def __ior__(self, other): 
-        # NOTE: inplace or, so dict |= UserDict remains a dict, contrary to dic | UsertDict
+    def __ior__(self, other) -> Self: 
+        # NOTE: inplace or, so dict |= UserDict remains a dict, contrary to dict | UserDict
         if isinstance(other, Samples):
             otherdict = other.asdict()
             selfdict = self.asdict()
@@ -218,7 +218,7 @@ class Samples(UserDict):
     ##############
     # Transforms #
     ##############
-    def prune(self):
+    def prune(self) -> Self:
         """
         Remove keys in groups that are not in data.
         """
@@ -226,10 +226,10 @@ class Samples(UserDict):
         new.groups = {g: [k for k in gl if k in new.data] for g, gl in new.groups.items()}
         return new
     
-    def concat(self, *others, axis=0):
+    def concat(self, *others, axis=0) -> Self:
         return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
-    def stackby(self, names:str|list=None, remove=True, axis=-1):
+    def stackby(self, names:str|list=None, remove=True, axis=-1) -> Self:
         """
         Stack variables by groups, optionally removing unstacked variables.
 
@@ -275,7 +275,7 @@ class Chains(Samples):
 
 
     @classmethod
-    def load_runs(cls, path:str, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2):
+    def load_runs(cls, path:str, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2) -> Self:
         """
         Load and append runs (or extra fields) saved in different files with same name except index.
 
@@ -324,7 +324,7 @@ class Chains(Samples):
     ######################
     # General Transforms #
     ######################
-    def splitrans(self, transform, n, axis=1):
+    def splitrans(self, transform, n, axis=1) -> Self:
         """
         Apply transform on n splits along given axis.
         Stack n values along first axis.
@@ -337,7 +337,7 @@ class Chains(Samples):
             out[k] = jnp.stack(out[k])
         return out
 
-    def cumtrans(self, transform, n, axis=1):
+    def cumtrans(self, transform, n, axis=1) -> Self:
         """
         Apply transform on n cumulative slices along given axis.
         Stack n values along first axis.
@@ -355,7 +355,7 @@ class Chains(Samples):
             out[k] = jnp.stack(out[k])
         return out
     
-    def choice(self, n, names:str|list=None, seed=42, batch_ndim=2, replace=False):
+    def choice(self, n, names:str|list=None, seed=42, batch_ndim=2, replace=False) -> Self:
         """
         Select a random subsample of size n along given axis for variables selected by names.
         names can be variable names or group names.
@@ -375,7 +375,7 @@ class Chains(Samples):
             new |= tree.map(fn, new.get([k]))
         return new
 
-    def thin(self, thinning=None, moment=None, axis:int=1):
+    def thin(self, thinning=None, moment=None, axis:int=1) -> Self:
         # All item shapes should match on given axis so take the first item shape
         length = jnp.shape(next(iter(self.values())))[axis]
         if thinning is None:
@@ -390,7 +390,7 @@ class Chains(Samples):
         out = self.splitrans(fn, n_split, axis=axis)
         return tree.map(lambda x: jnp.moveaxis(x, 0, axis), out)
     
-    def flatten(self, batch_ndim=2):
+    def flatten(self, batch_ndim=2) -> Self:
         """
         Flatten all non-batch dimensions, creating new keys.
         Update groups and labels accordingly.
@@ -438,7 +438,7 @@ class Chains(Samples):
     #####################
     # Metric Transforms #
     #####################
-    def metric(self, fn, *others, axis=None):
+    def metric(self, fn, *others, axis=None) -> Self:
         """
         Tree map chains but treat 'n_evals' item separately by summing it along axis.
         `self` and `others` should have matching keys, except possibly 'n_evals'.
@@ -453,10 +453,10 @@ class Chains(Samples):
             
         return infos | tree.map(fn, rest, *others_new)
     
-    def last(self, axis=1):
+    def last(self, axis=1) -> Self:
         return self.metric(lambda x: jnp.take(x, -1, axis), axis=axis)
     
-    def moment(self, m:int|list=(0,1,2), axis=1):
+    def moment(self, m:int|list=(0,1,2), axis=1) -> Self:
         if isinstance(m, int):
             fn = lambda x: jnp.sum(x**m, axis)
         else:
@@ -464,7 +464,7 @@ class Chains(Samples):
             fn = lambda x: jnp.sum(x[...,None]**m, axis)
         return self.metric(fn, axis=axis)
     
-    def center_moment(self, axis=-1):
+    def center_moment(self, axis=-1) -> Self:
         def center(moments, axis):
             moments = jnp.moveaxis(moments, axis, 0)
             count = moments[0]
@@ -474,14 +474,14 @@ class Chains(Samples):
         
         return self.metric(lambda x: center(x, axis), axis=())
     
-    def cmoment(self, axis=1):
+    def cmoment(self, axis=1) -> Self:
         fn = lambda x: jnp.stack((x.mean(axis), x.std(axis)), -1)
         return self.metric(fn, axis=axis)
 
-    # def mse(self, truth, axis=0):
+    # def mse(self, truth, axis=0) -> Self:
     #     return self.metric(lambda x, y: jnp.mean((x-y)**2, axis), truth)
     
-    def mse_cmoment(self, true_cmom, axis=None):
+    def mse_cmoment(self, true_cmom, axis=None) -> Self:
         cmom = self.cmoment(axis=1)
         true_cmom = Chains(true_cmom, self.groups, self.labels) # cast into Chains
 
@@ -497,16 +497,16 @@ class Chains(Samples):
 
         return cmom.metric(lambda x, y: mse_mom(x, y, axis), true_cmom)
 
-    def eval_times_mse(self, truth, axis=None):
+    def eval_times_mse(self, truth, axis=None) -> Self:
         mse_mom = self.mse_cmoment(truth, axis=axis)
         name = "n_evals" 
         infos, rest = mse_mom[[name], ['*~'+name]]
         return infos | tree.map(lambda x: infos[name] * x, rest)
 
-    def multi_ess(self, axis=None):
+    def multi_ess(self, axis=None) -> Self:
         return self.metric(lambda x: multi_ess(x, axis=axis))
     
-    def eval_per_ess(self, axis=None):
+    def eval_per_ess(self, axis=None) -> Self:
         ess = self.multi_ess(axis=axis)
         name = "n_evals" 
         infos, rest = ess[[name], ['*~'+name]]

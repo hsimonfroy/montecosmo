@@ -6,7 +6,7 @@ from jax import numpy as jnp, tree, debug, lax
 from jax_cosmo import Cosmology, background
 from jax_cosmo.scipy.ode import odeint
 from jaxpm.growth import _growth_factor_ODE
-from montecosmo.utils import ch2rshape, safe_div
+from montecosmo.utils import ch2rshape, r2chshape, safe_div
 
 
 ###########
@@ -97,6 +97,32 @@ def gaussian_kernel(kvec, kcut=np.inf):
         # return np.exp(-kk / kcut**2)
         rcut = 2 * np.pi / kcut
         return np.exp(-kk * rcut**2 / 2)
+
+
+def tophat_kernel(kvec, kcut=np.inf):
+    """
+    Compute the tophat kernel. 
+    Note that it is more efficient to compute 
+    `where(tophat_kernel(...), mesh, 0.)`
+    than `tophat_kernel(...) * mesh`.
+    
+    Parameters
+    -----------
+    kvec: list
+        List of wavevectors
+    kcut: float
+        Cutoff wavenumber for the gaussian kernel
+
+    Returns
+    --------
+    weights: array
+        Complex kernel values
+    """
+    if kcut == np.inf:
+        return 1.
+    else:
+        kk = sum(ki**2 for ki in kvec)
+        return np.where(kk < kcut**2, True, False)
     
 
 
@@ -154,9 +180,25 @@ paint_kernels = [
     lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
     lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
     lambda s: 1 - s, # CIC
-    lambda s: (s <= 1/2) * (3/4 - s**2) + (s > 1/2) / 2 * (3/2 - s)**2, # TSC
-    lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (s > 1) / 6 * (2 - s)**3, # PCS
+    lambda s: (s <= 1/2) * (3/4 - s**2) + (1/2 < s) / 2 * (3/2 - s)**2, # TSC
+    lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
 ]
+
+def cic_alpha(s, alpha=1.):
+    m = (1 + alpha) / 2
+    d = jnp.abs(1 - alpha) / 2
+    out = (s <= d) * jnp.minimum(1, alpha) + ((d < s) & (s <= m)) * (m - s)
+    return out / alpha
+
+
+paint_kernels2 = [
+    lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
+    lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
+    cic_alpha, # CIC
+    lambda s: (s <= 1/2) * (3/4 - s**2) + (1/2 < s) / 2 * (3/2 - s)**2, # TSC
+    lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
+]
+
 
 def mass_assignment(pos, shape, order:int=2):
     """
@@ -202,17 +244,83 @@ def read(pos, mesh:jnp.ndarray, order:int=2):
         out += mesh[idx] * ker
     return out
 
+# def mass_assignment2(pos, shape, order:int=2, alpha:float=1.):
+#     """
+#     Compute mass assignment of particles onto a mesh.
+#     """
+#     dtype = 'int16' # int16 -> +/- 32_767, trkl
+#     shape = np.asarray(shape, dtype=dtype)
+#     def wrap(idx):
+#         return idx % shape
+
+#     order2 = order+2
+#     id0 = (jnp.round if order2 % 2 else jnp.floor)(pos).astype(dtype)
+#     ishifts = np.arange(order2) - (order2 - 1) // 2
+
+#     for ishift in product(* len(shape) * (ishifts,)):
+#         idx = id0 + np.array(ishift, dtype=dtype)
+#         s = jnp.abs(idx - pos)
+#         yield wrap(idx), paint_kernels2[order](s, alpha).prod(-1)
+
+# def paint2(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2, alpha:float=1.):
+#     """
+#     Paint the positions onto the mesh. 
+#     If mesh is a tuple, paint on a zero mesh with such shape.
+#     """
+#     if isinstance(mesh, tuple):
+#         mesh = jnp.zeros(mesh)
+#     else:
+#         mesh = jnp.asarray(mesh)
+
+#     for idx, ker in mass_assignment(pos, mesh.shape, order, alpha):
+#         # idx = jnp.unstack(idx, axis=-1)
+#         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
+#         mesh = mesh.at[idx].add(weights * ker)
+#     return mesh
+    
+# def read2(pos, mesh:jnp.ndarray, order:int=2, alpha:float=1.):
+#     """
+#     Read the value at the positions from the mesh.
+#     """
+#     out = 0.
+#     for idx, ker in mass_assignment(pos, mesh.shape, order, alpha):
+#         # idx = jnp.unstack(idx, axis=-1)
+#         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
+#         out += mesh[idx] * ker
+#     return out
+
+
+
+def interlace(pos, mesh_shape, weights=1., paint_order:int=2, interlace_order:int=2):
+    shifts = jnp.arange(interlace_order) / interlace_order
+    kvec = rfftk(mesh_shape)
+    carry = jnp.zeros(r2chshape(mesh_shape), dtype='complex')
+
+    def step(carry, shift):
+        mesh = paint(pos + shift, tuple(mesh_shape), weights, paint_order)
+        carry += jnp.fft.rfftn(mesh) * jnp.exp(1j * shift * sum(kvec)) / interlace_order
+        return carry, None
+    
+    # for shift in shifts:
+    #     mesh = paint(pos + shift, tuple(mesh_shape), weights, paint_order)
+    #     carry += jnp.fft.rfftn(mesh) * jnp.exp(1j * shift * sum(kvec)) / interlace_order
+    
+    carry = lax.scan(step, carry, shifts)[0]
+    return carry
+    # return jnp.fft.irfftn(carry) 
+
+
 
 
 ##########
 # Forces #
 ##########
-def pm_forces(pos, mesh:tuple|jnp.ndarray, paint_order:int=2, grad_fd=False, lap_fd=False, kcut=np.inf):
+def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2, grad_fd=False, lap_fd=False, kcut=np.inf):
     """
     Compute gravitational forces on particles using a PM scheme
     """
     if isinstance(mesh, tuple):
-        mesh = jnp.fft.rfftn(paint(pos, mesh, order=paint_order))
+        mesh = jnp.fft.rfftn(paint(pos, mesh, order=read_order))
         # If painted field, double deconv to account for both painting and reading 
         # mesh /= paint_kernel(kvec, order=paint_order)**2
 
@@ -222,11 +330,11 @@ def pm_forces(pos, mesh:tuple|jnp.ndarray, paint_order:int=2, grad_fd=False, lap
 
     # Compute gravitational forces
     # NOTE: for regularly spaced positions, reading with paint_order=2 <=> paint_order=1
-    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot), paint_order) 
+    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot), read_order) 
                       for i in range(3)], axis=-1)
 
 
-def pm_forces2(pos, mesh:jnp.ndarray, paint_order:int=2, lap_fd=False, grad_fd=False):
+def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, lap_fd=False, grad_fd=False):
     """
     Return 2LPT source term.
     """
@@ -234,20 +342,20 @@ def pm_forces2(pos, mesh:jnp.ndarray, paint_order:int=2, lap_fd=False, grad_fd=F
     pot = mesh * invlaplace_kernel(kvec, lap_fd)
 
     delta2 = 0.
-    hess_acc = 0.
+    hesses = 0.
     for i in range(3):
         # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
         hess_ii = gradient_kernel(kvec, i, grad_fd)**2
-        hess_ii = jnp.fft.irfftn(hess_ii * pot)
-        delta2 += hess_ii * hess_acc 
-        hess_acc += hess_ii
+        hess_ii = jnp.fft.irfftn(hess_ii * pot) # TODO: to pad
+        delta2 += hess_ii * hesses 
+        hesses += hess_ii
 
         for j in range(i+1, 3):
             # Substract squared strict-up-triangle terms
             hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
             delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
-    force2 = pm_forces(pos, jnp.fft.rfftn(delta2), paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
+    force2 = pm_forces(pos, jnp.fft.rfftn(delta2), read_order, grad_fd=grad_fd, lap_fd=lap_fd)
     return force2
 
 
@@ -257,7 +365,7 @@ def lpt(
     pos: jnp.ndarray,
     a: float| jnp.ndarray,
     lpt_order: int = 2,
-    paint_order: int = 2,
+    read_order: int = 2,
     grad_fd: bool = False,
     lap_fd: bool = False,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -271,12 +379,12 @@ def lpt(
     if jnp.isrealobj(init_mesh):
         init_mesh = jnp.fft.rfftn(init_mesh)
 
-    force1 = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
+    force1 = pm_forces(pos, init_mesh, read_order, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
     vel = force1
 
     if lpt_order == 2:
-        force2 = pm_forces2(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
+        force2 = pm_forces2(pos, init_mesh, read_order, grad_fd=grad_fd, lap_fd=lap_fd)
         dpos -= a2g2(cosmo, a) * force2
         vel  -= a2dg2dg(cosmo, a) * force2
 
