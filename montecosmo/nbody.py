@@ -200,23 +200,6 @@ paint_kernels2 = [
 ]
 
 
-def mass_assignment(pos, shape, order:int=2):
-    """
-    Compute mass assignment of particles onto a mesh.
-    """
-    dtype = 'int16' # int16 -> +/- 32_767, trkl
-    shape = np.asarray(shape, dtype=dtype)
-    def wrap(idx):
-        return idx % shape
-
-    id0 = (jnp.round if order % 2 else jnp.floor)(pos).astype(dtype)
-    ishifts = np.arange(order) - (order - 1) // 2
-
-    for ishift in product(* len(shape) * (ishifts,)):
-        idx = id0 + np.array(ishift, dtype=dtype)
-        s = jnp.abs(idx - pos)
-        yield wrap(idx), paint_kernels[order](s).prod(-1)
-
 def paint(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2):
     """
     Paint the positions onto the mesh. 
@@ -227,22 +210,56 @@ def paint(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2):
     else:
         mesh = jnp.asarray(mesh)
 
-    for idx, ker in mass_assignment(pos, mesh.shape, order):
+    dtype = 'int16' # int16 -> +/- 32_767, trkl
+    shape = np.asarray(mesh.shape, dtype=dtype)
+    def wrap(idx):
+        return idx % shape
+    
+    id0 = (jnp.round if order % 2 else jnp.floor)(pos).astype(dtype)
+    ishifts = np.arange(order) - (order - 1) // 2
+    ishifts = np.array(list(product(* len(shape) * (ishifts,))), dtype=dtype)
+
+    def step(carry, ishift):
+        idx = id0 + ishift
+        s = jnp.abs(idx - pos)
+        idx, ker = wrap(idx), paint_kernels[order](s).prod(-1)
+
         # idx = jnp.unstack(idx, axis=-1)
         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
-        mesh = mesh.at[idx].add(weights * ker)
-    return mesh
+        carry = carry.at[idx].add(weights * ker)
+        return carry, None
     
+    mesh = lax.scan(step, mesh, ishifts)[0]
+    return mesh
+
+
 def read(pos, mesh:jnp.ndarray, order:int=2):
     """
     Read the value at the positions from the mesh.
     """
-    out = 0.
-    for idx, ker in mass_assignment(pos, mesh.shape, order):
+    dtype = 'int16' # int16 -> +/- 32_767, trkl
+    shape = np.asarray(mesh.shape, dtype=dtype)
+    def wrap(idx):
+        return idx % shape
+    
+    id0 = (jnp.round if order % 2 else jnp.floor)(pos).astype(dtype)
+    ishifts = np.arange(order) - (order - 1) // 2
+    ishifts = np.array(list(product(* len(shape) * (ishifts,))), dtype=dtype)
+
+    def step(carry, ishift):
+        idx = id0 + ishift
+        s = jnp.abs(idx - pos)
+        idx, ker = wrap(idx), paint_kernels[order](s).prod(-1)
+
         # idx = jnp.unstack(idx, axis=-1)
         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
-        out += mesh[idx] * ker
+        carry += mesh[idx] * ker
+        return carry, None
+    
+    out = jnp.zeros(id0.shape[:-1])
+    out = lax.scan(step, out, ishifts)[0]
     return out
+
 
 # def mass_assignment2(pos, shape, order:int=2, alpha:float=1.):
 #     """

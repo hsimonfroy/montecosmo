@@ -596,16 +596,16 @@ class FieldLevelModel(Model):
             ngbarr_ = sample('ngbarr_', dist.Normal(jnp.zeros(len(self.redges)-1), 1e2))
             ngbarr = (1e-5 * ngbarr_ + 1e-3)
             rad_count = ngbarr * self.cell_length**3
-            ids = jnp.array(list(zip(rad_count, self.redges[:-1], self.redges[1:])))
+            inds = jnp.array(list(zip(rad_count, self.redges[:-1], self.redges[1:])))
 
-            def step(carry, id):
-                count, low, high = id
+            def step(carry, ind):
+                count, low, high = ind
                 rmask = (low < self.rmasked) & (self.rmasked <= high)
                 # carry = carry.at[rmask].multiply(count)
                 carry = jnp.where(rmask, carry * count, carry)
                 return carry, None
 
-            obs = lax.scan(step, obs, ids)[0]
+            obs = lax.scan(step, obs, inds)[0]
 
             # Gaussian noise
             obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
