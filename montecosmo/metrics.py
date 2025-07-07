@@ -5,7 +5,7 @@ from functools import partial
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 from montecosmo.nbody import rfftk, paint_kernel
-from montecosmo.utils import safe_div, ch2rshape
+from montecosmo.utils import safe_div
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size as effective_sample_size2
@@ -67,7 +67,8 @@ def _waves(mesh_shape, box_shape, kedges, los):
     box_shape : tuple of float
         Physical dimensions of the box.
     kedges : None, int, float, or list
-        * If None, set dk to twice the fundamental wavenumber.
+        * If None, set dk to sqrt(dim) times the fundamental wavenumber.
+          It is the minimum dk to guarantee connected shell bins.
         * If int, specifies number of edges.
         * If float, specifies dk.
         * If list, specifies kedges.
@@ -85,20 +86,23 @@ def _waves(mesh_shape, box_shape, kedges, los):
     rfftw : ndarray
         RFFT weights accounting for Hermitian symmetry.
     """
-    kmax = np.pi * np.min(mesh_shape / box_shape) # = knyquist
-
     if isinstance(kedges, (type(None), int, float)):
+        kmin = 0.
+        kmax = np.pi * (mesh_shape / box_shape).min() # = knyquist
         if kedges is None:
-            dk = 2*np.pi / np.min(box_shape) * 2 # twice the fundamental wavenumber
+            dk = len(mesh_shape)**.5 * 2 * np.pi / box_shape.min() # sqrt(d) times fundamental
+            n_kedges = max(int((kmax - kmin) / dk), 1)
         if isinstance(kedges, int):
-            dk = kmax / kedges # final number of bins will be kedges-1
+            n_kedges = kedges # final number of bins will be nedges-1
         elif isinstance(kedges, float):
-            dk = kedges
-        kedges = np.arange(0, kmax, dk) + dk/2 # from dk/2 to kmax-dk/2
+            n_kedges = max(int((kmax - kmin) / kedges), 1)
+        dk = (kmax - kmin) / n_kedges
+        kedges = np.linspace(kmin, kmax, n_kedges, endpoint=False)
+        kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
 
     kvec = rfftk(mesh_shape) # cell units
     kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_shape)] # h/Mpc physical units
-    kmesh = sum(ki**2 for ki in kvec)**0.5
+    kmesh = sum(ki**2 for ki in kvec)**.5
 
     mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
     mumesh = safe_div(mumesh, kmesh)
@@ -131,6 +135,7 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         deconv = (deconv, deconv)
 
     mesh = jnp.fft.rfftn(mesh, norm='ortho')
+    # mesh = jnp.fft.rfftn(mesh)
     kvec = rfftk(mesh_shape) # cell units
     mesh /= paint_kernel(kvec, order=deconv[0])
 
@@ -185,7 +190,6 @@ def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0))
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, (pow1 / pow0)**.5
 
-
 def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
@@ -194,7 +198,6 @@ def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)
     ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, pow01 / (pow0 * pow1)**.5
-
 
 def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
     if isinstance(deconv, int):
@@ -207,24 +210,6 @@ def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 
     coh = pow01 / (pow0 * pow1)**.5
     return ks, pow1, trans, coh
     
-
-
-
-
-def deconv_paint(mesh, order=2):
-    """
-    Deconvolve the mesh by the paint kernel of given order.
-    """
-    if jnp.isrealobj(mesh):
-        kvec = rfftk(mesh.shape)
-        mesh = jnp.fft.rfftn(mesh)
-        mesh /= paint_kernel(kvec, order)
-        mesh = jnp.fft.irfftn(mesh)
-    else:
-        kvec = rfftk(ch2rshape(mesh.shape))
-        mesh /= paint_kernel(kvec, order)
-    return mesh
-
 
 
 
@@ -349,6 +334,45 @@ def wigner3j_square(ellout, ellin, prefactor=True):
 
 
 
+
+#################
+# Distributions #
+#################
+def distr_radial(mesh, rmesh, redges:int|float|list, aggr_fn=None):
+    assert np.shape(mesh) == np.shape(rmesh), "value mesh and radius mesh must have same shape."
+
+    if isinstance(redges, (int, float)):
+        rmin, rmax = rmesh.min(), rmesh.max()
+        if isinstance(redges, int):
+            n_redges = redges # final number of bins will be nedges-1
+        elif isinstance(redges, float):
+            n_redges = max(int((rmax - rmin) / redges), 1)
+        dr = (rmax - rmin) / n_redges
+        redges = np.linspace(rmin, rmax, n_redges, endpoint=False)
+        redges += dr / 2 # from rmin+dr/2 to rmax-dr/2
+
+    dig = np.digitize(rmesh.reshape(-1), redges)
+    rcount = np.bincount(dig)
+    rcount = rcount[1:-1]
+
+    ravg = np.bincount(dig, weights=rmesh.reshape(-1))
+    ravg = ravg[1:-1] / rcount
+
+    if aggr_fn is None: # aggregate by averaging 
+        naggr = np.bincount(dig, weights=mesh.reshape(-1))
+        naggr = naggr[1:-1] / rcount
+    else:
+        naggr = []
+        for low, high in zip(redges[:-1], redges[1:]):
+            rmask = (low < rmesh) & (rmesh <= high)
+            vals = mesh[rmask]
+            naggr.append(aggr_fn(vals))
+        naggr = np.array(naggr)
+    return ravg, naggr
+
+
+def distr_angular():
+    pass
 
 
 #################

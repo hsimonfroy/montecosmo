@@ -1,10 +1,11 @@
 
 import os
 from itertools import product
+from typing import Self
 
 import numpy as np
 import matplotlib.pyplot as plt
-from jax import numpy as jnp, random as jr, jit
+from jax import numpy as jnp, random as jr, jit, tree, tree_util
 
 from numpyro.diagnostics import print_summary
 from getdist import MCSamples
@@ -14,7 +15,6 @@ from montecosmo.metrics import multi_ess, multi_gr
 
 from dataclasses import dataclass, fields
 from collections import UserDict
-from jax import tree, tree_util
 
 
 
@@ -42,8 +42,11 @@ class Samples(UserDict):
         selfdict = {field.name: (getattr(self, field.name) or {}).copy() for field in fields(self)} # handle None and shallow copy
         for k in selfdict:
             self.__setattr__(k, otherdict.get(k, {}) | selfdict[k]) # inherit attributes if not updated
+        
 
-
+    ############
+    # Querying #
+    ############
     def __getitem__(self, key, default_fn=None):
         # Global indexing and slicing
         if self._istreeof(key, (int, slice, type(Ellipsis), np.ndarray, jnp.ndarray)):
@@ -119,33 +122,20 @@ class Samples(UserDict):
         and empty dict when asked for subdict. To get subdict with None value, use `default_fn=lambda k:None`.
         """
         return self.__getitem__(key, default_fn)
-     
 
+
+    #########
+    # Utils #
+    #########
     def asdict(self):
         # NOTE: dataclasses.asdict makes deepcopy, cf. https://github.com/python/cpython/issues/88071
         # here, attributes are only shallow copied
         return {field.name: getattr(self, field.name).copy() for field in fields(self)}
 
-    def __copy__(self): 
+    def __copy__(self) -> Self: 
         # NOTE: UserDict copy() would not copy other attributes than data
         return type(self)(**self.asdict())
-
-    @property
-    def shape(self):
-        return tree.map(jnp.shape, self.data)
-    
-    @property
-    def ndim(self):
-        return tree.map(jnp.ndim, self.data)
-    
-    @property
-    def dtype(self):
-        return tree.map(jnp.dtype, self.data)
-    
-    @property
-    def size(self):
-        return tree.map(jnp.size, self.data)
-    
+                 
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
         return (self.data,), (self.groups,)
@@ -155,8 +145,31 @@ class Samples(UserDict):
     def tree_unflatten(cls, aux, data):
         return cls(*data, *aux)
     
+
+    ##############
+    # Properties #
+    ##############
+    @property
+    def shape(self) -> Self:
+        return tree.map(jnp.shape, self.data)
     
-    def __or__(self, other):
+    @property
+    def ndim(self) -> Self:
+        return tree.map(jnp.ndim, self.data)
+    
+    @property
+    def dtype(self) -> Self:
+        return tree.map(jnp.dtype, self.data)
+    
+    @property
+    def size(self) -> Self:
+        return tree.map(jnp.size, self.data)
+    
+
+    ##############
+    # Operations #
+    ##############
+    def __or__(self, other) -> Self:
         newdict = self.asdict()
         if isinstance(other, Samples):
             otherdict = other.asdict()
@@ -173,7 +186,7 @@ class Samples(UserDict):
             return NotImplemented
         return type(self)(**newdict)
     
-    def __ror__(self, other):
+    def __ror__(self, other) -> Self:
         newdict = self.asdict()
         if isinstance(other, Samples):
             otherdict = other.asdict()
@@ -190,8 +203,8 @@ class Samples(UserDict):
             return NotImplemented
         return type(self)(**newdict)
 
-    def __ior__(self, other): 
-        # NOTE: inplace or, so dict |= UserDict remains a dict, contrary to dic | UsertDict
+    def __ior__(self, other) -> Self: 
+        # NOTE: inplace or, so dict |= UserDict remains a dict, contrary to dict | UserDict
         if isinstance(other, Samples):
             otherdict = other.asdict()
             selfdict = self.asdict()
@@ -200,34 +213,43 @@ class Samples(UserDict):
             return self
         else:
             return super().__ior__(other)
-
+        
 
     ##############
     # Transforms #
     ##############
-    def concat(self, *others, axis=0):
+    def prune(self) -> Self:
+        """
+        Remove keys in groups that are not in data.
+        """
+        new = self.copy()
+        new.groups = {g: [k for k in gl if k in new.data] for g, gl in new.groups.items()}
+        return new
+    
+    def concat(self, *others, axis=0) -> Self:
         return tree.map(lambda x, *y: jnp.concatenate((x, *y), axis=axis), self, *others)
 
-    def stackby(self, names:str|list=None, remove=True, axis=-1):
+    def stackby(self, names:str|list=None, remove=True, axis=-1) -> Self:
         """
-        Stack variables by groups, optionally removing individual variables.
+        Stack variables by groups, optionally removing unstacked variables.
 
         names can be variable names (no stacking) or group names.
+        If names is None, all groups are stacked.
         """
         if names is None:
-            names = self.groups
+            names = list(self.groups)
         elif isinstance(names, str):
             names = [names]
 
         new = self.copy()
         for k in names:
-            if k not in self: # if name is a variable do noting
+            if k not in self: # if name is a variable, do nothing
                 if len(self.groups[k]) == 1:
                     new.data[k] = self[k]
                 else:
                     new.data[k] = jnp.stack(self[k], axis=axis)
 
-                # Remove individual variables
+                # Remove unstacked variables
                 if remove:
                     for k in self.groups[k]:
                         new.data.pop(k)
@@ -253,7 +275,7 @@ class Chains(Samples):
 
 
     @classmethod
-    def load_runs(cls, path:str, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2):
+    def load_runs(cls, path:str, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2) -> Self:
         """
         Load and append runs (or extra fields) saved in different files with same name except index.
 
@@ -302,12 +324,12 @@ class Chains(Samples):
     ######################
     # General Transforms #
     ######################
-    def splitrans(self, transform, n, axis=1):
+    def splitrans(self, transform, n, axis=1) -> Self:
         """
         Apply transform on n splits along given axis.
         Stack n values along first axis.
         """
-        assert n <= jnp.shape(self[next(iter(self))])[axis], "n should be less (<=) than the length of given axis."
+        assert n <= np.shape(self[next(iter(self))])[axis], "n should be less (<=) than the length of given axis."
         out = tree.map(lambda x: jnp.array_split(x, n, axis), self)
         out = transform(out)
         
@@ -315,13 +337,13 @@ class Chains(Samples):
             out[k] = jnp.stack(out[k])
         return out
 
-    def cumtrans(self, transform, n, axis=1):
+    def cumtrans(self, transform, n, axis=1) -> Self:
         """
         Apply transform on n cumulative slices along given axis.
         Stack n values along first axis.
         """
-        length = jnp.shape(self[next(iter(self))])[axis]
-        ends = jnp.rint(jnp.arange(1,n+1) / n * length).astype(int)
+        length = np.shape(self[next(iter(self))])[axis]
+        ends = np.rint(np.arange(1,n+1) / n * length).astype(int)
         out = tree.map(lambda x: [], self)
         for end in ends:
             part = tree.map(lambda x: x[axis*(slice(None),) + (slice(None,end),)], self)
@@ -333,7 +355,7 @@ class Chains(Samples):
             out[k] = jnp.stack(out[k])
         return out
     
-    def choice(self, n, names:str|list=None, rng=42, batch_ndim=2, replace=False):
+    def choice(self, n, names:str|list=None, seed=42, batch_ndim=2, replace=False) -> Self:
         """
         Select a random subsample of size n along given axis for variables selected by names.
         names can be variable names or group names.
@@ -343,16 +365,17 @@ class Chains(Samples):
         else:
             names = np.atleast_1d(names)
 
-        if isinstance(rng, int):
-            rng = jr.key(rng)
-        fn = lambda x: jr.choice(rng, x.reshape(-1), shape=(n,), replace=replace)
+        if isinstance(seed, int):
+            seed = jr.key(seed)
+        fn = lambda x: jr.choice(seed, x.reshape(-1), shape=(n,), replace=replace)
         fn = nvmap(fn, batch_ndim)
 
+        new = self.copy()
         for k in names:
-            self |= tree.map(fn, self.get([k]))
-        return self
+            new |= tree.map(fn, new.get([k]))
+        return new
 
-    def thin(self, thinning=None, moment=None, axis:int=1):
+    def thin(self, thinning=None, moment=None, axis:int=1) -> Self:
         # All item shapes should match on given axis so take the first item shape
         length = jnp.shape(next(iter(self.values())))[axis]
         if thinning is None:
@@ -367,7 +390,7 @@ class Chains(Samples):
         out = self.splitrans(fn, n_split, axis=axis)
         return tree.map(lambda x: jnp.moveaxis(x, 0, axis), out)
     
-    def flatten(self, batch_ndim=2):
+    def flatten(self, batch_ndim=2) -> Self:
         """
         Flatten all non-batch dimensions, creating new keys.
         Update groups and labels accordingly.
@@ -415,7 +438,7 @@ class Chains(Samples):
     #####################
     # Metric Transforms #
     #####################
-    def metric(self, fn, *others, axis=None):
+    def metric(self, fn, *others, axis=None) -> Self:
         """
         Tree map chains but treat 'n_evals' item separately by summing it along axis.
         `self` and `others` should have matching keys, except possibly 'n_evals'.
@@ -430,10 +453,10 @@ class Chains(Samples):
             
         return infos | tree.map(fn, rest, *others_new)
     
-    def last(self, axis=1):
+    def last(self, axis=1) -> Self:
         return self.metric(lambda x: jnp.take(x, -1, axis), axis=axis)
     
-    def moment(self, m:int|list=(0,1,2), axis=1):
+    def moment(self, m:int|list=(0,1,2), axis=1) -> Self:
         if isinstance(m, int):
             fn = lambda x: jnp.sum(x**m, axis)
         else:
@@ -441,7 +464,7 @@ class Chains(Samples):
             fn = lambda x: jnp.sum(x[...,None]**m, axis)
         return self.metric(fn, axis=axis)
     
-    def center_moment(self, axis=-1):
+    def center_moment(self, axis=-1) -> Self:
         def center(moments, axis):
             moments = jnp.moveaxis(moments, axis, 0)
             count = moments[0]
@@ -451,14 +474,14 @@ class Chains(Samples):
         
         return self.metric(lambda x: center(x, axis), axis=())
     
-    def cmoment(self, axis=1):
+    def cmoment(self, axis=1) -> Self:
         fn = lambda x: jnp.stack((x.mean(axis), x.std(axis)), -1)
         return self.metric(fn, axis=axis)
 
-    # def mse(self, truth, axis=0):
+    # def mse(self, truth, axis=0) -> Self:
     #     return self.metric(lambda x, y: jnp.mean((x-y)**2, axis), truth)
     
-    def mse_cmoment(self, true_cmom, axis=None):
+    def mse_cmoment(self, true_cmom, axis=None) -> Self:
         cmom = self.cmoment(axis=1)
         true_cmom = Chains(true_cmom, self.groups, self.labels) # cast into Chains
 
@@ -474,16 +497,16 @@ class Chains(Samples):
 
         return cmom.metric(lambda x, y: mse_mom(x, y, axis), true_cmom)
 
-    def eval_times_mse(self, truth, axis=None):
+    def eval_times_mse(self, truth, axis=None) -> Self:
         mse_mom = self.mse_cmoment(truth, axis=axis)
         name = "n_evals" 
         infos, rest = mse_mom[[name], ['*~'+name]]
         return infos | tree.map(lambda x: infos[name] * x, rest)
 
-    def multi_ess(self, axis=None):
+    def multi_ess(self, axis=None) -> Self:
         return self.metric(lambda x: multi_ess(x, axis=axis))
     
-    def eval_per_ess(self, axis=None):
+    def eval_per_ess(self, axis=None) -> Self:
         ess = self.multi_ess(axis=axis)
         name = "n_evals" 
         infos, rest = ess[[name], ['*~'+name]]

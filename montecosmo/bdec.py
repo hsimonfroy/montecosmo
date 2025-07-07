@@ -242,9 +242,9 @@ def qbcs(x, p=.95, weights=None, type='med', norm='inf'):
     Compute the p-Quantile-Based Credible Set (QBCS), 
     i.e. the `norm`-norm spherical set of proba `p`, where its center on dimension `i` is
 
-    * the Lowest if `type[i]=='low'` (LCR)
-    * the Median if `type[i]=='med'` (MCR)
-    * the Highest if `type[i]=='high'` (HCR)
+    * the Lowest if `type[i]=='low'` (LCS)
+    * the Median if `type[i]=='med'` (MCS)
+    * the Highest if `type[i]=='high'` (HCS)
 
     `x` is assumed to be of shape (*n_batch, n_samples, n_dim), and `type` is broadcasted to shape (n_dim,).
     
