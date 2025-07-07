@@ -700,21 +700,21 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
     radecz = {'RA': ra, 'DEC': dec, 'Z': z}
     return radecz
 
-def radec_interp(ra, dec, value, w=None, s=0., eps=1e-16):
-    """
-    Return an interpolator of a spherical field.
-    """
-    phi = np.deg2rad(ra).reshape(-1)
-    theta = np.deg2rad(90. - dec).reshape(-1)
-    value = value.reshape(-1)
-    interp_fn = SmoothSphereBivariateSpline(theta, phi, value, w=w, s=s, eps=eps)
+# def radec_interp(ra, dec, value, w=None, s=0., eps=1e-16):
+#     """
+#     Return an interpolator of a spherical field.
+#     """
+#     phi = np.deg2rad(ra).reshape(-1)
+#     theta = np.deg2rad(90. - dec).reshape(-1)
+#     value = value.reshape(-1)
+#     interp_fn = SmoothSphereBivariateSpline(theta, phi, value, w=w, s=s, eps=eps)
 
-    def radec_interp_fn(ra, dec):
-        shape = ra.shape
-        phi = np.deg2rad(ra).reshape(-1)
-        theta = np.deg2rad(90. - dec).reshape(-1)
-        return interp_fn(theta, phi, grid=False).reshape(shape)
-    return radec_interp_fn
+#     def radec_interp_fn(ra, dec):
+#         shape = ra.shape
+#         phi = np.deg2rad(ra).reshape(-1)
+#         theta = np.deg2rad(90. - dec).reshape(-1)
+#         return interp_fn(theta, phi, grid=False).reshape(shape)
+#     return radec_interp_fn
 
 # def radec_interp_mesh(ra, dec, value, w=None, s=0., eps=1e-16):
 #     interp = radec_interp(ra, dec, value, w=w, s=s, eps=eps)
@@ -814,3 +814,16 @@ def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:i
     return wind_mesh, cell_length, box_center, box_rotvec
 
 
+def set_radial_count(mesh, rmesh, redges, rcounts):
+    # assert len(redges) == len(rcounts) + 1
+    inds = jnp.array(list(zip(rcounts, redges[:-1], redges[1:])))
+
+    def step(carry, ind):
+        count, low, high = ind
+        rmask = (low < rmesh) & (rmesh <= high)
+        # carry = carry.at[rmask].multiply(count)
+        carry = jnp.where(rmask, carry * count, carry)
+        return carry, None
+
+    mesh = lax.scan(step, mesh, inds)[0]
+    return mesh

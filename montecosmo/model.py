@@ -19,7 +19,8 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
                                simple_window, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
-                               catalog2mesh, catalog2window, pos_mesh, regular_pos, sobol_pos, get_ptcl_shape)
+                               catalog2mesh, catalog2window, pos_mesh, regular_pos, sobol_pos, get_ptcl_shape,
+                               set_radial_count)
 from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, paint, read, deconv_paint, interlace
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial
 from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
@@ -50,6 +51,7 @@ default_config={
         'curved_sky':True, # curved vs. flat sky
         'ap_auto': True, # auto AP vs. parametric AP
         'window':None, # if float, padded fraction, if str or Path, path to window mesh file
+        'n_rbins':None, # if None, set to maximum number of radial bins
         # 'save_dir':str,
         # Latents
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
@@ -135,7 +137,7 @@ default_config={
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                'ngbar': {'group':'syst',
+                'ngbars': {'group':'syst',
                                 'label':'{\\bar{n}_g}',
                                 'loc':1e-3, # in galaxy / (Mpc/h)^3
                                 'scale':.1,
@@ -377,13 +379,15 @@ class FieldLevelModel(Model):
     curved_sky:bool
     ap_auto:bool
     window:float|str
+    n_rbins:int
     # Latents
     precond:str
     latents:dict
 
     def __post_init__(self):
         super().__post_init__()
-        self.latents = self._validate_latents()
+        self._validate_latents()
+        self._validate_rbins()
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
@@ -400,7 +404,6 @@ class FieldLevelModel(Model):
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
-        self.count_fid = self.loc_fid['ngbar'] * self.cell_length**3
         
         if self.window is None:
             self.wind_mesh = np.array(1.)
@@ -413,6 +416,8 @@ class FieldLevelModel(Model):
             self.wind_mesh = np.load(self.window)
             self.mask = self.wind_mesh > 0
 
+        # Fiducial quantities
+        self.count_fid = self.loc_fid['ngbars'].mean() * self.cell_length**3
         self.cosmo_fid = get_cosmology(**self.loc_fid)
         _, a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
                                 self.cosmo_fid, self.a_obs, self.curved_sky)
@@ -420,12 +425,6 @@ class FieldLevelModel(Model):
         los = safe_div(self.box_center, np.linalg.norm(self.box_center))
         self.los_fid = self.box_rot.apply(los, inverse=True) # cell los
 
-        rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape, self.curved_sky))
-        self.rmasked = mesh2masked(rmesh, self.mask)
-        rmin, rmax = self.rmasked.min(), self.rmasked.max()
-        dr = 3**.5 * self.cell_length
-        nedges = max(int((rmax - rmin) / dr), 1) + 1
-        self.redges = np.linspace(rmin - dr/1000, rmax + dr/1000, nedges)
 
     def __str__(self):
         out = ""
@@ -581,31 +580,20 @@ class FieldLevelModel(Model):
         mesh, syst = params
 
         if self.observable == 'field':
-            mean_count = syst['ngbar'] * self.cell_length**3
-
             obs = mesh2masked(mesh, self.mask)
+            wind = mesh2masked(self.wind_mesh, self.mask)
+            obs *= wind
             # obs /= obs.mean()
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
 
-            # wind = mesh2masked(self.wind_mesh, self.mask)
-            # obs *= wind * mean_count
+            # ngbars_ = sample('ngbars_', dist.Normal(jnp.zeros(len(self.redges)-1), 1e2))
+            # ngbars = (1e-5 * ngbars_ + 1e-3)
+            # rcounts = ngbars * self.cell_length**3
 
-            wind = mesh2masked(self.wind_mesh, self.mask)
-            obs *= wind
-            ngbarr_ = sample('ngbarr_', dist.Normal(jnp.zeros(len(self.redges)-1), 1e2))
-            ngbarr = (1e-5 * ngbarr_ + 1e-3)
-            rad_count = ngbarr * self.cell_length**3
-            inds = jnp.array(list(zip(rad_count, self.redges[:-1], self.redges[1:])))
-
-            def step(carry, ind):
-                count, low, high = ind
-                rmask = (low < self.rmasked) & (self.rmasked <= high)
-                # carry = carry.at[rmask].multiply(count)
-                carry = jnp.where(rmask, carry * count, carry)
-                return carry, None
-
-            obs = lax.scan(step, obs, inds)[0]
+            rcounts = syst['ngbars'] * self.cell_length**3
+            mean_count = rcounts.mean()            
+            obs = set_radial_count(obs, self.rmasked, self.redges, rcounts)
 
             # Gaussian noise
             obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
@@ -615,16 +603,6 @@ class FieldLevelModel(Model):
 
             # Poisson noise
             # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
-
-
-
-            # obs = mesh2masked(mesh, self.mask)
-            # obs /= obs.mean()
-            # wind = mesh2masked(self.wind_mesh, self.mask)
-            # obs *= wind * mean_count
-            # obs = masked2mesh(obs, self.mask)
-            # obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
-
             return obs 
 
         # elif self.obs == 'pk':
@@ -688,7 +666,7 @@ class FieldLevelModel(Model):
     ###########   
     def _validate_latents(self):
         """
-        Return a validated latents config.
+        Validate latents config.
         """
         new = {}
         for name, conf in self.latents.items():
@@ -717,7 +695,24 @@ class FieldLevelModel(Model):
                     new[name]['loc_fid'] = (low + high) / 2
                 if scale_fid is None:
                     new[name]['scale_fid'] = (high - low) / 12**.5
-        return new
+        self.latents = new
+
+    def _validate_rbins(self):
+        """
+        Validate radial density and setup radial bins quantities. 
+        """
+        rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape, self.curved_sky))
+        self.rmasked = mesh2masked(rmesh, self.mask)
+        rmin, rmax = self.rmasked.min(), self.rmasked.max()
+        dr = 3**.5 * self.cell_length
+
+        if self.n_rbins is None:
+            self.n_rbins = max(int((rmax - rmin) / dr), 1)
+        self.redges = np.linspace(rmin - dr/1000, rmax + dr/1000, self.n_rbins + 1)
+
+        for attr in ['loc','scale','scale_fid','low','high']:
+            if attr in self.latents['ngbars']:
+                self.latents['ngbars'] = jnp.broadcast_to(attr, self.n_rbins)
 
     def _sample(self, names:str|list):
         """
@@ -802,6 +797,7 @@ class FieldLevelModel(Model):
         """
         return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
     
+
 
     ########
     # Data #

@@ -91,13 +91,13 @@ def _waves(mesh_shape, box_shape, kedges, los):
         kmax = np.pi * (mesh_shape / box_shape).min() # = knyquist
         if kedges is None:
             dk = len(mesh_shape)**.5 * 2 * np.pi / box_shape.min() # sqrt(d) times fundamental
-            nedges = max(int((kmax - kmin) / dk), 1)
+            n_kedges = max(int((kmax - kmin) / dk), 1)
         if isinstance(kedges, int):
-            nedges = kedges # final number of bins will be nedges-1
+            n_kedges = kedges # final number of bins will be nedges-1
         elif isinstance(kedges, float):
-            nedges = max(int((kmax - kmin) / kedges), 1)
-        dk = (kmax - kmin) / nedges
-        kedges = np.linspace(kmin, kmax, nedges, endpoint=False)
+            n_kedges = max(int((kmax - kmin) / kedges), 1)
+        dk = (kmax - kmin) / n_kedges
+        kedges = np.linspace(kmin, kmax, n_kedges, endpoint=False)
         kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
 
     kvec = rfftk(mesh_shape) # cell units
@@ -344,11 +344,11 @@ def distr_radial(mesh, rmesh, redges:int|float|list, aggr_fn=None):
     if isinstance(redges, (int, float)):
         rmin, rmax = rmesh.min(), rmesh.max()
         if isinstance(redges, int):
-            nedges = redges # final number of bins will be nedges-1
+            n_redges = redges # final number of bins will be nedges-1
         elif isinstance(redges, float):
-            nedges = max(int((rmax - rmin) / redges), 1)
-        dr = (rmax - rmin) / nedges
-        redges = np.linspace(rmin, rmax, nedges, endpoint=False)
+            n_redges = max(int((rmax - rmin) / redges), 1)
+        dr = (rmax - rmin) / n_redges
+        redges = np.linspace(rmin, rmax, n_redges, endpoint=False)
         redges += dr / 2 # from rmin+dr/2 to rmax-dr/2
 
     dig = np.digitize(rmesh.reshape(-1), redges)
