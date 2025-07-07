@@ -67,12 +67,12 @@ def warmup1(save_path, n_chains, overwrite=False):
         state = pload(save_path+"_warm_state.p")
         config = pload(save_path+"_warm_conf.p")
 
-    # obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
+    obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
     # obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','ngbar']
     # obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar']
     # obs = ['obs','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
     # obs = ['obs','fNL','ngbar','alpha_iso','alpha_ap']
-    obs = ['obs','ngbar','alpha_iso','alpha_ap']
+    # obs = ['obs','ngbar','alpha_iso','alpha_ap']
     # obs = ['obs','alpha_iso','alpha_ap']
     # obs = ['obs', 'ngbar']
     obs = {k: truth[k] for k in obs}
@@ -125,22 +125,19 @@ def warmup1(save_path, n_chains, overwrite=False):
     plt.axhline(model.wind_mesh.mean(), linestyle=':', color='k', alpha=0.5)
     plt.savefig(save_path+f'_init_warm.png')   
 
-    return params_warm
+    return model, params_warm
 
 
 
 
-def warmup2run(params_warm, save_path, n_samples, n_runs, n_chains, tune_mass, overwrite=False):
-    save_dir = save_path.parent
-    model = FieldLevelModel.load(save_dir / "model.yaml")
-
+def warmup2run(model, params_warm, save_path, n_samples, n_runs, n_chains, tune_mass, overwrite=False):
     # jconfig.update("jax_debug_nans", True)
     from tqdm import tqdm
     from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
-        print("Warming up...")
+        print("Warming up 2...")
         warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, # 2**13
                                             desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
@@ -243,4 +240,15 @@ def make_chains(save_path):
 
 
 
+
+def make_chains_dir(save_dir):
+    save_dir = Path(save_dir)
+    dirs = [dir for dir in os.listdir(save_dir) if (save_dir / dir).is_dir()]
+    for dir in dirs:
+        save_path = save_dir / dir / "test"
+        if not os.path.exists(save_path + "_chains.p"):
+            make_chains(save_path)
+
+    
+make_chains_dir("/pscratch/sd/h/hsimfroy/png/")
 
