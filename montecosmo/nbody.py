@@ -308,24 +308,20 @@ def read(pos, mesh:jnp.ndarray, order:int=2):
 
 
 
-def interlace(pos, mesh_shape, weights=1., paint_order:int=2, interlace_order:int=2):
+def interlace(pos, mesh_shape, weights=1., paint_order:int=2, interlace_order:int=2, deconv=True):
     shifts = jnp.arange(interlace_order) / interlace_order
     kvec = rfftk(mesh_shape)
-    carry = jnp.zeros(r2chshape(mesh_shape), dtype='complex')
+    mesh = jnp.zeros(r2chshape(mesh_shape), dtype='complex')
 
     def step(carry, shift):
         mesh = paint(pos + shift, tuple(mesh_shape), weights, paint_order)
         carry += jnp.fft.rfftn(mesh) * jnp.exp(1j * shift * sum(kvec)) / interlace_order
         return carry, None
-    
-    # for shift in shifts:
-    #     mesh = paint(pos + shift, tuple(mesh_shape), weights, paint_order)
-    #     carry += jnp.fft.rfftn(mesh) * jnp.exp(1j * shift * sum(kvec)) / interlace_order
-    
-    carry = lax.scan(step, carry, shifts)[0]
-    return carry
-    # return jnp.fft.irfftn(carry) 
 
+    mesh = lax.scan(step, mesh, shifts)[0]
+    if deconv:
+        mesh /= paint_kernel(kvec, paint_order)
+    return mesh
 
 
 

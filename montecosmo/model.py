@@ -386,13 +386,6 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         super().__post_init__()
-        self._validate_latents()
-        self._validate_rbins()
-        self.groups = self._groups(base=True)
-        self.groups_ = self._groups(base=False)
-        self.labels = self._labels()
-        self.loc_fid = self._loc_fid()
-
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
         self.cell_length = float(self.cell_length)
@@ -416,6 +409,13 @@ class FieldLevelModel(Model):
             self.wind_mesh = np.load(self.window)
             self.mask = self.wind_mesh > 0
 
+        self._validate_latents()
+        self._validate_rbins()
+        self.groups = self._groups(base=True)
+        self.groups_ = self._groups(base=False)
+        self.labels = self._labels()
+        self.loc_fid = self._loc_fid()
+
         # Fiducial quantities
         self.count_fid = self.loc_fid['ngbars'].mean() * self.cell_length**3
         self.cosmo_fid = get_cosmology(**self.loc_fid)
@@ -431,11 +431,11 @@ class FieldLevelModel(Model):
         out += f"# CONFIG\n"
         out += pformat(asdict(self), width=1)
         out += "\n\n# INFOS\n"
-        out += f"box_shape:      {list(self.box_shape)} Mpc/h\n"
+        out += f"box_shape:      {self.box_shape} Mpc/h\n"
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
         out += f"mean_count_fid: {self.count_fid:.3f} gxy/cell\n"
-        out += f"ptcl_shape:     {list(self.ptcl_shape)} ptcl\n"
+        out += f"ptcl_shape:     {self.ptcl_shape} ptcl\n"
         return out
 
     def _model(self, temp_prior=1., temp_lik=1.):
@@ -560,8 +560,13 @@ class FieldLevelModel(Model):
 
             # Painting weighted by Lagrangian bias expansion weights
             pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
-            gxy_mesh = paint(pos, tuple(self.mesh_shape), lbe_weights, self.paint_order)
-            gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+
+            # gxy_mesh = paint(pos, tuple(self.mesh_shape), lbe_weights, self.paint_order)
+            # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+
+            gxy_mesh = interlace(pos, self.mesh_shape, lbe_weights, self.paint_order, self.interlace_order, deconv=True)
+            gxy_mesh = jnp.fft.irfftn(gxy_mesh)
+
             gxy_mesh *= (self.mesh_shape / self.ptcl_shape).prod()
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
@@ -710,9 +715,10 @@ class FieldLevelModel(Model):
             self.n_rbins = max(int((rmax - rmin) / dr), 1)
         self.redges = np.linspace(rmin - dr/1000, rmax + dr/1000, self.n_rbins + 1)
 
-        for attr in ['loc','scale','scale_fid','low','high']:
-            if attr in self.latents['ngbars']:
-                self.latents['ngbars'] = jnp.broadcast_to(attr, self.n_rbins)
+        dic = self.latents['ngbars']
+        for attr in ['loc','scale','loc_fid','scale_fid','low','high']:
+            if attr in dic:
+                dic[attr] = np.broadcast_to(dic[attr], self.n_rbins)
 
     def _sample(self, names:str|list):
         """
@@ -726,13 +732,21 @@ class FieldLevelModel(Model):
             low, high = conf.get('low', -jnp.inf), conf.get('high', jnp.inf)
             loc_fid, scale_fid = conf['loc_fid'], conf['scale_fid']
 
-            if loc is not None:
-                if low == -jnp.inf and high == jnp.inf:
-                    dic[name+'_'] = sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
+            if None not in np.array(loc):
+                if np.all(low == -jnp.inf) and np.all(high == jnp.inf):
+                    samp_fn = lambda loc, loc_fid, scale, scale_fid, low, high: \
+                        sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
                 else:
-                    dic[name+'_'] = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
+                    samp_fn = lambda loc, loc_fid, scale, scale_fid, low, high: \
+                        sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
             else:
-                dic[name+'_'] = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
+                samp_fn = lambda loc, loc_fid, scale, scale_fid, low, high: \
+                    sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
+            
+            print("samp", name, jnp.shape(loc), jnp.shape(loc_fid), jnp.shape(scale), jnp.shape(scale_fid), jnp.shape(low), jnp.shape(high))
+            dic[name+'_'] = samp_fn(loc, loc_fid, scale, scale_fid, low, high)
+            # dic[name+'_'] = nvmap(samp_fn, np.ndim(loc))(loc, loc_fid, scale, scale_fid, low, high)
+            print("samp", name, jnp.shape(dic[name+'_']))
         return dic            
 
     def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, syst):

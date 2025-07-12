@@ -14,7 +14,7 @@ from jax import jit, vmap, grad, tree, lax
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
 
-from numpyro.distributions import Distribution, constraints, TruncatedNormal, Uniform
+from numpyro.distributions import Distribution, constraints, TruncatedNormal, Uniform, util
 
 
 
@@ -145,8 +145,7 @@ def std2trunc(x, loc=0., scale=1., low=-jnp.inf, high=jnp.inf):
     """
     Transport standard normal variable to a general truncated normal variable. 
     """
-    if scale==0:
-        return loc * jnp.ones_like(x)
+    scale = jnp.asarray(scale)
     low, high = (low - loc) / scale, (high - loc) / scale
     lim = 12 # switch to a more stable approx at 12 sigma, for float32
     condlist = [(x < -lim) & (low < -lim), (lim < x) & (lim < high)]
@@ -217,12 +216,15 @@ class DetruncTruncNorm(Distribution):
         self.loc_fid = loc if loc_fid is None else loc_fid
         self.scale_fid = scale if scale_fid is None else scale_fid
 
-        batch_shape = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale), jnp.shape(low), jnp.shape(high))
+        batch_shape = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale), 
+                                           jnp.shape(loc_fid), jnp.shape(scale_fid),
+                                           jnp.shape(low), jnp.shape(high),)
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
     def sample(self, key, sample_shape=()):
         trunc = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).sample(key, sample_shape)
-        return trunc2std(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
+        print("h", trunc.shape, self.loc_fid.shape)
+        return nvmap(trunc2std, jnp.ndim(self.loc_fid))(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
 
     def log_prob(self, value):
         fn = partial(std2trunc, loc=self.loc_fid, scale=self.scale_fid, low=self.low, high=self.high)

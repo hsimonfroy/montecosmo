@@ -7,7 +7,7 @@ from jax_cosmo import Cosmology, background, constants, power
 import fitsio
 from scipy.interpolate import SmoothSphereBivariateSpline
 
-from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div
+from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap
 from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a, paint, read
 
 #############
@@ -207,21 +207,28 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
         conf = config[name]
         low, high = conf.get('low', -jnp.inf), conf.get('high', jnp.inf)
         loc_fid, scale_fid = conf['loc_fid'], conf['scale_fid']
-        scale_fid *= temp**.5
+        scale_fid = scale_fid * temp**.5
 
         # Reparametrize
         if not inv:
-            if low != -jnp.inf or high != jnp.inf:
-                push = lambda x: std2trunc(x, loc_fid, scale_fid, low, high)
+            if np.any(low != -jnp.inf) or np.any(high != jnp.inf):
+                push = lambda x, loc_fid, scale_fid, low, high: \
+                    std2trunc(x, loc_fid, scale_fid, low, high)
             else:
-                push = lambda x: x * scale_fid + loc_fid
+                push = lambda x, loc_fid, scale_fid, low, high: \
+                    x * scale_fid + loc_fid
         else:
-            if low != -jnp.inf or high != jnp.inf:
-                push = lambda x: trunc2std(x, loc_fid, scale_fid, low, high)
+            if np.any(low != -jnp.inf) or np.any(high != jnp.inf):
+                push = lambda x, loc_fid, scale_fid, low, high: \
+                    trunc2std(x, loc_fid, scale_fid, low, high)
             else:
-                push = lambda x: (x - loc_fid) / scale_fid
-
-        out[out_name] = push(value)
+                push = lambda x, loc_fid, scale_fid, low, high: \
+                    (x - loc_fid) / scale_fid
+                
+        value = jnp.broadcast_to(value, np.shape(loc_fid))
+        print("in", in_name, jnp.shape(value)) 
+        out[out_name] = nvmap(push, np.ndim(loc_fid))(value, loc_fid, scale_fid, low, high)
+        print("out", out_name, jnp.shape(out[out_name]))
     return out
 
 
