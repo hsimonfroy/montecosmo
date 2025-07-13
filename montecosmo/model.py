@@ -734,20 +734,13 @@ class FieldLevelModel(Model):
 
             if None not in np.array(loc):
                 if np.all(low == -jnp.inf) and np.all(high == jnp.inf):
-                    samp_fn = lambda loc, loc_fid, scale, scale_fid, low, high: \
-                        sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
+                    samp = sample(name+'_', dist.Normal((loc - loc_fid) / scale_fid, scale / scale_fid))
                 else:
-                    samp_fn = lambda loc, loc_fid, scale, scale_fid, low, high: \
-                        sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
+                    samp = sample(name+'_', DetruncTruncNorm(loc, scale, low, high, loc_fid, scale_fid))
             else:
-                samp_fn = lambda loc, loc_fid, scale, scale_fid, low, high: \
-                    sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
-            
-            print("samp", name, jnp.shape(loc), jnp.shape(loc_fid), jnp.shape(scale), jnp.shape(scale_fid), jnp.shape(low), jnp.shape(high))
-            dic[name+'_'] = samp_fn(loc, loc_fid, scale, scale_fid, low, high)
-            # dic[name+'_'] = nvmap(samp_fn, np.ndim(loc))(loc, loc_fid, scale, scale_fid, low, high)
-            print("samp", name, jnp.shape(dic[name+'_']))
-        return dic            
+                samp = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
+            dic[name+'_'] = samp
+        return dic   
 
     def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, syst):
         """

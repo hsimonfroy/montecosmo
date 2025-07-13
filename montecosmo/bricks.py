@@ -226,9 +226,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
                     (x - loc_fid) / scale_fid
                 
         value = jnp.broadcast_to(value, np.shape(loc_fid))
-        print("in", in_name, jnp.shape(value)) 
         out[out_name] = nvmap(push, np.ndim(loc_fid))(value, loc_fid, scale_fid, low, high)
-        print("out", out_name, jnp.shape(out[out_name]))
     return out
 
 

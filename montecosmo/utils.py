@@ -223,8 +223,8 @@ class DetruncTruncNorm(Distribution):
 
     def sample(self, key, sample_shape=()):
         trunc = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).sample(key, sample_shape)
-        print("h", trunc.shape, self.loc_fid.shape)
-        return nvmap(trunc2std, jnp.ndim(self.loc_fid))(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
+        trunc, loc_fid, scale_fid, low, high = jnp.broadcast_arrays(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
+        return nvmap(trunc2std, trunc.ndim)(trunc, loc_fid, scale_fid, low, high)
 
     def log_prob(self, value):
         fn = partial(std2trunc, loc=self.loc_fid, scale=self.scale_fid, low=self.low, high=self.high)
