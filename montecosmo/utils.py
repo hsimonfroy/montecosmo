@@ -226,12 +226,17 @@ class DetruncTruncNorm(Distribution):
         trunc, loc_fid, scale_fid, low, high = jnp.broadcast_arrays(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
         return nvmap(trunc2std, trunc.ndim)(trunc, loc_fid, scale_fid, low, high)
 
-    def log_prob(self, value):
-        fn = partial(std2trunc, loc=self.loc_fid, scale=self.scale_fid, low=self.low, high=self.high)
+    def _log_prob(self, value, loc, scale, low, high, loc_fid, scale_fid):
+        fn = partial(std2trunc, loc=loc_fid, scale=scale_fid, low=low, high=high)
         log_abs_det_jac = lambda x: jnp.log(jnp.abs(grad(fn)(x)))
         # log_abs_det_jac = lambda x: analyt_log_abs_det_jac(x, self.loc_fid, self.scale_fid, self.low, self.high)
-        log_pdf = TruncatedNormal(self.loc, self.scale, low=self.low, high=self.high).log_prob
+        log_pdf = TruncatedNormal(loc, scale, low=low, high=high).log_prob
         return log_pdf(fn(value)) + log_abs_det_jac(value)
+    
+    def log_prob(self, value):
+        value, loc, scale, loc_fid, scale_fid, low, high = jnp.broadcast_arrays(value, self.loc, self.scale, 
+                                                            self.loc_fid, self.scale_fid, self.low, self.high)
+        return nvmap(self._log_prob, value.ndim)(value, loc, scale, low, high, loc_fid, scale_fid)
 
 class DetruncUnif(Distribution):
     """
@@ -254,19 +259,25 @@ class DetruncUnif(Distribution):
         self.loc_fid = (high + low) / 2 if loc_fid is None else loc_fid
         self.scale_fid = (high - low) / 12**.5 if scale_fid is None else scale_fid
 
-        batch_shape = lax.broadcast_shapes(jnp.shape(low), jnp.shape(high))
+        batch_shape = lax.broadcast_shapes(jnp.shape(low), jnp.shape(high),
+                                           jnp.shape(loc_fid), jnp.shape(scale_fid),)
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
     def sample(self, key, sample_shape=()):
         trunc = Uniform(self.low, self.high).sample(key, sample_shape)
-        return trunc2std(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
+        trunc, loc_fid, scale_fid, low, high = jnp.broadcast_arrays(trunc, self.loc_fid, self.scale_fid, self.low, self.high)
+        return nvmap(trunc2std, trunc.ndim)(trunc, loc_fid, scale_fid, low, high)
 
-    def log_prob(self, value):
-        fn = partial(std2trunc, loc=self.loc_fid, scale=self.scale_fid, low=self.low, high=self.high)
+    def _log_prob(self, value, low, high, loc_fid, scale_fid):
+        fn = partial(std2trunc, loc=loc_fid, scale=scale_fid, low=low, high=high)
         log_abs_det_jac = lambda x: jnp.log(jnp.abs(grad(fn)(x)))
         # log_abs_det_jac = lambda x: analyt_log_abs_det_jac(x, self.loc_fid, self.scale_fid, self.low, self.high)
-        log_pdf = Uniform(self.low, self.high).log_prob
+        log_pdf = Uniform(low, high).log_prob
         return log_pdf(fn(value)) + log_abs_det_jac(value)
+
+    def log_prob(self, value):
+        value, low, high, loc_fid, scale_fid = jnp.broadcast_arrays(value, self.low, self.high, self.loc_fid, self.scale_fid)
+        return nvmap(self._log_prob, value.ndim)(value, low, high, loc_fid, scale_fid)
 
 def analyt_log_abs_det_jac(x, loc, scale, low, high):
     # NOTE: this analytical logabsdetjac for std2trunc fails after 12sigma for float32
