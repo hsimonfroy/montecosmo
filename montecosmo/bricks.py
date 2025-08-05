@@ -174,7 +174,7 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0,0,0)):
         return 1 + 0.5 * delta # 1 + delta
 
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, wind_mesh, a, box_shape, los=(0,0,0)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_shape, los=(0,0,0)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -183,10 +183,10 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, wind_mesh, a, box_sh
     mesh_shape = ch2rshape(delta_obs.shape)
     pmesh = lin_power_mesh(cosmo, mesh_shape, box_shape)
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
-    wind = (wind_mesh**2).mean()**.5
+    selec = (selec_mesh**2).mean()**.5
 
-    stds = (pmesh / (1 + wind * count * boost**2 * pmesh))**.5
-    means = stds**2 * boost * count * wind * delta_obs
+    stds = (pmesh / (1 + selec * count * boost**2 * pmesh))**.5
+    means = stds**2 * boost * count * selec * delta_obs
     return means, stds
 
 
@@ -645,9 +645,9 @@ def rsd_ap_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology, cu
 
 
 
-###################
-# Mask and Window #
-###################
+######################
+# Mask and Selection #
+######################
 def mesh2masked(mesh, mask=None):
     if mask is None:
         return mesh
@@ -733,9 +733,9 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
 
 
 
-def simple_window(mesh_shape, padding=0., ord:float=np.inf):
+def simple_selection(mesh_shape, padding=0., ord:float=np.inf):
     """
-    Return an `ord-norm ball binary window mesh, with a `padding` 1D padded fraction.
+    Return an `ord-norm ball binary selection mesh, with a `padding` 1D padded fraction.
     Therefore, `1/(1+padding)` is the mesh axes to ball axes ratio.
     """
     ord = float(ord)
@@ -755,10 +755,10 @@ def simple_window(mesh_shape, padding=0., ord:float=np.inf):
     else:
         rmesh = sum(ri**ord for ri in rvec)**(1 / ord)
 
-    wind_mesh = (rmesh < 1 / (1 + padding)).astype(float)
-    # NOTE: window normalization to unit mean within its support.
-    wind_mesh /= wind_mesh[wind_mesh > 0].mean()
-    return wind_mesh
+    selec_mesh = (rmesh < 1 / (1 + padding)).astype(float)
+    # NOTE: selection normalization to unit mean within its support.
+    selec_mesh /= selec_mesh[selec_mesh > 0].mean()
+    return selec_mesh
 
 def simple_box(pos):
     """
@@ -800,9 +800,9 @@ def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_sha
     mesh = paint(pos, tuple(mesh_shape), paint_order)
     return mesh
 
-def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:int=2):
+def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:int=2):
     """
-    Return painted window mesh and box configuration from a given path to RA, DEC, Z data.
+    Return painted selection mesh and box configuration from a given path to RA, DEC, Z data.
     """
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
@@ -812,11 +812,11 @@ def catalog2window(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:i
     box_rot = Rotation.from_rotvec(box_rotvec)
 
     pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
-    wind_mesh = paint(pos, tuple(mesh_shape), paint_order)
+    selec_mesh = paint(pos, tuple(mesh_shape), paint_order)
 
-    # NOTE: window normalization to unit mean within its support.
-    wind_mesh /= wind_mesh[wind_mesh > 0].mean()
-    return wind_mesh, cell_length, box_center, box_rotvec
+    # NOTE: selection normalization to unit mean within its support.
+    selec_mesh /= selec_mesh[selec_mesh > 0].mean()
+    return selec_mesh, cell_length, box_center, box_rotvec
 
 
 def set_radial_count(mesh, rmesh, redges, rcounts):

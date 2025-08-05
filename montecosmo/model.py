@@ -16,12 +16,13 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias,
-                               simple_window, mesh2masked, masked2mesh,
+                               simple_selection, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
-                               catalog2mesh, catalog2window, pos_mesh, regular_pos, sobol_pos, get_ptcl_shape,
+                               catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_ptcl_shape,
                                set_radial_count)
-from montecosmo.nbody import lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, paint, read, deconv_paint, interlace
+from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
+                              paint, read, deconv_paint, interlace, rfftk, tophat_kernel)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial
 from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
                               cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
@@ -50,7 +51,7 @@ default_config={
         'a_obs':None, # light-cone if None
         'curved_sky':True, # curved vs. flat sky
         'ap_auto': True, # auto AP vs. parametric AP
-        'window':None, # if float, padded fraction, if str or Path, path to window mesh file
+        'selection':None, # if float, padded fraction, if str or Path, path to selection mesh file
         'n_rbins':None, # if None, set to maximum number of radial bins
         # 'save_dir':str,
         # Latents
@@ -378,7 +379,7 @@ class FieldLevelModel(Model):
     a_obs:float
     curved_sky:bool
     ap_auto:bool
-    window:float|str
+    selection:float|str
     n_rbins:int
     # Latents
     precond:str
@@ -398,16 +399,16 @@ class FieldLevelModel(Model):
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
         
-        if self.window is None:
-            self.wind_mesh = np.array(1.)
+        if self.selection is None:
+            self.selec_mesh = np.array(1.)
             self.mask = None
-        elif isinstance(self.window, float):
-            self.wind_mesh = simple_window(self.mesh_shape, self.window, ord=np.inf) 
-            self.mask = self.wind_mesh > 0
-        elif isinstance(self.window, (str, Path)):
-            self.window = str(self.window) # cast to str to allow yaml saving
-            self.wind_mesh = np.load(self.window)
-            self.mask = self.wind_mesh > 0
+        elif isinstance(self.selection, float):
+            self.selec_mesh = simple_selection(self.mesh_shape, self.selection, ord=np.inf) 
+            self.mask = self.selec_mesh > 0
+        elif isinstance(self.selection, (str, Path)):
+            self.selection = str(self.selection) # cast to str to allow yaml saving
+            self.selec_mesh = np.load(self.selection)
+            self.mask = self.selec_mesh > 0
 
         self._validate_latents()
         self._validate_rbins()
@@ -467,6 +468,16 @@ class FieldLevelModel(Model):
         name_ = self.groups['init'][0]+'_'
 
         scale, transfer = self._precond_scale_and_transfer(cosmology, bias, syst)
+
+        if self.kcut is not jnp.inf:
+            kvec = rfftk(self.mesh_shape)
+            mask = tophat_kernel(kvec, self.kcut * self.cell_length)
+            mask = cgh2rg(mask, norm="amp").astype(bool)
+        
+            out = jnp.zeros(self.mesh_shape)
+            samp = sample(name_, dist.Normal(0., scale[mask])) # sample
+            init[name_] = out.at[mask].set(samp)
+
         init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
@@ -586,8 +597,8 @@ class FieldLevelModel(Model):
 
         if self.observable == 'field':
             obs = mesh2masked(mesh, self.mask)
-            wind = mesh2masked(self.wind_mesh, self.mask)
-            obs *= wind
+            selec = mesh2masked(self.selec_mesh, self.mask)
+            obs *= selec
             # obs /= obs.mean()
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
@@ -756,9 +767,9 @@ class FieldLevelModel(Model):
             bE_fid = 1 + self.loc_fid['b1']
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.mesh_shape, self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.mesh_shape, self.box_shape)
-            wind = (self.wind_mesh**2).mean()**.5
+            selec = (self.selec_mesh**2).mean()**.5
 
-            scale = (1 + wind * self.count_fid * boost_fid**2 * pmesh_fid)**.5
+            scale = (1 + selec * self.count_fid * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -766,9 +777,9 @@ class FieldLevelModel(Model):
             bE = 1 + bias['b1']
             count = syst['ngbar'] * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.los_fid)
-            wind = (self.wind_mesh**2).mean()**.5
+            selec = (self.selec_mesh**2).mean()**.5
 
-            scale = (1 + wind * count * boost**2 * pmesh)**.5
+            scale = (1 + selec * count * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -804,6 +815,13 @@ class FieldLevelModel(Model):
         """
         return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
     
+    
+    # @property
+    # def rmasked(self):
+    #     rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape, self.curved_sky))
+    #     return mesh2masked(rmesh, self.mask)
+    
+    
 
 
     ########
@@ -827,25 +845,25 @@ class FieldLevelModel(Model):
 
         # NOTE: equivalent to:
         # mesh = self.mesh2masked(mesh)
-        # mesh = (mesh / mesh.mean() - self.mesh2masked(model.wind_mesh))
-        # return self.masked2mesh(mesh) / (model.wind_mesh**2).mean()**.5
+        # mesh = (mesh / mesh.mean() - self.mesh2masked(model.selec_mesh))
+        # return self.masked2mesh(mesh) / (model.selec_mesh**2).mean()**.5
 
-        alpha_wind = self.wind_mesh * mesh.mean() / self.wind_mesh.mean()
-        return (mesh - alpha_wind) / (alpha_wind**2).mean()**.5 
+        alpha_selec = self.selec_mesh * mesh.mean() / self.selec_mesh.mean()
+        return (mesh - alpha_selec) / (alpha_selec**2).mean()**.5
+
     
-    
-    def add_window(self, load_path:str|Path, cell_budget, padding=0., save_path:str|Path=None):
+    def add_selection(self, load_path:str|Path, cell_budget, padding=0., save_path:str|Path=None):
         """
-        Compute and save a painted window mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
+        Compute and save a painted selection mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
         """
-        wind_mesh, cell_length, box_center, box_rotvec = catalog2window(load_path, self.cosmo_fid, cell_budget, padding, self.paint_order)
+        selec_mesh, cell_length, box_center, box_rotvec = catalog2selection(load_path, self.cosmo_fid, cell_budget, padding, self.paint_order)
         if save_path is None:
             save_path = Path(load_path).with_suffix('.npy')
         save_path = str(save_path) # cast to str to allow yaml saving
-        np.save(save_path, wind_mesh)
+        np.save(save_path, selec_mesh)
 
-        self.window = save_path
-        self.mesh_shape = wind_mesh.shape
+        self.selection = save_path
+        self.mesh_shape = selec_mesh.shape
         self.cell_length = cell_length
         self.box_center = box_center
         self.box_rotvec = box_rotvec
@@ -913,7 +931,7 @@ class FieldLevelModel(Model):
 
         bE_fid = 1 + self.loc_fid['b1']
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.count_fid, 
-                                       self.wind_mesh, self.a_fid, self.box_shape, self.los_fid)
+                                       self.selec_mesh, self.a_fid, self.box_shape, self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
         # post_mesh = rg2cgh2(jr.normal(seed, ch2rshape(means.shape)))

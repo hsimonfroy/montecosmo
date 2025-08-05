@@ -397,6 +397,8 @@ def lpt(
     vel = force1
 
     if lpt_order == 2:
+        # NOTE: For 3LPT and more, it can be more efficient to compute force only twice, 
+        # for dpos and vel, than to compute it for every term.
         force2 = pm_forces2(pos, init_mesh, read_order, grad_fd=grad_fd, lap_fd=lap_fd)
         dpos -= a2g2(cosmo, a) * force2
         vel  -= a2dg2dg(cosmo, a) * force2

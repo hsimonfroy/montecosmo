@@ -68,7 +68,7 @@ if not os.path.exists(save_dir / "truth.npz") or overwrite:
     model = FieldLevelModel(**default_config | config )
     
     fits_path = Path("/global/cfs/cdirs/desi/survey/catalogs/Y1/mocks/SecondGenMocks/AbacusSummit_v4_2/mock0/LRG_complete_SGC_1_clustering.ran.fits")
-    model.add_window(fits_path, cell_budget, padding, save_dir / "window.npy")
+    model.add_selection(fits_path, cell_budget, padding, save_dir / "window.npy")
 
     truth = model.predict(samples=truth0, hide_base=False, hide_samp=False, hide_det=False, from_base=True)
     model.save(save_dir / "model.yaml")    
@@ -206,7 +206,7 @@ plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', label='fiducia
 plt.axhline(1., linestyle=':', color='k', alpha=0.5)
 plt.subplot(133)
 plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs');
-plt.axhline(model.wind_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
 plt.savefig(save_path+f'_init_warm.png')   
 
 
