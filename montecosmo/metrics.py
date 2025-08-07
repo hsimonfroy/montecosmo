@@ -1,11 +1,11 @@
 import numpy as np
-import jax.numpy as jnp
+from jax import numpy as jnp
 from functools import partial
 
 from scipy.special import legendre
 from jaxpm.growth import growth_rate, growth_factor
 from montecosmo.nbody import rfftk, paint_kernel
-from montecosmo.utils import safe_div
+from montecosmo.utils import safe_div, ch2rshape
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size as effective_sample_size2
@@ -121,58 +121,57 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
     # Initialize
-    mesh_shape = np.array(mesh.shape)
-    if box_shape is None:
-        box_shape = mesh_shape
-    else:
-        box_shape = np.asarray(box_shape)
-
     los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
     ells = np.atleast_1d(poles)
 
-    # FFTs and deconvolution
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
 
-    mesh = jnp.fft.rfftn(mesh, norm='ortho')
-    # mesh = jnp.fft.rfftn(mesh)
+    # FFTs and deconvolution
+    if jnp.isrealobj(mesh):
+        mesh_shape = np.array(mesh.shape)
+        mesh = jnp.fft.rfftn(mesh)
+    else:
+        mesh_shape = np.array(ch2rshape(mesh.shape))
+
     kvec = rfftk(mesh_shape) # cell units
     mesh /= paint_kernel(kvec, order=deconv[0])
 
     if mesh2 is None:
         mmk = mesh.real**2 + mesh.imag**2
     else:
-        mesh2 = jnp.fft.rfftn(mesh2, norm='ortho')
+        if jnp.isrealobj(mesh2):
+            mesh2 = jnp.fft.rfftn(mesh2)
         mesh2 /= paint_kernel(kvec, order=deconv[1])
         mmk = mesh * mesh2.conj()
 
     # Binning
+    box_shape = mesh_shape if box_shape is None else np.asarray(box_shape)
     kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_shape, kedges, los)
     n_bins = len(kedges) + 1
     dig = np.digitize(kmesh.reshape(-1), kedges)
 
     # Count wavenumber in bins
-    kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)
-    kcount = kcount[1:-1]
+    kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)[1:-1]
 
     # Average wavenumber values in bins
     # kavg = (kedges[1:] + kedges[:-1]) / 2
-    kavg = np.bincount(dig, weights=(kmesh * rfftw).reshape(-1), minlength=n_bins)
-    kavg = kavg[1:-1] / kcount
+    kavg = np.bincount(dig, weights=(kmesh * rfftw).reshape(-1), minlength=n_bins)[1:-1]
+    kavg /= kcount
 
     # Average wavenumber power in bins
-    pow = jnp.empty((len(ells), n_bins))
+    pow = jnp.empty((len(ells), n_bins-2))
     for i_ell, ell in enumerate(ells):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
         if mesh2 is None:
-            psum = jnp.bincount(dig, weights=weights, length=n_bins)
+            psum = jnp.bincount(dig, weights=weights, length=n_bins)[1:-1]
         else: 
             # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
-            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
-            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
+            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)[1:-1]
+            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)[1:-1]
             psum = (psum_real**2 + psum_imag**2)**.5
         pow = pow.at[i_ell].set(psum)
-    pow = pow[:,1:-1] / kcount * (box_shape / mesh_shape).prod() # from cell units to [Mpc/h]^3
+    pow *= (box_shape / mesh_shape**2).prod() / kcount # from cell units to [Mpc/h]^3
 
     # kpow = jnp.concatenate([kavg[None], pk])
     if poles==0:

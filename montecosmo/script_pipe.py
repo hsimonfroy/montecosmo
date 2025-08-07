@@ -52,9 +52,9 @@ def infer_model(ap_auto):
     from montecosmo.utils import pdump, pload, Path
 
     # save_dir = Path(os.path.expanduser("~/scratch/png/"))
-    # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/")
-    # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/")
-    save_dir = Path("/pscratch/sd/h/hsimfroy/png/")
+    # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
+    # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
+    save_dir = Path("/pscratch/sd/h/hsimfroy/png/") # Perlmutter
     
     save_dir = save_dir / f"lpt_32_apauto_{ap_auto:d}_nodec2"
     save_path = save_dir / "test"

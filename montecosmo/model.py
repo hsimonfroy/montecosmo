@@ -37,6 +37,7 @@ default_config={
         'box_center':(0.,0.,0.), # in Mpc/h
         'box_rotvec':(0.,0.,0.), # rotation vector in radians
         # 'box_shape':3 * (320.,), # in Mpc/h
+        'k_cut': None, # in h/Mpc, if None, k_nyquist
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_steps':5, # number of N-body steps
@@ -365,6 +366,7 @@ class FieldLevelModel(Model):
     cell_length:float
     box_center:np.ndarray
     box_rotvec:np.ndarray
+    k_cut:float
     # Evolution
     evolution:str
     nbody_steps:int
@@ -398,7 +400,15 @@ class FieldLevelModel(Model):
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
-        
+        if self.k_cut == np.inf:
+            self.cut_mask = None
+        else:
+            if self.k_cut is None:
+                self.k_cut = float(self.k_nyquist)
+            kvec = rfftk(self.mesh_shape)
+            mask = tophat_kernel(kvec, self.k_cut * self.cell_length)
+            self.cut_mask = np.array(cgh2rg(mask, norm="amp"), dtype=bool)
+
         if self.selection is None:
             self.selec_mesh = np.array(1.)
             self.mask = None
@@ -435,7 +445,7 @@ class FieldLevelModel(Model):
         out += f"box_shape:      {self.box_shape} Mpc/h\n"
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
-        out += f"mean_count_fid: {self.count_fid:.3f} gxy/cell\n"
+        out += f"count_fid:      {self.count_fid:.3f} gxy/cell\n"
         out += f"ptcl_shape:     {self.ptcl_shape} ptcl\n"
         return out
 
@@ -469,16 +479,13 @@ class FieldLevelModel(Model):
 
         scale, transfer = self._precond_scale_and_transfer(cosmology, bias, syst)
 
-        if self.kcut is not jnp.inf:
-            kvec = rfftk(self.mesh_shape)
-            mask = tophat_kernel(kvec, self.kcut * self.cell_length)
-            mask = cgh2rg(mask, norm="amp").astype(bool)
-        
+        if self.cut_mask is not None:       
             out = jnp.zeros(self.mesh_shape)
-            samp = sample(name_, dist.Normal(0., scale[mask])) # sample
-            init[name_] = out.at[mask].set(samp)
-
-        init[name_] = sample(name_, dist.Normal(0., scale)) # sample
+            samp = sample(name_, dist.Normal(0., scale[self.cut_mask])) # sample
+            init[name_] = out.at[self.cut_mask].set(samp)
+        else:
+            init[name_] = sample(name_, dist.Normal(0., scale)) # sample
+        
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
