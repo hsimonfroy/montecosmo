@@ -38,6 +38,7 @@ default_config={
         'box_rotvec':(0.,0.,0.), # rotation vector in radians
         # 'box_shape':3 * (320.,), # in Mpc/h
         'k_cut': None, # in h/Mpc, if None, k_nyquist
+        'k_cut': None, # in h/Mpc, if None, k_nyquist
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_steps':5, # number of N-body steps
@@ -367,6 +368,7 @@ class FieldLevelModel(Model):
     box_center:np.ndarray
     box_rotvec:np.ndarray
     k_cut:float
+    k_cut:float
     # Evolution
     evolution:str
     nbody_steps:int
@@ -445,6 +447,7 @@ class FieldLevelModel(Model):
         out += f"box_shape:      {self.box_shape} Mpc/h\n"
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
+        out += f"count_fid:      {self.count_fid:.3f} gxy/cell\n"
         out += f"count_fid:      {self.count_fid:.3f} gxy/cell\n"
         out += f"ptcl_shape:     {self.ptcl_shape} ptcl\n"
         return out
