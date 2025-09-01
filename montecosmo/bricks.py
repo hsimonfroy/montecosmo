@@ -335,9 +335,9 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape,
     phi_delta_pos = phi_pos * delta_pos
     bpd = b_phi_delta(b1, b2, bp)
 
-    weights += bpd * fNL * (phi_delta_pos - jnp.mean(phi_delta_pos))
+    weights += bpd * fNL * (phi_delta_pos - phi_delta_pos.mean())
 
-    # Compute separatly bnablapar, velocity bias term
+    # Compute separately bnablapar, velocity bias term
     delta_nabpar_pos = jnp.stack([
                 read(pos, jnp.fft.irfftn(gradient_kernel(kvec, i) * (m / b) * init_mesh), read_order) 
                 for i, (m, b) in enumerate(zip(mesh_shape, box_shape))], axis=-1) # in h/Mpc 
@@ -368,28 +368,37 @@ def b_phi_delta(b1, b2, bp, delta_c=1.686):
 ##############################
 # Distance and Line-Of-Sight #
 ##############################
-def regular_pos(mesh_shape, ptcl_shape):
+def regular_pos(mesh_shape:tuple, ptcl_shape:tuple=None):
     """
     Return regularly spaced positions in cell coordinates.
     """
+    if ptcl_shape is None:
+        ptcl_shape = mesh_shape
+
     pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape)]
     pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
     return pos
 
-def unif_pos(mesh_shape, ptcl_shape, seed=42):
+def unif_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
     """
     Return uniformly distributed positions in cell coordinates.
     """
+    if ptcl_shape is None:
+        ptcl_shape = mesh_shape
+
     from jax import random as jr
     if isinstance(seed, int):
         seed = jr.key(seed)
     pos = jr.uniform(seed, shape=(ptcl_shape.prod(), 3), minval=0., maxval=mesh_shape)
     return pos
 
-def sobol_pos(mesh_shape, ptcl_shape, seed=42):
+def sobol_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
     """
     Return Sobol sequence of positions in cell coordinates.
     """
+    if ptcl_shape is None:
+        ptcl_shape = mesh_shape
+
     from scipy.stats import qmc
     sampler = qmc.Sobol(d=3, scramble=True, seed=seed)
     return jnp.array(sampler.random(n=ptcl_shape.prod()) * mesh_shape)
@@ -773,7 +782,7 @@ def simple_box(pos):
 
 def get_mesh_shape(box_shape, cell_budget, padding=0.):
     """
-    Return mesh shape and cell length for a given box shape and cell budget, with optional padding.
+    Return mesh shape and cell length from a given box shape and cell budget, with optional padding.
     Mesh shape is rounded to the nearest even integers.
     """
     box_shape *= 1 + padding
@@ -781,12 +790,12 @@ def get_mesh_shape(box_shape, cell_budget, padding=0.):
     mesh_shape = 2 * np.rint(box_shape / cell_length / 2).astype(int)
     return mesh_shape, cell_length
 
-def get_ptcl_shape(mesh_shape, oversampling=1.):
+def get_scaled_shape(mesh_shape, scale=1.):
     """
-    Return particle grid shape for a given mesh shape 
-    and a 1D oversampling factor of the particle density by the mesh grid.
+    Return a valid scaled shape from a given mesh shape and a 1D scaling factor.
     """
-    return np.rint(mesh_shape / oversampling).astype(int)
+    mesh_shape = np.asarray(mesh_shape)
+    return 2 * np.rint(mesh_shape * scale / 2).astype(int)
 
 
 def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_shape, paint_order:int=2):
@@ -821,14 +830,14 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_orde
 
 def set_radial_count(mesh, rmesh, redges, rcounts):
     # assert len(redges) == len(rcounts) + 1
-    inds = jnp.array(list(zip(rcounts, redges[:-1], redges[1:])))
+    xs = jnp.stack((rcounts, redges[:-1], redges[1:]), axis=-1)
 
-    def step(carry, ind):
-        count, low, high = ind
+    def step(carry, x):
+        count, low, high = x
         rmask = (low < rmesh) & (rmesh <= high)
         # carry = carry.at[rmask].multiply(count)
         carry = jnp.where(rmask, carry * count, carry)
         return carry, None
 
-    mesh = lax.scan(step, mesh, inds)[0]
+    mesh = lax.scan(step, mesh, xs)[0]
     return mesh

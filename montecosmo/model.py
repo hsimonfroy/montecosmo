@@ -19,7 +19,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
                                simple_selection, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
-                               catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_ptcl_shape,
+                               catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
                                set_radial_count)
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
                               paint, read, deconv_paint, interlace, rfftk, tophat_kernel)
@@ -38,15 +38,16 @@ default_config={
         'box_rotvec':(0.,0.,0.), # rotation vector in radians
         # 'box_shape':3 * (320.,), # in Mpc/h
         'k_cut': None, # in h/Mpc, if None, k_nyquist
-        'k_cut': None, # in h/Mpc, if None, k_nyquist
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_steps':5, # number of N-body steps
         'nbody_snapshots':None, # number of N-body snapshots to save, if None, only save last
         'lpt_order':2, # order of LPT displacement
         'paint_order':2, # order of interpolation kernel
-        'oversampling':1., # particle grid to mesh grid 1D ratio
-        'interlace_order':1, # interlacing order
+        'init_oversamp':7/4, # initial mesh 1D oversampling factor
+        'ptcl_oversamp':7/4, # particle grid 1D oversampling factor
+        'paint_oversamp':3/2, # painted mesh 1D oversampling factor
+        'interlace_order':2, # interlacing order
         # Observables
         'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
         'poles':(0,2,4), # multipoles order to compute, if observable is 'powspec'
@@ -368,14 +369,15 @@ class FieldLevelModel(Model):
     box_center:np.ndarray
     box_rotvec:np.ndarray
     k_cut:float
-    k_cut:float
     # Evolution
     evolution:str
     nbody_steps:int
     nbody_snapshots:int|list
     lpt_order:int
     paint_order:int
-    oversampling:float
+    init_oversamp:float
+    ptcl_oversamp:float
+    paint_oversamp:float
     interlace_order:int
     # Observable
     observable:str
@@ -398,7 +400,9 @@ class FieldLevelModel(Model):
         self.box_rotvec = np.asarray(self.box_rotvec)
         self.box_rot = Rotation.from_rotvec(self.box_rotvec)
         self.box_shape = self.mesh_shape * self.cell_length
-        self.ptcl_shape = get_ptcl_shape(self.mesh_shape, self.oversampling)
+        self.init_shape = get_scaled_shape(self.mesh_shape, self.init_oversamp)
+        self.ptcl_shape = get_scaled_shape(self.mesh_shape, self.ptcl_oversamp)
+        self.paint_shape = get_scaled_shape(self.mesh_shape, self.paint_oversamp)
 
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
@@ -448,8 +452,9 @@ class FieldLevelModel(Model):
         out += f"k_funda:        {self.k_funda:.5f} h/Mpc\n"
         out += f"k_nyquist:      {self.k_nyquist:.5f} h/Mpc\n"
         out += f"count_fid:      {self.count_fid:.3f} gxy/cell\n"
-        out += f"count_fid:      {self.count_fid:.3f} gxy/cell\n"
+        out += f"init_shape:     {self.init_shape} ptcl\n"
         out += f"ptcl_shape:     {self.ptcl_shape} ptcl\n"
+        out += f"paint_shape:    {self.paint_shape} ptcl\n"
         return out
 
     def _model(self, temp_prior=1., temp_lik=1.):
@@ -542,7 +547,7 @@ class FieldLevelModel(Model):
         else:
             # Create regular grid of particles, and get their scale factors and line-of-sights
             pos = regular_pos(self.mesh_shape, self.ptcl_shape)
-            _, _, los, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
+            _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
@@ -672,12 +677,12 @@ class FieldLevelModel(Model):
                                                            syst_ if inv else syst)
 
             if not fourier and inv:
-                init = tree.map(lambda x: jnp.fft.rfftn(x), init)
+                init = tree.map(jnp.fft.rfftn, init)
 
             init = samp2base_mesh(init, self.precond, transfer=transfer, inv=inv, temp=temp)
             
             if not fourier and not inv:
-                init = tree.map(lambda x: jnp.fft.irfftn(x), init)
+                init = tree.map(jnp.fft.irfftn, init)
 
         out = cosmo | bias | ap | syst | init
         out = {k:v for k,v in out.items() if (k[:-1] if inv else k+'_') in params}
@@ -895,7 +900,8 @@ class FieldLevelModel(Model):
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
         """
-        Return wavenumber, power spectrum, transfer function, and coherence of two meshes.
+        Return wavenumber, power spectrum, transfer function, and coherence of two meshes.\\
+        Precisely return k, pow1,  (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5
         """
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv)
     
@@ -917,7 +923,7 @@ class FieldLevelModel(Model):
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
     def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2) -> Chains:
-        chains = chains.copy() # TODO: tree.map
+        chains = chains.copy()
         chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
         return chains
     

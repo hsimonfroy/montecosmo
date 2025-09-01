@@ -446,11 +446,8 @@ class Chains(Samples):
         name = "n_evals"
         infos, rest = self.get(([name], ['*~'+name]))
         infos = tree.map(lambda x: jnp.sum(x, axis), infos)
+        others_new = (other[['*~'+name]] for other in others)
 
-        others_new = ()
-        for other in others:
-            others_new += (other[['*~'+name]],)
-            
         return infos | tree.map(fn, rest, *others_new)
     
     def last(self, axis=1) -> Self:

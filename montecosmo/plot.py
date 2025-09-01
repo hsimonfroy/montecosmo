@@ -14,11 +14,10 @@ from montecosmo.bdec import credint
 ###########
 # General #
 ###########
-# TODO: create another function to plot 3d scatter
-def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
+def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, mode='mesh', **kwargs):
     """
     Plot bivariate function fn, that should be vectorized first.
-    type can be 'mesh', 'contour', 'contourf', 'surf'.
+    mode can be 'mesh', 'contour', 'contourf', 'surf'.
 
     Example
     --------
@@ -26,7 +25,7 @@ def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
     # pdf = lambda x, y: np.exp( -(x**2 + y**2) / 2) / (2 * np.pi)
     pdf = lambda x: np.exp( -(x**2).sum(-1) / 2) / (2 * np.pi)
     plt.subplot(121, projection="3d")
-    plot_bivar(pdf, type='surf')
+    plot_bivar(pdf, mode='surf')
     ```
     """
     if isinstance(box, (int, float)):
@@ -37,13 +36,13 @@ def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
     # zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
     zz = fn(np.stack((xx, yy), -1).reshape(-1, 2)).reshape(n, n)
 
-    if type=='surf':
+    if mode=='surf':
         out = plt.gca().plot_surface(xx, yy, zz, **kwargs)
-    elif type=='mesh':
+    elif mode=='mesh':
         out = plt.pcolormesh(xx, yy, zz, **kwargs)
-    elif type=='contour':
+    elif mode=='contour':
         out = plt.contour(xx, yy, zz, **kwargs)
-    elif type=='contourf':
+    elif mode=='contourf':
         out = plt.contourf(xx, yy, zz, **kwargs)
     return out
 
@@ -51,19 +50,19 @@ def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
 #############
 # 3D Meshes #
 #############
-def mean_proj(mesh, indices:float|slice|np.ndarray=1., axis=-1):
+def mean_proj(mesh, ids:float|slice|np.ndarray=1., axis=-1):
     """
     Return a 2D mean projection of a 3D mesh along given axis.
     """
     mesh_shape = np.array(mesh.shape)
-    if isinstance(indices, float):
-        low = round(mesh_shape[axis] / 2 * (1 - indices))
-        high = round(mesh_shape[axis] / 2 * (1 + indices))
-        indices = slice(low, high)
-    return np.moveaxis(mesh, axis, -1)[...,indices].mean(-1)
+    if isinstance(ids, float):
+        low = round(mesh_shape[axis] / 2 * (1 - ids))
+        high = round(mesh_shape[axis] / 2 * (1 + ids))
+        ids = slice(low, high)
+    return np.moveaxis(mesh, axis, -1)[...,ids].mean(-1)
 
 
-def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1., 
+def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1., 
               axis=-1, vlim:float|tuple[float,float]=1e-4, transpose=False, **kwargs):
     """
     Plot a 2D mean projection of a 3D mesh along given axis.
@@ -74,7 +73,7 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
         The 3D mesh to be plotted.
     box_shape : tuple of int, optional
         The shape of the mesh physical box in Mpc/h. If None, defaults to mesh shape.
-    indices : float, slice, or ndarray, optional
+    ids : float, slice, or ndarray, optional
         Indices to be averaged along the given axis of the mesh. 
         If float, specifies the proportion of axis used starting from mesh center.
     axis : int, optional
@@ -103,7 +102,7 @@ def plot_mesh(mesh, box_shape=None, indices:float|slice|np.ndarray=1.,
             xlab, ylab = ylab, xlab
         plt.xlabel(f"${xlab}$ [Mpc/$h$]"), plt.ylabel(f"${ylab}$ [Mpc/$h$]")
 
-    mesh2d = mean_proj(mesh, indices, axis)
+    mesh2d = mean_proj(mesh, ids, axis)
 
     if vlim is None:
         vlim = None, None
@@ -132,7 +131,7 @@ def anim_meshes(meshes, box_shape=None, vlim:float|tuple[float,float]=1e-4,
     assert meshes.ndim == 3, "meshes must be a list of 2D arrays"
 
     if vlim is None:
-        vlim = np.quantile(meshes, [0, 1])
+        vlim = meshes.min(), meshes.max()
     elif isinstance(vlim, float):
         vlim = np.quantile(meshes, [vlim/2, 1-vlim/2])
 
@@ -196,6 +195,33 @@ def anim_scan(mesh, box_shape=None, n:int|float=1/16, vlim:float|tuple[float,flo
 # Power Spectrum #
 ##################
 def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
+    """
+    Plot power spectrum `pow` as a function of wavenumber `ks`.
+
+    Parameters
+    ----------
+    ks : ndarray
+        Wavenumbers in units of $h$/Mpc.
+    pow : ndarray
+        Power spectrum values, of shape `shape(ks)` if `ell` is None, 
+        else `(shape(ks)[:-1], n_ell, shape(ks)[-1])`.
+    args : tuple
+        Additional positional arguments passed to `plt.plot` or `plt.fill_between`.
+    ell : int, optional
+        The multipole to plot.
+    log : bool, optional
+        If True, plot spectrum $P(k)$ in loglog scale, 
+        else plot $k P(k)$ in linlin scale.
+    fill : float, optional
+        If provided, the credible interval probability to fill between.
+    kwargs : dict
+        Additional keyword arguments passed to `plt.plot` or `plt.fill_between`.
+
+    Returns
+    -------
+    out : Line2D or PolyCollection
+        The output of `plt.plot` or `plt.fill_between`, depending on `fill`.
+    """
     if ell is None:
         sub = ""
     else:

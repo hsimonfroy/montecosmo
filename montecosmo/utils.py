@@ -291,6 +291,22 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
 #############################
 # Fourier reparametrization #
 #############################
+def ch2rshape(shape):
+    """
+    Complex Hermitian shape to real shape.
+    
+    Assume last real shape is even to lift the ambiguity.
+    (same convention as `fft.rfftn`)
+    """
+    return (*shape[:2], 2*(shape[2]-1))
+
+def r2chshape(shape):
+    """
+    Real shape to complex Hermitian shape.
+    """
+    return (*shape[:2], shape[2]//2+1)
+
+
 def _rg2cgh(mesh, part="real", norm="backward"):
     """
     Return the real and imaginary parts of a complex Gaussian Hermitian tensor
@@ -430,21 +446,26 @@ def cgh2rg(meshk, norm="backward"):
     return real + imag
 
 
-def ch2rshape(kshape):
+def chreshape(mesh, shape):
     """
-    Complex Hermitian shape to real shape.
+    Reshape a complex Hermitian tensor (3D),
+    handling correctly zero-padding.
+    """
+    ids_shape = tuple(np.minimum(mesh.shape, shape))
+    scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
+    ids = tuple(np.roll(np.arange(-(s//2), (s+1)//2), -(s//2)) for s in ids_shape[:-1])
+    ids += (np.arange(ids_shape[-1]),)
     
-    Assume last real shape is even to lift the ambiguity.
-    """
-    return (*kshape[:2], 2*(kshape[2]-1))
-
-def r2chshape(shape):
-    """
-    Real shape to complex Hermitian shape.
-    """
-    return (*shape[:2], shape[2]//2+1)
-
-
+    if ids_shape == shape: # downsample all axis
+        out = mesh[np.ix_(*ids)]
+    elif ids_shape == mesh.shape: # oversample all axis
+        out = jnp.zeros(shape, dtype=complex)
+        out = out.at[np.ix_(*ids)].set(mesh)
+    else: # down or oversample
+        out = jnp.zeros(shape, dtype=complex)
+        ids = np.ix_(*ids)
+        out = out.at[ids].set(mesh[ids])
+    return out * scale
 
 
 
@@ -465,9 +486,9 @@ def id_cgh(shape, part="real", norm="backward"):
     assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
     
     hx, hy, hz = shape//2
-    kshape = (sx, sy, hz+1)
+    chshape = (sx, sy, hz+1)
     
-    weights = np.ones(kshape) / 2**.5
+    weights = np.ones(chshape) / 2**.5
     if norm == "backward":
         weights *= shape.prod()**.5 
     elif norm == "forward":
@@ -475,7 +496,7 @@ def id_cgh(shape, part="real", norm="backward"):
     else:
         assert norm=="ortho", "norm must be either 'backward', 'forward', or 'ortho'."
 
-    id = np.zeros((3, *kshape), dtype=int)
+    id = np.zeros((3, *chshape), dtype=int)
     xyz = np.indices(shape, dtype=int)
 
     if part == "imag":

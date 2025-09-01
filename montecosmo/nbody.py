@@ -150,10 +150,10 @@ def paint_kernel(kvec, order:int=2):
     weights: array
         Complex kernel values
     """
-    wts = 1.
+    ws = 1.
     for ki in kvec:
-        wts = wts * np.sinc(ki / (2 * np.pi))**order
-    return wts
+        ws = ws * np.sinc(ki / (2 * np.pi))**order
+    return ws
 
 
 def deconv_paint(mesh, order:int=2):
@@ -617,8 +617,11 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, grad_f
 
 
 from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
+def save_y(t, y, args):
+    return y
+
 def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int=2,
-              grad_fd=False, lap_fd=False, snapshots:int|list=None):
+              grad_fd=False, lap_fd=False, snapshots:int|list=None, fn=save_y):
     """
     N-body simulation with BullFrog solver.
     """
@@ -632,13 +635,16 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int=2,
 
     vel = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
     state = pos, vel
-
-    if snapshots is None or (isinstance(snapshots, int) and snapshots <= 1): 
+    
+    if snapshots is None: 
         saveat = SaveAt(t1=True)
+    elif isinstance(snapshots, int) and snapshots <= 1: 
+        saveat = SaveAt(t1=True, fn=fn)
     elif isinstance(snapshots, int): 
-        saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(0., a, snapshots)))  
+        # saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(0., a, snapshots)), fn=fn)
+        saveat = SaveAt(ts=jnp.linspace(0., g, snapshots), fn=fn)
     else: 
-        saveat = SaveAt(ts=a2g(cosmo, jnp.asarray(snapshots)))   
+        saveat = SaveAt(ts=a2g(cosmo, jnp.asarray(snapshots)), fn=fn)   
 
     sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat) # cosmo as args may leak
     states = sol.ys
