@@ -25,7 +25,8 @@ from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g
                               paint, read, deconv_paint, interlace, rfftk, tophat_kernel)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial
 from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
-                              cgh2rg, rg2cgh, ch2rshape, nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
+                              cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape,
+                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
 from montecosmo.chains import Chains
 
 
@@ -546,8 +547,9 @@ class FieldLevelModel(Model):
     
         else:
             # Create regular grid of particles, and get their scale factors and line-of-sights
-            pos = regular_pos(self.mesh_shape, self.ptcl_shape)
-            _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape, 
+            init = tree.map(partial(chreshape, shape=r2chshape(self.init_shape)), init)
+            pos = regular_pos(self.init_shape, self.ptcl_shape)
+            _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.init_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
@@ -569,11 +571,11 @@ class FieldLevelModel(Model):
                 pos, vel = deterministic('nbody_ptcl', jnp.array((pos, vel)))
                 pos, vel = tree.map(lambda x: x[-1], (pos, vel))
 
-            pos, rpos, los, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
+            pos, rpos, los, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.init_shape,
                                         cosmology, self.a_obs, self.curved_sky)        
 
             # RSD and Alcock-Paczynski effects
-            dpos = rsd(cosmology, vel, los, a, self.box_rot, self.box_shape, self.mesh_shape, dvel)
+            dpos = rsd(cosmology, vel, los, a, self.box_rot, self.box_shape, self.init_shape, dvel)
             pos += dpos
             if self.ap_auto is not None:
                 if self.ap_auto:
@@ -584,16 +586,16 @@ class FieldLevelModel(Model):
                     pos = ap_param(pos, los, ap, self.curved_sky)
                     # lbe_weights *= ap['alpha_iso']**3 
 
-            # Painting weighted by Lagrangian bias expansion weights
-            pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
+            # Paint weighted by Lagrangian bias expansion weights
+            pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_shape, self.paint_shape)
 
             # gxy_mesh = paint(pos, tuple(self.mesh_shape), lbe_weights, self.paint_order)
             # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
 
-            gxy_mesh = interlace(pos, self.mesh_shape, lbe_weights, self.paint_order, self.interlace_order, deconv=True)
+            gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, deconv=True)
+            gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+            gxy_mesh = chreshape(gxy_mesh, r2chshape(self.mesh_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
-
-            gxy_mesh *= (self.mesh_shape / self.ptcl_shape).prod()
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))

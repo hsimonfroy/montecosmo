@@ -309,9 +309,13 @@ def read(pos, mesh:jnp.ndarray, order:int=2):
 
 
 def interlace(pos, mesh_shape, weights=1., paint_order:int=2, interlace_order:int=2, deconv=True):
+    """
+    Equal-spacing interlacing. Carefull with `interlace_order`>=3, it is not isotropic.
+    See [Wang&Yu2024](https://arxiv.org/abs/2403.13561)
+    """
     shifts = jnp.arange(interlace_order) / interlace_order
     kvec = rfftk(mesh_shape)
-    mesh = jnp.zeros(r2chshape(mesh_shape), dtype='complex')
+    mesh = jnp.zeros(r2chshape(mesh_shape), dtype=complex)
 
     def step(carry, shift):
         mesh = paint(pos + shift, tuple(mesh_shape), weights, paint_order)
