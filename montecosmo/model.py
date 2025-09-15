@@ -38,7 +38,7 @@ default_config={
         'box_center':(0.,0.,0.), # in Mpc/h
         'box_rotvec':(0.,0.,0.), # rotation vector in radians
         # 'box_shape':3 * (320.,), # in Mpc/h
-        'k_cut': None, # in h/Mpc, if None, k_nyquist
+        'k_cut': None, # in h/Mpc, if None, k_nyquist, if jnp.inf, no cut
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_steps':5, # number of N-body steps
@@ -144,7 +144,8 @@ default_config={
                                 },
                 'ngbars': {'group':'syst',
                                 'label':'{\\bar{n}_g}',
-                                'loc':1e-3, # in galaxy / (Mpc/h)^3
+                                # 'loc':1e-3, # in galaxy / (Mpc/h)^3
+                                'loc':0.00084, # in galaxy / (Mpc/h)^3
                                 'scale':.1,
                                 'scale_fid':1e-6,
                                 'low':0.,
@@ -485,13 +486,11 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_'
-
         scale, transfer = self._precond_scale_and_transfer(cosmology, bias, syst)
 
         if self.cut_mask is not None:       
-            out = jnp.zeros(self.mesh_shape)
             samp = sample(name_, dist.Normal(0., scale[self.cut_mask])) # sample
-            init[name_] = out.at[self.cut_mask].set(samp)
+            init[name_] = masked2mesh(samp, self.cut_mask)
         else:
             init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         
@@ -678,12 +677,16 @@ class FieldLevelModel(Model):
                                                            bias_ if inv else bias, 
                                                            syst_ if inv else syst)
 
-            if not fourier and inv:
+            if inv and not fourier:
                 init = tree.map(jnp.fft.rfftn, init)
+            if not inv and self.cut_mask is not None:       
+                init = tree.map(lambda x: masked2mesh(x, self.cut_mask), init)
 
             init = samp2base_mesh(init, self.precond, transfer=transfer, inv=inv, temp=temp)
             
-            if not fourier and not inv:
+            if inv and self.cut_mask is not None:       
+                init = tree.map(lambda x: mesh2masked(x, self.cut_mask), init)
+            if not inv and not fourier:
                 init = tree.map(jnp.fft.irfftn, init)
 
         out = cosmo | bias | ap | syst | init
@@ -959,11 +962,12 @@ class FieldLevelModel(Model):
         # because many high-wavevector amplitudes can be set to high.
         post_mesh *= scale_field 
 
-        init_params = self.loc_fid | {'init_mesh': post_mesh}
+        # start_params = self.loc_fid | {'init_mesh': post_mesh}
+        start_params = {k: self.loc_fid[k] for k in self.loc_fid.keys() - self.data.keys()} | {'init_mesh': post_mesh}
         if base:
-            return init_params
+            return start_params
         else:
-            return self.reparam(init_params, inv=True)
+            return self.reparam(start_params, inv=True)
 
     
 

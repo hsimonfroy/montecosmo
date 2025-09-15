@@ -5,7 +5,6 @@ import numpy as np
 from jax import numpy as jnp, tree, debug, lax
 from jax_cosmo import Cosmology, background
 from jax_cosmo.scipy.ode import odeint
-from jaxpm.growth import _growth_factor_ODE
 from montecosmo.utils import ch2rshape, r2chshape, safe_div
 
 
@@ -184,20 +183,19 @@ paint_kernels = [
     lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
 ]
 
-def cic_alpha(s, alpha=1.):
-    m = (1 + alpha) / 2
-    d = jnp.abs(1 - alpha) / 2
-    out = (s <= d) * jnp.minimum(1, alpha) + ((d < s) & (s <= m)) * (m - s)
-    return out / alpha
+# def cic_alpha(s, alpha=1.):
+#     m = (1 + alpha) / 2
+#     d = jnp.abs(1 - alpha) / 2
+#     out = (s <= d) * jnp.minimum(1, alpha) + ((d < s) & (s <= m)) * (m - s)
+#     return out / alpha
 
-
-paint_kernels2 = [
-    lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
-    lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
-    cic_alpha, # CIC
-    lambda s: (s <= 1/2) * (3/4 - s**2) + (1/2 < s) / 2 * (3/2 - s)**2, # TSC
-    lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
-]
+# paint_kernels2 = [
+#     lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
+#     lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
+#     cic_alpha, # CIC
+#     lambda s: (s <= 1/2) * (3/4 - s**2) + (1/2 < s) / 2 * (3/2 - s)**2, # TSC
+#     lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
+# ]
 
 
 def paint(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2):
@@ -419,6 +417,76 @@ growth_log10_amin: float = -3.
 growth_steps: int = 128
 
 # Growth from scale factor
+def _growth_factor_ODE(cosmo, a, log10_amin=growth_log10_amin, steps=growth_steps):
+    """Compute linear growth factor D(a) at a given scale factor,
+    normalised such that D(a=1) = 1.
+
+    Parameters
+    ----------
+    a: array_like
+        Scale factor
+    log10_amin: float
+        Minimum scale factor in log10
+    steps: int
+        Number of steps for integration
+
+    Returns
+    -------
+    D:  ndarray, or float if input scalar
+        Growth factor computed at requested scale factor
+    """
+    # Check if growth has already been computed
+    if not "background.growth_factor" in cosmo._workspace.keys():
+        # Compute tabulated array
+        atab = jnp.logspace(log10_amin, 0.0, steps)
+
+        def D_derivs(y, x):
+            q = 2.0
+            q -= (background.Omega_m_a(cosmo, x) + (1.0 + 3.0 * background.w(cosmo, x)) * background.Omega_de_a(cosmo, x)) / 2
+            q /= x
+            r = 1.5 * background.Omega_m_a(cosmo, x) / x**2
+
+            g1, g2 = y[0]
+            f1, f2 = y[1]
+            dy1da = [f1, -q * f1 + r * g1]
+            dy2da = [f2, -q * f2 + r * g2 - r * g1 ** 2]
+            return jnp.array([[dy1da[0], dy2da[0]], [dy1da[1], dy2da[1]]])
+
+        y0 = jnp.array([[atab[0], -3.0 / 7 * atab[0] ** 2], [1.0, -6.0 / 7 * atab[0]]])
+        y = odeint(D_derivs, y0, atab)
+
+        # compute second order derivatives growth
+        dyda2 = D_derivs(jnp.transpose(y, (1, 2, 0)), atab)
+        dyda2 = jnp.transpose(dyda2, (2, 0, 1))
+
+        # Normalize results
+        y1 = y[:, 0, 0]
+        gtab = y1 / y1[-1]
+        y2 = y[:, 0, 1]
+        g2tab = y2 / y2[-1]
+        # To transform from dD/da to dlnD/dlna: dlnD/dlna = a / D dD/da
+        ftab = y[:, 1, 0] / y1[-1] * atab / gtab
+        f2tab = y[:, 1, 1] / y2[-1] * atab / g2tab
+        # Similarly for second order derivatives
+        # Note: these factors are not accessible as parent functions yet
+        # since it is unclear what to refer to them with.
+        htab = dyda2[:, 1, 0] / y1[-1] * atab / gtab
+        h2tab = dyda2[:, 1, 1] / y2[-1] * atab / g2tab
+
+        cache = {
+            "a": atab,
+            "g": gtab,
+            "f": ftab,
+            "h": htab,
+            "g2": g2tab,
+            "f2": f2tab,
+            "h2": h2tab,
+        }
+        cosmo._workspace["background.growth_factor"] = cache
+    else:
+        cache = cosmo._workspace["background.growth_factor"]
+    return jnp.clip(jnp.interp(a, cache["a"], cache["g"]), 0.0, 1.0)
+
 def a2g(cosmo, a):
     if not "background.growth_factor" in cosmo._workspace.keys():
         _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=growth_log10_amin, steps=growth_steps)
@@ -551,7 +619,7 @@ def chi2a(cosmo, chi, log10_amin=dist_log10_amin, steps=dist_steps):
     if not "background.radial_comoving_distance" in cosmo._workspace.keys():
         a2chi(cosmo, 1.0, log10_amin=log10_amin, steps=steps)
     cache = cosmo._workspace["background.radial_comoving_distance"]
-    return jnp.interp(chi, cache["chi"][::-1], cache["a"][::-1])
+    return jnp.interp(chi, cache["chi"][::-1], cache["a"][::-1]) # NOTE: chi is decreasing with a
 
 
 

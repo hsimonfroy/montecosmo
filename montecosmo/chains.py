@@ -5,7 +5,7 @@ from typing import Self
 
 import numpy as np
 import matplotlib.pyplot as plt
-from jax import numpy as jnp, random as jr, jit, tree, tree_util
+from jax import numpy as jnp, random as jr, jit, tree, tree_util, flatten_util
 
 from numpyro.diagnostics import print_summary
 from getdist import MCSamples
@@ -433,6 +433,17 @@ class Chains(Samples):
                 else:
                     groups[g].append(k)
         return Chains(data, groups=groups, labels=labels)
+    
+    def ravel(self, batch_ndim=2):
+        """
+        Ravel chains into an array with `batch_ndim` leading dimensions.
+        Return both raveled array and unravel function.
+        """
+        unravel = nvmap(flatten_util.ravel_pytree(tree.map(lambda x: x[(0,)*batch_ndim], self))[1], batch_ndim)
+        raveled = nvmap(lambda x: flatten_util.ravel_pytree(x)[0], batch_ndim)(self)
+        return raveled, unravel
+
+
 
 
     #####################
