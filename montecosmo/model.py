@@ -906,7 +906,7 @@ class FieldLevelModel(Model):
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
         """
         Return wavenumber, power spectrum, transfer function, and coherence of two meshes.\\
-        Precisely return k, pow1,  (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5
+        Precisely return a tuple (k, pow1,  (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5).
         """
         return powtranscoh(mesh0, mesh1, box_shape=self.box_shape, kedges=kedges, deconv=deconv)
     
@@ -941,6 +941,12 @@ class FieldLevelModel(Model):
     
     def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
                            kedges:int|float|list=None, deconv=(0, 0), batch_ndim=2) -> Chains:
+        """
+        Return wavenumber, power spectrum, transfer function, and coherence 
+        of meshes in chains compared to a reference mesh.
+        Precisely return under the key "kptc" a tuple 
+        (k, pow1, (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5).
+        """
         chains = chains.copy()
         fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges, deconv=deconv), batch_ndim)
         chains.data['kptc'] = fn(chains.data[name])

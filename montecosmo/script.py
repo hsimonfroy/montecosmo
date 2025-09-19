@@ -67,14 +67,8 @@ def warmup1(save_path, n_chains, overwrite=False):
         state = pload(save_path+"_warm_state.p")
         config = pload(save_path+"_warm_conf.p")
 
-    obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
-    # obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','ngbar']
-    # obs = ['obs','b1','b2','bs2','bn2','fNL','ngbar']
-    # obs = ['obs','b2','bs2','bn2','fNL','ngbar','alpha_iso','alpha_ap']
-    # obs = ['obs','fNL','ngbar','alpha_iso','alpha_ap']
-    # obs = ['obs','ngbar','alpha_iso','alpha_ap']
-    # obs = ['obs','alpha_iso','alpha_ap']
-    # obs = ['obs', 'ngbar']
+    obs = ['obs','fNL','bnp','alpha_iso','alpha_ap']
+    # obs = ['obs','Omega_m','sigma8','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
     obs = {k: truth[k] for k in obs}
 
     model.reset()
@@ -191,8 +185,12 @@ def warmup2run(model, params_warm, save_path, n_samples, n_runs, n_chains, tune_
 
 
 
-def make_chains(save_path):
+
+
+def make_chains(save_path, start=1, end=100, thinning=1):
     from montecosmo.chains import Chains
+    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2
+    from getdist import plots
     save_dir = save_path.parent
 
     model = FieldLevelModel.load(save_dir / "model.yaml")
@@ -201,31 +199,72 @@ def make_chains(save_path):
     # kpow_true = model.spectrum(mesh_true)
     # delta_obs = model.count2delta(truth['obs'])
     # kptc_obs = model.powtranscoh(mesh_true, delta_obs)
-
-    obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','fNL','ngbar','init_mesh']
-    obs = {k: truth[k] for k in obs}
-    model.condition(obs, from_base=True)
+    model.condition(truth, from_base=True)
 
     transforms = [
                 #   lambda x: x[:3],
-                partial(Chains.thin, thinning=1),                     # thin the chains
+                partial(Chains.thin, thinning=thinning),                     # thin the chains
                 model.reparam_chains,                                 # reparametrize sample variables into base variables
                 partial(model.powtranscoh_chains, mesh0=mesh_true),   # compute mesh statistics
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
-    chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
+    chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
     pdump(chains, save_path + "_chains.p")
     print(chains.shape, '\n')
+
+    # gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].flatten().to_getdist()
+    gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].to_getdist()
+    gdplt = plots.get_subplot_plotter(width_inch=7)
+    gdplt.triangle_plot(roots=[gdsamp],
+                    title_limit=1,
+                    filled=True, 
+                    markers=truth,
+                    contour_colors=[SetDark2(0)],)
+    plt.savefig(save_path + "_triangle.png")
+
+
+
+
+
+    kpow_true = model.spectrum(truth['init_mesh'])
+    kptc_obs = model.powtranscoh(mesh_true, model.count2delta(truth['obs']))
+    plt.figure(figsize=(12, 4), layout='constrained')
+    def plot_kptcs(kptcs, label=None, i_color=0):
+        plot_powtranscoh(*kptcs, fill=0.68, color=SetDark2(i_color))
+        plot_powtranscoh(*kptcs, fill=0.95, color=SetDark2(i_color))
+        plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), 
+                         color=SetDark2(i_color), label=label)
+
+    plt.subplot(131)
+    plot_pow(*kpow_true, 'k:', label='true')
+    plt.subplot(132)
+    plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plt.subplot(133)
+    plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+    plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs')
+
+    kptcs = tree.map(jnp.concatenate, chains['kptc'])
+    plot_kptcs(kptcs, label='post')
+    plt.subplot(131)
+    plt.legend()
+    plt.savefig(save_path + "_kptc.png")  
+
+
 
 
     transforms = [
                 #   lambda x: x[:3],
-                partial(Chains.thin, thinning=1),                     # thin the chains
+                partial(Chains.thin, thinning=thinning),                     # thin the chains
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
     chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
     pdump(chains, save_path + "_chains_.p")
     print(chains.shape, '\n')
+
+    plt.figure(figsize=(12,12))
+    chains.print_summary()
+    chains.prune().flatten().plot(list(model.groups_))
+    plt.savefig(save_path + "_chains_.png")
 
 
     transforms = [
@@ -240,15 +279,4 @@ def make_chains(save_path):
 
 
 
-
-def make_chains_dir(save_dir):
-    save_dir = Path(save_dir)
-    dirs = [dir for dir in os.listdir(save_dir) if (save_dir / dir).is_dir()]
-    for dir in dirs:
-        save_path = save_dir / dir / "test"
-        if not os.path.exists(save_path + "_chains.p"):
-            make_chains(save_path)
-
-    
-make_chains_dir("/pscratch/sd/h/hsimfroy/png/")
 

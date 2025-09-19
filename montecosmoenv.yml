@@ -26,6 +26,7 @@ dependencies:
     - blackjax
     - jax-resnet
     - tensorflow-probability
+    - etils # jax persistent cache
     # - tensorflow-datasets
     # Editable package
     - -e git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo

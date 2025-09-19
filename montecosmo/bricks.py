@@ -29,10 +29,22 @@ Planck18 = partial(Cosmology,
     # Omega_m = 0.3111
     Omega_c=0.2607,
     Omega_b=0.0490,
+    sigma8=0.8102,
     Omega_k=0.0,
     h=0.6766,
     n_s=0.9665,
-    sigma8=0.8102,
+    w0=-1.0,
+    wa=0.0,)
+
+# from cosmoprimo.fiducial import AbacusSummit; AbacusSummit(0).get_params('cosmology')
+AbacusSummit0 = partial(Cosmology,
+    # Omega_m = 0.3137721
+    Omega_c=0.26447041,
+    Omega_b=0.04930169,
+    sigma8=0.8,
+    Omega_k=0.0,
+    h=0.6736,
+    n_s=0.9649,
     w0=-1.0,
     wa=0.0,)
 
@@ -41,9 +53,10 @@ def get_cosmology(**cosmo) -> Cosmology:
     """
     Return full cosmology object from cosmological params.
     """
-    return Planck18(Omega_c=cosmo['Omega_m'] - Planck18.keywords['Omega_b'], 
+    ref_cosmo = AbacusSummit0
+    return ref_cosmo(Omega_c=cosmo['Omega_m'] - ref_cosmo.keywords['Omega_b'], 
                     sigma8=cosmo['sigma8'])
-    # return Planck18(Omega_c=cosmo['Omega_c'], Omega_b=cosmo['Omega_b'], 
+    # return ref_cosmo(Omega_c=cosmo['Omega_c'], Omega_b=cosmo['Omega_b'], 
     #                 sigma8=cosmo['sigma8'])
 
 
