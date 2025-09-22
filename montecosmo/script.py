@@ -187,6 +187,9 @@ def warmup2run(model, params_warm, save_path, n_samples, n_runs, n_chains, tune_
 
 
 
+
+
+
 def make_chains(save_path, start=1, end=100, thinning=1):
     from montecosmo.chains import Chains
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2
@@ -195,8 +198,8 @@ def make_chains(save_path, start=1, end=100, thinning=1):
 
     model = FieldLevelModel.load(save_dir / "model.yaml")
     truth = dict(jnp.load(save_dir / 'truth.npz'))
-    # mesh_ref = truth['init_mesh']
-    mesh_ref = model.count2delta(truth['obs'])
+    mesh_ref = truth['init_mesh']
+    # mesh_ref = model.count2delta(truth['obs'])
     model.condition(truth, from_base=True)
 
     transforms = [
@@ -234,7 +237,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                          color=SetDark2(i_color), label=label)
 
     plt.subplot(131)
-    # plot_pow(*kpow_ref, 'k:', label='ref')
+    plot_pow(*kpow_ref, 'k:', label='true')
     plot_pow(*kpow_fid, 'k--', label='fiducial')
     plt.subplot(132)
     plt.axhline(1., linestyle=':', color='k', alpha=0.5)
@@ -252,7 +255,6 @@ def make_chains(save_path, start=1, end=100, thinning=1):
 
 
     transforms = [
-                #   lambda x: x[:3],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
@@ -266,8 +268,8 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     plt.savefig(save_path + "_chains_.png")
 
 
+
     transforms = [
-                #   lambda x: x[:3],
                 partial(Chains.thin, thinning=64),
                 model.reparam_chains,
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),
@@ -279,3 +281,56 @@ def make_chains(save_path, start=1, end=100, thinning=1):
 
 
 
+
+def compare_chains(load_paths, labels, save_dir="./"):
+    from montecosmo.chains import Chains
+    from montecosmo.utils import Path
+    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2
+    from getdist import plots
+
+    save_dir = Path(save_dir)
+    chainss = []
+    gdsamps = []
+    for load_path, label in zip(load_paths, labels):
+        load_dir = load_path.parent
+        model = FieldLevelModel.load(load_dir / "model.yaml")
+        truth = dict(jnp.load(load_dir / 'truth.npz'))
+        chains = pload(load_path + "_chains.p")
+        print(chains.shape, '\n')
+        gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].to_getdist(label)
+        chainss.append(chains)
+        gdsamps.append(gdsamp)
+
+
+    gdplt = plots.get_subplot_plotter(width_inch=7)
+    gdplt.triangle_plot(roots=gdsamps,
+                    title_limit=1,
+                    filled=True, 
+                    markers=truth,
+                    contour_colors=[SetDark2(i) for i in range(len(gdsamps))],)
+    plt.savefig(save_dir / f"triangle_{'_'.join(labels)}.png")
+
+
+
+    mesh_ref = truth['init_mesh']
+    kpow_ref = model.spectrum(mesh_ref)
+    plt.figure(figsize=(12, 4), layout='constrained')
+    def plot_kptcs(kptcs, label=None, i_color=0):
+        color = SetDark2(i_color)
+        plot_powtranscoh(*kptcs, fill=0.68, color=color)
+        plot_powtranscoh(*kptcs, fill=0.95, color=color)
+        plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=color, label=label)
+
+    plt.subplot(131)
+    plot_pow(*kpow_ref, 'k:', label='true')
+    plt.subplot(132)
+    plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plt.subplot(133)
+    plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+
+    for i, (chains, label) in enumerate(zip(chainss, labels)):
+        kptcs = tree.map(jnp.concatenate, chains['kptc'])
+        plot_kptcs(kptcs, label=label, i_color=i)
+    plt.subplot(131)
+    plt.legend()
+    plt.savefig(save_dir / f"kptc_{'_'.join(labels)}.png")  

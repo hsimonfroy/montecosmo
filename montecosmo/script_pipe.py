@@ -59,7 +59,7 @@ def infer_model(mesh_length):
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/") # Perlmutter
     
     # save_dir = save_dir / f"lpt_{mesh_length:d}"
-    save_dir = save_dir / f"lpt_abacs_{mesh_length:d}"
+    save_dir = save_dir / f"lpt_abacs_cut_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -89,12 +89,12 @@ def infer_model(mesh_length):
                             'ap_auto': None, # parametrized AP vs. auto AP
                             'selection': selection, # if float, padded fraction, if str or Path, path to window mesh file
                             'paint_order':2, # order of interpolation kernel
-                            'init_oversamp':1., # initial mesh 1D oversampling factor
-                            'ptcl_oversamp':1., # particle grid 1D oversampling factor
-                            'paint_oversamp':1., # painted mesh 1D oversampling factor
+                            # 'init_oversamp':1., # initial mesh 1D oversampling factor
+                            # 'ptcl_oversamp':1., # particle grid 1D oversampling factor
+                            # 'paint_oversamp':1., # painted mesh 1D oversampling factor
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
-                            'k_cut': jnp.inf,
+                            'k_cut': None,
                             } )
 
     print(model)
@@ -114,6 +114,8 @@ def infer_model(mesh_length):
         'alpha_ap': 1.,
         # 'ngbars': 0.00084,
         }
+    mesh_true = jnp.load(f"./scratch/init_mesh_{model.mesh_shape[0]}.npy")
+    truth = truth | {'init_mesh': jnp.fft.rfftn(mesh_true)}
 
     tracer_mesh = jnp.load(f"./scratch/tracer_mesh_6746545_{model.mesh_shape[0]}.npy")
     truth = truth | {'obs': tracer_mesh}
@@ -121,7 +123,7 @@ def infer_model(mesh_length):
 
     model.save(save_dir / "model.yaml")    
     jnp.savez(save_dir / "truth.npz", **truth)
-    delta_obs = model.count2delta(truth['obs'])
+
 
 
 
@@ -138,7 +140,7 @@ def infer_model(mesh_length):
     model.reset()
     model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
     model.block()
-    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=delta_obs, scale_field=1/5)))(jr.split(jr.key(45), n_chains))
+    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=1/5)))(jr.split(jr.key(45), n_chains))
     print('start params:', params_start.keys())
 
     # overwrite = True
@@ -160,8 +162,11 @@ def infer_model(mesh_length):
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh
     from montecosmo.bricks import lin_power_interp
 
-    kptcs_init = vmap(lambda x: model.powtranscoh(delta_obs, model.reparam(x)['init_mesh']))(params_start)
-    kptcs_warm = vmap(lambda x: model.powtranscoh(delta_obs, model.reparam(x)['init_mesh']))(state.position)
+    mesh_true = truth.pop('init_mesh')
+    kpow_true = model.spectrum(mesh_true)
+    kptcs_init = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x)['init_mesh']))(params_start)
+    kptcs_warm = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x)['init_mesh']))(state.position)
+    del mesh_true # We won't need it anymore
     kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid)(kptcs_warm[0][0])
     prob = 0.95
 
@@ -175,11 +180,11 @@ def infer_model(mesh_length):
     plot_kptcs(kptcs_warm, label='warm')
 
     plt.subplot(131)
-    # plot_pow(*kpow_true, 'k:', label='true')
+    plot_pow(*kpow_true, 'k:', label='true')
     plot_pow(*kpow_fid, 'k--', label='fiducial')
     plt.legend()
     plt.subplot(132)
-    # plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', label='fiducial')
+    plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', label='fiducial')
     plt.axhline(1., linestyle=':', color='k', alpha=0.5)
     plt.subplot(133)
     # plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs');
@@ -212,7 +217,7 @@ def infer_model(mesh_length):
     model.condition(obs, from_base=True)
     # model.render()
     model.block()
-    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=delta_obs)))(jr.split(jr.key(45), n_chains))
+    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
     params_warm = params_start | state.position
     print('warm params:', params_warm.keys())
 
@@ -220,7 +225,8 @@ def infer_model(mesh_length):
     overwrite = False
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
         print("Warming up 2...")
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, # 2**13
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
                                             desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
 
@@ -295,13 +301,41 @@ def make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=False):
         # Check if there are samples but no processed chains yet
         if (os.path.exists(save_path + f"_{start}.npz") and 
         (overwrite or not os.path.exists(save_path + "_chains.p"))):
+            
+            # from montecosmo.model import FieldLevelModel
+            # model = FieldLevelModel.load(save_dir / dir / "model.yaml")
+            # truth = dict(jnp.load(save_dir / dir / 'truth.npz'))
+            # init_mesh = jnp.load(f"./scratch/init_mesh_{model.mesh_shape[0]}.npy")
+            # truth = truth | {'init_mesh': jnp.fft.rfftn(init_mesh)}
+            # jnp.savez(save_dir / "truth.npz", **truth)
+
             make_chains(save_path, start=start, end=end, thinning=thinning)
 
-    
+
+# @tm.python_app
+def compare_chains_dir(save_dir, labels):
+    import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
+    from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree, pmap
+    from montecosmo.script import compare_chains
+    from montecosmo.utils import Path
+    jconfig.update("jax_enable_x64", True)
+    print('\n', jdevices())
+
+    save_paths = []
+    save_dir = Path(save_dir)
+    dirs = [dir for dir in os.listdir(save_dir) if (save_dir / dir).is_dir()]
+    dirs.append("") # also process save_dir itself
+    for dir in dirs:
+        save_path = save_dir / dir / "test"
+        # Check if there are chains
+        if os.path.exists(save_path + "_chains.p"): 
+            save_paths.append(save_path)
+            print(f"Adding {dir} to comparison")
+    compare_chains(save_paths, labels, save_dir)  
 
 
 if __name__ == '__main__':
-    print("demat")
+    print("Demat")
     
     # infer_model(32)
 
@@ -311,12 +345,12 @@ if __name__ == '__main__':
 
     overwrite = False
     # overwrite = True
-    make_chains_dir("/pscratch/sd/h/hsimfroy/png/lpt_abacs_128/",
-                    start=3, end=100, thinning=1, overwrite=overwrite)
+    # make_chains_dir("/pscratch/sd/h/hsimfroy/png/abacs_nocut/lpt_abacs_32", start=1, end=100, thinning=1, overwrite=overwrite)
+    compare_chains_dir("/pscratch/sd/h/hsimfroy/png/abacs_nocut", labels=["32", "64", "128"])
 
     spawn(queue, spawn=True)
 
-    print("kenavo")
+    print("Kenavo")
 
 
 
