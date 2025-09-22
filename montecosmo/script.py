@@ -195,17 +195,15 @@ def make_chains(save_path, start=1, end=100, thinning=1):
 
     model = FieldLevelModel.load(save_dir / "model.yaml")
     truth = dict(jnp.load(save_dir / 'truth.npz'))
-    mesh_true = jnp.fft.irfftn(truth['init_mesh'])
-    # kpow_true = model.spectrum(mesh_true)
-    # delta_obs = model.count2delta(truth['obs'])
-    # kptc_obs = model.powtranscoh(mesh_true, delta_obs)
+    # mesh_ref = truth['init_mesh']
+    mesh_ref = model.count2delta(truth['obs'])
     model.condition(truth, from_base=True)
 
     transforms = [
                 #   lambda x: x[:3],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 model.reparam_chains,                                 # reparametrize sample variables into base variables
-                partial(model.powtranscoh_chains, mesh0=mesh_true),   # compute mesh statistics
+                partial(model.powtranscoh_chains, mesh0=mesh_ref),   # compute mesh statistics
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
     chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
@@ -224,10 +222,10 @@ def make_chains(save_path, start=1, end=100, thinning=1):
 
 
 
-
-
-    kpow_true = model.spectrum(truth['init_mesh'])
-    kptc_obs = model.powtranscoh(mesh_true, model.count2delta(truth['obs']))
+    from montecosmo.bricks import lin_power_interp
+    kpow_ref = model.spectrum(mesh_ref)
+    kptc_obs = model.powtranscoh(mesh_ref, model.count2delta(truth['obs']))
+    kpow_fid = kptc_obs[0], lin_power_interp(model.cosmo_fid)(kptc_obs[0])
     plt.figure(figsize=(12, 4), layout='constrained')
     def plot_kptcs(kptcs, label=None, i_color=0):
         plot_powtranscoh(*kptcs, fill=0.68, color=SetDark2(i_color))
@@ -236,7 +234,8 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                          color=SetDark2(i_color), label=label)
 
     plt.subplot(131)
-    plot_pow(*kpow_true, 'k:', label='true')
+    # plot_pow(*kpow_ref, 'k:', label='ref')
+    plot_pow(*kpow_fid, 'k--', label='fiducial')
     plt.subplot(132)
     plt.axhline(1., linestyle=':', color='k', alpha=0.5)
     plt.subplot(133)
@@ -271,7 +270,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                 #   lambda x: x[:3],
                 partial(Chains.thin, thinning=64),
                 model.reparam_chains,
-                partial(model.powtranscoh_chains, mesh0=mesh_true),
+                partial(model.powtranscoh_chains, mesh0=mesh_ref),
                 ]
     chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
     pdump(chains, save_path + "_chains_mesh.p")

@@ -59,7 +59,7 @@ def infer_model(mesh_length):
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/") # Perlmutter
     
     # save_dir = save_dir / f"lpt_{mesh_length:d}"
-    save_dir = save_dir / f"lpt_{mesh_length:d}"
+    save_dir = save_dir / f"lpt_abacs_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -115,9 +115,9 @@ def infer_model(mesh_length):
         # 'ngbars': 0.00084,
         }
 
-    # tracer_mesh = jnp.load(f"./scratch/tracer_mesh_6746545_{model.mesh_shape[0]}.npy")
-    # truth = truth | {'obs': tracer_mesh}
-    truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
+    tracer_mesh = jnp.load(f"./scratch/tracer_mesh_6746545_{model.mesh_shape[0]}.npy")
+    truth = truth | {'obs': tracer_mesh}
+    # truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
 
     model.save(save_dir / "model.yaml")    
     jnp.savez(save_dir / "truth.npz", **truth)
@@ -147,8 +147,8 @@ def infer_model(mesh_length):
         print("Warming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**15, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**15, config=None, 
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, save_path+"_warm_state.p")
@@ -250,7 +250,10 @@ def infer_model(mesh_length):
     else:
         state = pload(save_path+"_last_state.p")
         config = pload(save_path+"_conf.p")
-        start = 1000 ###########
+        start = 1
+        while os.path.exists(save_path+f"_{start}.npz") and start <= end:
+            start += 1
+        print(f"Resuming at run {start}...")
 
 
     print("Running...")
@@ -286,6 +289,7 @@ def make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=False):
 
     save_dir = Path(save_dir)
     dirs = [dir for dir in os.listdir(save_dir) if (save_dir / dir).is_dir()]
+    dirs.append("") # also process save_dir itself
     for dir in dirs:
         save_path = save_dir / dir / "test"
         # Check if there are samples but no processed chains yet
@@ -299,14 +303,16 @@ def make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=False):
 if __name__ == '__main__':
     print("demat")
     
-    infer_model(32)
+    # infer_model(32)
 
-    infer_model(64)
+    # infer_model(64)
 
-    infer_model(128)
+    # infer_model(128)
 
-    # make_chains_dir("/pscratch/sd/h/hsimfroy/png/lpt_128",
-    #                 start=1, end=100, thinning=2, overwrite=False)
+    overwrite = False
+    # overwrite = True
+    make_chains_dir("/pscratch/sd/h/hsimfroy/png/lpt_abacs_128/",
+                    start=3, end=100, thinning=1, overwrite=overwrite)
 
     spawn(queue, spawn=True)
 

@@ -53,7 +53,7 @@ def get_cosmology(**cosmo) -> Cosmology:
     """
     Return full cosmology object from cosmological params.
     """
-    ref_cosmo = AbacusSummit0
+    ref_cosmo = Planck18
     return ref_cosmo(Omega_c=cosmo['Omega_m'] - ref_cosmo.keywords['Omega_b'], 
                     sigma8=cosmo['sigma8'])
     # return ref_cosmo(Omega_c=cosmo['Omega_c'], Omega_b=cosmo['Omega_b'], 
