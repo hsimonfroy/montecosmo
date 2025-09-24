@@ -40,7 +40,7 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 @tm.python_app
-def infer_model(mesh_length):
+def infer_model(mesh_length, eh_approx=True, cut=False):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     import numpy as np
     from functools import partial
@@ -56,10 +56,11 @@ def infer_model(mesh_length):
     # save_dir = Path(os.path.expanduser("~/scratch/png/"))
     # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
-    save_dir = Path("/pscratch/sd/h/hsimfroy/png/") # Perlmutter
-    
-    # save_dir = save_dir / f"lpt_{mesh_length:d}"
-    save_dir = save_dir / f"lpt_abacs_cut_{mesh_length:d}"
+    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacs0") # Perlmutter
+    load_dir = Path("./scratch/abacus_c0_i0_z08_lrg/")
+
+    save_dir += f"_eh{eh_approx:d}_cut{cut:d}"
+    save_dir = save_dir / f"lpt_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -73,29 +74,38 @@ def infer_model(mesh_length):
     ########
     # Load #
     ########
+    z_obs = 0.8
     box_shape = 3*(2000,)
     cell_budget = mesh_length**3
     selection = None
     mesh_length = round(cell_budget**(1/3))
 
+    cut_config = {
+        'init_oversamp':7/4,
+        'ptcl_oversamp':7/4,
+        'paint_oversamp':3/2,
+        'k_cut':None,    
+        } if cut else {}
+
     model = FieldLevelModel(**default_config | 
                             {'mesh_shape': 3*(mesh_length,), 
                             'cell_length': box_shape[0] / mesh_length, # in Mpc/h
                             'box_center': (0.,0.,0.), # in Mpc/h
-                            'box_rotvec': (0.,0.,0.,), # rotation vector in radians
+                            'box_rotvec': (0.,0.,0.), # rotation vector in radians
                             'evolution': 'lpt',
-                            'a_obs': 1., # light-cone if None
+                            'a_obs': 1 / (1 + z_obs), # light-cone if None
                             'curved_sky': False, # curved vs. flat sky
                             'ap_auto': None, # parametrized AP vs. auto AP
                             'selection': selection, # if float, padded fraction, if str or Path, path to window mesh file
                             'paint_order':2, # order of interpolation kernel
-                            # 'init_oversamp':1., # initial mesh 1D oversampling factor
-                            # 'ptcl_oversamp':1., # particle grid 1D oversampling factor
-                            # 'paint_oversamp':1., # painted mesh 1D oversampling factor
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
-                            'k_cut': None,
-                            } )
+                            'init_power': load_dir / f'init_pmesh_{mesh_length}.npy' if not eh_approx else None, # if None, use EH power
+                            'init_oversamp':1., # initial mesh 1D oversampling factor
+                            'ptcl_oversamp':1., # particle grid 1D oversampling factor
+                            'paint_oversamp':1., # painted mesh 1D oversampling factor
+                            'k_cut':jnp.inf,
+                            } | cut_config)
 
     print(model)
     # model.render()
@@ -114,10 +124,10 @@ def infer_model(mesh_length):
         'alpha_ap': 1.,
         # 'ngbars': 0.00084,
         }
-    mesh_true = jnp.load(f"./scratch/init_mesh_{model.mesh_shape[0]}.npy")
+    mesh_true = jnp.load(load_dir / f"init_mesh_{model.mesh_shape[0]}.npy")
     truth = truth | {'init_mesh': jnp.fft.rfftn(mesh_true)}
 
-    tracer_mesh = jnp.load(f"./scratch/tracer_mesh_6746545_{model.mesh_shape[0]}.npy")
+    tracer_mesh = jnp.load(load_dir / f"tracer_mesh_6746545_{model.mesh_shape[0]}.npy")
     truth = truth | {'obs': tracer_mesh}
     # truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
 
@@ -207,6 +217,7 @@ def infer_model(mesh_length):
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
     obs = ['obs','fNL','bnp','alpha_iso','alpha_ap']
+    obs += ['Omega_m'] if not eh_approx else []
     # obs = ['obs','Omega_m','sigma8','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
     # obs = ['obs','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
     # obs = ['obs','fNL','alpha_iso','alpha_ap']
@@ -276,11 +287,10 @@ def infer_model(mesh_length):
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
         pdump(state, save_path+"_last_state.p")
 
-
-
-
     from montecosmo.script import load_model, warmup1, warmup2run, make_chains
     make_chains(save_path, start=1, end=100)
+
+
 
 
 
@@ -294,21 +304,13 @@ def make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=False):
     print('\n', jdevices())
 
     save_dir = Path(save_dir)
-    dirs = [dir for dir in os.listdir(save_dir) if (save_dir / dir).is_dir()]
+    dirs = [dir for dir in sorted(os.listdir(save_dir)) if (save_dir / dir).is_dir()]
     dirs.append("") # also process save_dir itself
     for dir in dirs:
         save_path = save_dir / dir / "test"
         # Check if there are samples but no processed chains yet
         if (os.path.exists(save_path + f"_{start}.npz") and 
         (overwrite or not os.path.exists(save_path + "_chains.p"))):
-            
-            # from montecosmo.model import FieldLevelModel
-            # model = FieldLevelModel.load(save_dir / dir / "model.yaml")
-            # truth = dict(jnp.load(save_dir / dir / 'truth.npz'))
-            # init_mesh = jnp.load(f"./scratch/init_mesh_{model.mesh_shape[0]}.npy")
-            # truth = truth | {'init_mesh': jnp.fft.rfftn(init_mesh)}
-            # jnp.savez(save_dir / "truth.npz", **truth)
-
             make_chains(save_path, start=start, end=end, thinning=thinning)
 
 
@@ -323,7 +325,7 @@ def compare_chains_dir(save_dir, labels):
 
     save_paths = []
     save_dir = Path(save_dir)
-    dirs = [dir for dir in os.listdir(save_dir) if (save_dir / dir).is_dir()]
+    dirs = [dir for dir in sorted(os.listdir(save_dir)) if (save_dir / dir).is_dir()]
     dirs.append("") # also process save_dir itself
     for dir in dirs:
         save_path = save_dir / dir / "test"
@@ -334,19 +336,24 @@ def compare_chains_dir(save_dir, labels):
     compare_chains(save_paths, labels, save_dir)  
 
 
+
 if __name__ == '__main__':
     print("Demat")
+    mesh_lengths = [32, 64, 128]
+    eh_approxs = [True, False]
+    cuts = [False]
     
-    # infer_model(32)
-
-    # infer_model(64)
-
-    # infer_model(128)
+    for mesh_length in mesh_lengths:
+        for eh_approx in eh_approxs:
+            for cut in cuts:
+                print(f"\n--- mesh_length {mesh_length}, eh_approx {eh_approx}, cut {cut} ---")
+                infer_model(mesh_length, eh_approx=eh_approx, cut=cut)
 
     overwrite = False
     # overwrite = True
-    # make_chains_dir("/pscratch/sd/h/hsimfroy/png/abacs_nocut/lpt_abacs_32", start=1, end=100, thinning=1, overwrite=overwrite)
-    compare_chains_dir("/pscratch/sd/h/hsimfroy/png/abacs_nocut", labels=["32", "64", "128"])
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs_cut"
+    # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
+    # compare_chains_dir(save_dir, labels=["32", "64", "128"])
 
     spawn(queue, spawn=True)
 

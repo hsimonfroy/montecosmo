@@ -53,7 +53,7 @@ def get_cosmology(**cosmo) -> Cosmology:
     """
     Return full cosmology object from cosmological params.
     """
-    ref_cosmo = Planck18
+    ref_cosmo = AbacusSummit0
     return ref_cosmo(Omega_c=cosmo['Omega_m'] - ref_cosmo.keywords['Omega_b'], 
                     sigma8=cosmo['sigma8'])
     # return ref_cosmo(Omega_c=cosmo['Omega_c'], Omega_b=cosmo['Omega_b'], 
@@ -66,7 +66,7 @@ def get_cosmology(**cosmo) -> Cosmology:
 #########
 def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     """
-    Return a light emulation of the linear matter power spectrum.
+    Return a light Eiseinstein&Hu emulation of the linear matter power spectrum.
     """
     ks = jnp.logspace(-4, 1, n_interp)
     # logpows = jnp.log(power.linear_matter_power(cosmo, ks, a=a))

@@ -39,6 +39,8 @@ default_config={
         'box_rotvec':(0.,0.,0.), # rotation vector in radians
         # 'box_shape':3 * (320.,), # in Mpc/h
         'k_cut': None, # in h/Mpc, if None, k_nyquist, if jnp.inf, no cut
+        # Init
+        'init_power':None, # if None, use EH approx, if str or Path, path to initial power mesh file
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_steps':5, # number of N-body steps
@@ -52,18 +54,18 @@ default_config={
         # Observables
         'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
         'poles':(0,2,4), # multipoles order to compute, if observable is 'powspec'
-        'a_obs':None, # light-cone if None
+        'a_obs':None, # if None, light-cone
         'curved_sky':True, # curved vs. flat sky
         'ap_auto': True, # auto AP vs. parametric AP
         'selection':None, # if float, padded fraction, if str or Path, path to selection mesh file
         'n_rbins':None, # if None, set to maximum number of radial bins
-        # 'save_dir':str,
         # Latents
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':'{\\Omega}_m', 
-                            'loc':0.3111, 
+                            # 'loc':0.3111,
+                            'loc':0.3137721,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -84,7 +86,8 @@ default_config={
                 #             'high': 1.},
                 'sigma8': {'group':'cosmo',
                             'label':'{\\sigma}_8',
-                            'loc':0.8102,
+                            # 'loc':0.8102,
+                            'loc':0.8,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.,
@@ -370,7 +373,9 @@ class FieldLevelModel(Model):
     cell_length:float
     box_center:np.ndarray
     box_rotvec:np.ndarray
-    k_cut:float
+    k_cut:None|float
+    # Init  
+    init_power:None|str|Path
     # Evolution
     evolution:str
     nbody_steps:int
@@ -384,11 +389,11 @@ class FieldLevelModel(Model):
     # Observable
     observable:str
     poles:tuple
-    a_obs:float
+    a_obs:None|float
     curved_sky:bool
     ap_auto:bool
-    selection:float|str
-    n_rbins:int
+    selection:None|float|str|Path
+    n_rbins:None|int
     # Latents
     precond:str
     latents:dict
@@ -417,16 +422,26 @@ class FieldLevelModel(Model):
             mask = tophat_kernel(kvec, self.k_cut * self.cell_length)
             self.cut_mask = np.array(cgh2rg(mask, norm="amp"), dtype=bool)
 
+        if self.init_power is None:
+            self.init_pmesh = None
+        elif isinstance(self.init_power, (str, Path.__base__)):
+            self.init_power = str(self.init_power) # cast to str to allow yaml saving
+            self.init_pmesh = np.load(self.init_power)
+        else:
+            raise ValueError("init_power should be None, str, or Path.")
+
         if self.selection is None:
             self.selec_mesh = np.array(1.)
             self.mask = None
         elif isinstance(self.selection, float):
             self.selec_mesh = simple_selection(self.mesh_shape, self.selection, ord=np.inf) 
             self.mask = self.selec_mesh > 0
-        elif isinstance(self.selection, (str, Path)):
+        elif isinstance(self.selection, (str, Path.__base__)):
             self.selection = str(self.selection) # cast to str to allow yaml saving
             self.selec_mesh = np.load(self.selection)
             self.mask = self.selec_mesh > 0
+        else:
+            raise ValueError("selection should be None, float, str, or Path.")
 
         self._validate_latents()
         self._validate_rbins()
@@ -777,7 +792,10 @@ class FieldLevelModel(Model):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
-        pmesh = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
+        if self.init_power is None:
+            pmesh = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
+        else:
+            pmesh = self.init_pmesh * (cosmo.sigma8 / self.cosmo_fid.sigma8)**2
 
         if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.mesh_shape)
