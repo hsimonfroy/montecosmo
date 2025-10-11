@@ -755,34 +755,55 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
 
 
 
-def simple_selection(mesh_shape, padding=0., ord:float=np.inf):
+def tophat_selection(mesh_shape, padding=0., order:float=np.inf):
     """
     Return an `ord-norm ball binary selection mesh, with a `padding` 1D padded fraction.
     Therefore, `1/(1+padding)` is the mesh axes to ball axes ratio.
     """
-    ord = float(ord)
-    rx = jnp.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
-    ry = jnp.abs((np.arange(mesh_shape[1]) + .5) * 2 / mesh_shape[1] - 1)
-    rz = jnp.abs((np.arange(mesh_shape[2]) + .5) * 2 / mesh_shape[2] - 1)
+    order = float(order)
+    rx = np.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
+    ry = np.abs((np.arange(mesh_shape[1]) + .5) * 2 / mesh_shape[1] - 1)
+    rz = np.abs((np.arange(mesh_shape[2]) + .5) * 2 / mesh_shape[2] - 1)
 
     rx = rx.reshape([-1, 1, 1])
     ry = ry.reshape([1, -1, 1])
     rz = rz.reshape([1, 1, -1])
     rvec = rx, ry, rz
 
-    if ord == np.inf:
+    if order == np.inf:
         rmesh = np.maximum(np.maximum(rvec[0], rvec[1]), rvec[2])
-    elif ord == -np.inf:
+    elif order == -np.inf:
         rmesh = np.minimum(np.minimum(rvec[0], rvec[1]), rvec[2])
     else:
-        rmesh = sum(ri**ord for ri in rvec)**(1 / ord)
+        rmesh = sum(ri**order for ri in rvec)**(1 / order)
 
     selec_mesh = (rmesh < 1 / (1 + padding)).astype(float)
     # NOTE: selection normalization to unit mean within its support.
     selec_mesh /= selec_mesh[selec_mesh > 0].mean()
     return selec_mesh
 
-def simple_box(pos):
+def gennorm_selection(box_center, box_rot, box_shape, mesh_shape, curved_sky,
+                       r_loc=None, r_scale=None, order:float=2.):
+    """
+    Return a generalized normal selection mesh.
+    if r_loc is None, it is set to the distance of the box center.
+    if r_scale is None, it is set to a 4th of the box length along the line-of-sight of the box center.
+    order is in [0, +inf].
+    """
+    rmesh = radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky)
+    if r_loc is None:
+        r_loc = jnp.linalg.norm(box_center)
+    if r_scale is None:
+        los = safe_div(box_center, jnp.linalg.norm(box_center))
+        los = box_rot.apply(los, inverse=True) # cell los
+        r_scale = box_shape @ jnp.abs(los) / 4 # 4th of the box length along los 
+
+    selec_mesh = jnp.exp(- jnp.abs((rmesh - r_loc) / r_scale)**order)
+    # NOTE: selection normalization to unit mean within its support.
+    selec_mesh /= selec_mesh[selec_mesh > 0].mean()
+    return selec_mesh
+
+def minmax_box(pos):
     """
     Return box configuration (center, rotvec, shape) for a given set of positions.
     The box is simply computed from the min and max of the positions along each axis.
@@ -828,7 +849,7 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_orde
     """
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
-    box_center, box_rotvec, box_shape = simple_box(pos)
+    box_center, box_rotvec, box_shape = minmax_box(pos)
     mesh_shape, cell_length = get_mesh_shape(box_shape, cell_budget, padding)
     box_shape = mesh_shape * cell_length # box_shape update due to rounding and padding
     box_rot = Rotation.from_rotvec(box_rotvec)
@@ -842,7 +863,11 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_orde
 
 
 def set_radial_count(mesh, rmesh, redges, rcounts):
-    # assert len(redges) == len(rcounts) + 1
+    """
+    Multiply mesh by radial counts
+    where radiuses are given by rmesh and radial bins are given by redges.
+    """
+    assert len(redges) == len(rcounts) + 1
     xs = jnp.stack((rcounts, redges[:-1], redges[1:]), axis=-1)
 
     def step(carry, x):

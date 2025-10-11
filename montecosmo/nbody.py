@@ -124,7 +124,6 @@ def tophat_kernel(kvec, kcut=np.inf):
         return np.where(kk < kcut**2, True, False)
     
 
-
 def paint_kernel(kvec, order:int=2):
     """
     Compute painting kernel of given order.

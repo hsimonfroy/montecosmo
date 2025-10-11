@@ -16,7 +16,7 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias,
-                               simple_selection, mesh2masked, masked2mesh,
+                               tophat_selection, gennorm_selection, mesh2masked, masked2mesh,
                                tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
@@ -64,8 +64,8 @@ default_config={
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':'{\\Omega}_m', 
-                            # 'loc':0.3111,
-                            'loc':0.3137721,
+                            'loc':0.3111,
+                            # 'loc':0.3137721,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -86,8 +86,8 @@ default_config={
                 #             'high': 1.},
                 'sigma8': {'group':'cosmo',
                             'label':'{\\sigma}_8',
-                            # 'loc':0.8102,
-                            'loc':0.8,
+                            'loc':0.8102,
+                            # 'loc':0.8,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.,
@@ -400,17 +400,20 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         super().__post_init__()
-        self.mesh_shape = np.asarray(self.mesh_shape)
-        # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
+        # Geometry
         self.cell_length = float(self.cell_length)
         self.box_center = np.asarray(self.box_center)
         self.box_rotvec = np.asarray(self.box_rotvec)
         self.box_rot = Rotation.from_rotvec(self.box_rotvec)
+
+        self.mesh_shape = np.asarray(self.mesh_shape)
+        # NOTE: if x32, cast mesh_shape into float to avoid overflow when computing products
         self.box_shape = self.mesh_shape * self.cell_length
         self.init_shape = get_scaled_shape(self.mesh_shape, self.init_oversamp)
         self.ptcl_shape = get_scaled_shape(self.mesh_shape, self.ptcl_oversamp)
         self.paint_shape = get_scaled_shape(self.mesh_shape, self.paint_oversamp)
 
+        # Scale cut
         self.k_funda = 2*np.pi / np.min(self.box_shape) 
         self.k_nyquist = np.pi * np.min(self.mesh_shape / self.box_shape)
         if self.k_cut == np.inf:
@@ -422,6 +425,7 @@ class FieldLevelModel(Model):
             mask = tophat_kernel(kvec, self.k_cut * self.cell_length)
             self.cut_mask = np.array(cgh2rg(mask, norm="amp"), dtype=bool)
 
+        # Initial power spectrum
         if self.init_power is None:
             self.init_pmesh = None
         elif isinstance(self.init_power, (str, Path.__base__)):
@@ -429,12 +433,17 @@ class FieldLevelModel(Model):
             self.init_pmesh = np.load(self.init_power)
         else:
             raise ValueError("init_power should be None, str, or Path.")
-
+        
+        # Selection function
         if self.selection is None:
             self.selec_mesh = np.array(1.)
             self.mask = None
         elif isinstance(self.selection, float):
-            self.selec_mesh = simple_selection(self.mesh_shape, self.selection, ord=np.inf) 
+            selec_mesh_tophat = tophat_selection(self.mesh_shape, self.selection, order=np.inf) 
+            selec_mesh_gennorm = gennorm_selection(self.box_center, self.box_rot, self.box_shape, 
+                                           self.mesh_shape, self.curved_sky, order=4.)
+            self.selec_mesh = selec_mesh_tophat * selec_mesh_gennorm
+            self.selec_mesh /= self.selec_mesh[self.selec_mesh > 0].mean()
             self.mask = self.selec_mesh > 0
         elif isinstance(self.selection, (str, Path.__base__)):
             self.selection = str(self.selection) # cast to str to allow yaml saving
@@ -442,9 +451,13 @@ class FieldLevelModel(Model):
             self.mask = self.selec_mesh > 0
         else:
             raise ValueError("selection should be None, float, str, or Path.")
+        
+        # Imaging
+        # TODO
 
-        self._validate_latents()
-        self._validate_rbins()
+        # Variables configuration
+        self.latents = self._validate_latents()
+        self.n_rbins, self.rmasked, self.redges, self.latents['ngbars'] = self._validate_rbins()
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
@@ -535,7 +548,7 @@ class FieldLevelModel(Model):
             if self.ap_auto is not None:
                 # Create regular grid of particles, and get their scale factors and line-of-sights
                 # pos = sobol_pos(self.mesh_shape, self.ptcl_shape, seed=43)
-                print(43)
+                print("ap_auto")
                 pos = regular_pos(self.mesh_shape, self.ptcl_shape)
                 weights = read(pos, gxy_mesh, self.paint_order) ##########
                 pos = cell2phys_pos(pos, self.box_center, self.box_rot, self.box_shape, self.mesh_shape)
@@ -746,25 +759,25 @@ class FieldLevelModel(Model):
                     new[name]['loc_fid'] = (low + high) / 2
                 if scale_fid is None:
                     new[name]['scale_fid'] = (high - low) / 12**.5
-        self.latents = new
+        return new
 
     def _validate_rbins(self):
         """
         Validate radial density and setup radial bins quantities. 
         """
         rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape, self.curved_sky))
-        self.rmasked = mesh2masked(rmesh, self.mask)
-        rmin, rmax = self.rmasked.min(), self.rmasked.max()
+        rmasked = mesh2masked(rmesh, self.mask)
+        rmin, rmax = rmasked.min(), rmasked.max()
         dr = 3**.5 * self.cell_length
 
-        if self.n_rbins is None:
-            self.n_rbins = max(int((rmax - rmin) / dr), 1)
-        self.redges = np.linspace(rmin - dr/1000, rmax + dr/1000, self.n_rbins + 1)
+        n_rbins = max(int((rmax - rmin) / dr), 1) if self.n_rbins is None else self.n_rbins
+        redges = np.linspace(rmin - dr/1000, rmax + dr/1000, n_rbins + 1)
 
-        dic = self.latents['ngbars']
+        ngbars_conf = self.latents['ngbars'].copy()
         for attr in ['loc','scale','loc_fid','scale_fid','low','high']:
-            if attr in dic:
-                dic[attr] = np.broadcast_to(dic[attr], self.n_rbins)
+            if attr in ngbars_conf:
+                ngbars_conf[attr] = np.broadcast_to(ngbars_conf[attr], n_rbins)
+        return n_rbins, rmasked, redges, ngbars_conf
 
     def _sample(self, names:str|list):
         """
