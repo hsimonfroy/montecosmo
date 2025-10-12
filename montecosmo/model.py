@@ -16,8 +16,7 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias,
-                               tophat_selection, gennorm_selection, mesh2masked, masked2mesh,
-                               tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
+                               tophat_selection, gennorm_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
                                set_radial_count)
@@ -25,7 +24,7 @@ from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g
                               paint, read, deconv_paint, interlace, rfftk, tophat_kernel)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial
 from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
-                              cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape,
+                              cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked,
                               nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
 from montecosmo.chains import Chains
 
@@ -422,7 +421,7 @@ class FieldLevelModel(Model):
             if self.k_cut is None:
                 self.k_cut = float(self.k_nyquist)
             kvec = rfftk(self.mesh_shape)
-            mask = tophat_kernel(kvec, self.k_cut * self.cell_length)
+            mask = tophat_kernel(kvec, self.k_cut * self.cell_length) # k_cut in cell units
             self.cut_mask = np.array(cgh2rg(mask, norm="amp"), dtype=bool)
 
         # Initial power spectrum
@@ -865,7 +864,6 @@ class FieldLevelModel(Model):
         Return fiducial location values from latents config.
         """
         return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
-    
     
     # @property
     # def rmasked(self):

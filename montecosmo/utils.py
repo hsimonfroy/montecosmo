@@ -7,9 +7,7 @@ from functools import partial, wraps
 from pathlib import Path
 
 import numpy as np
-import jax.numpy as jnp
-import jax.random as jr
-from jax import jit, vmap, grad, tree, lax
+from jax import jit, numpy as jnp, vmap, grad, tree, lax
 
 from jax.scipy.special import logsumexp
 from jax.scipy.stats import norm
@@ -566,6 +564,53 @@ def cgh2rg2(meshk, amp:bool=False, norm="backward"):
         mesh = mesh.at[id_imag].set(meshk.real)
         mesh = mesh.at[id_real].set(meshk.real)
     return mesh
+
+
+
+
+############
+# Geometry #
+############
+def mesh2masked(mesh, mask=None):
+    if mask is None:
+        return mesh
+    else:
+        return mesh[...,mask]
+
+
+def masked2mesh(masked, mask=None):
+    if mask is None:
+        return masked
+    else:
+        shape = jnp.shape(masked)[:-1] + jnp.shape(mask)
+        return jnp.zeros(shape).at[...,mask].set(masked)
+
+
+def radecrad2cart(ra, dec, radius):
+    """
+    Convert ra, dec (in degrees), and radius to cartesian coordinates.
+    """
+    ra = jnp.deg2rad(ra)
+    dec = jnp.deg2rad(dec)
+    x = jnp.cos(dec) * jnp.cos(ra)
+    y = jnp.cos(dec) * jnp.sin(ra)
+    z = jnp.sin(dec)
+    cart = jnp.moveaxis(radius * jnp.stack((x, y, z)), 0, -1)
+    return cart
+
+
+def cart2radecrad(cart:jnp.ndarray):
+    """
+    Convert cartesian coordinates to ra, dec (in degrees), and radius.
+    * ra \\in [0, 360]
+    * dec \\in [-90, 90]
+    * radius \\in [0, +\\infty[
+    """
+    radius = jnp.linalg.norm(cart, axis=-1)
+    x, y, z = jnp.moveaxis(cart, -1, 0)
+    ra = jnp.rad2deg(jnp.arctan2(y, x)) % 360.
+    dec = jnp.rad2deg(jnp.arcsin(safe_div(z, radius)))
+    return ra, dec, radius
 
 
 

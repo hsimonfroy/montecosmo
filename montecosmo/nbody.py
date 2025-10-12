@@ -22,7 +22,21 @@ def rfftk(shape):
     kx = kx.reshape([-1, 1, 1])
     ky = ky.reshape([1, -1, 1])
     kz = kz.reshape([1, 1, -1])
+    return kx, ky, kz
 
+
+def fftk(shape):
+    """
+    Return wavevectors in cell units for fftn.
+    (You shouldn't need it)
+    """
+    kx = np.fft.fftfreq(shape[0]) * 2 * np.pi
+    ky = np.fft.fftfreq(shape[1]) * 2 * np.pi
+    kz = np.fft.fftfreq(shape[2]) * 2 * np.pi
+
+    kx = kx.reshape([-1, 1, 1])
+    ky = ky.reshape([1, -1, 1])
+    kz = kz.reshape([1, 1, -1])
     return kx, ky, kz
 
 

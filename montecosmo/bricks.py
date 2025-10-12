@@ -5,10 +5,11 @@ from jax.scipy.spatial.transform import Rotation
 
 from jax_cosmo import Cosmology, background, constants, power
 import fitsio
-from scipy.interpolate import SmoothSphereBivariateSpline
+# from scipy.interpolate import SmoothSphereBivariateSpline
 
-from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap
+from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap, cart2radecrad, radecrad2cart
 from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a, paint, read
+from montecosmo.metrics import naive_mu2_delta, optim_mu2_delta
 
 #############
 # Cosmology #
@@ -149,12 +150,13 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0,0,0)):
     For flat-sky with no light-cone, this linear model is moreover diagonal in Fourier space.
     """
     mesh_shape = ch2rshape(init_mesh.shape)
+    los = jnp.asarray(los)
 
-    if jnp.shape(los) == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
+    if los.shape == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
         init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, los)
         return 1 + jnp.fft.irfftn(init_mesh) # 1 + delta
     
-    elif jnp.shape(los) == (3,): # flat-sky, light-cone
+    elif los.shape == (3,): # flat-sky, light-cone
         kvec = rfftk(mesh_shape)
         kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
         mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
@@ -164,27 +166,15 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0,0,0)):
         return 1 + a2g(cosmo, a) * delta # 1 + delta
     
     else: # curved-sky
-        # kvec = rfftk(mesh_shape)
-        # kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
+        # # 8 FFTs
+        # mu2_delta = naive_mu2_delta(init_mesh, los)
+        # delta = jnp.fft.irfftn(init_mesh)
 
-        # mu_delta = jnp.stack([jnp.fft.irfftn(
-        #         safe_div(kvec[i] * init_mesh, kmesh)
-        #         ) for i in range(3)], axis=-1)
-        # mu_delta = (mu_delta * los).sum(-1)
-        # mu_delta = jnp.fft.rfftn(mu_delta)
+        # 6 FFTs
+        delta, mu2_delta = optim_mu2_delta(init_mesh, los)
 
-        # mu2_delta = jnp.stack([jnp.fft.irfftn(
-        #         safe_div(kvec[i] * mu_delta, kmesh)
-        #         ) for i in range(3)], axis=-1)
-        # mu2_delta = (mu2_delta * los).sum(-1)
-
-        # delta = bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * mu2_delta
-        # return 1 + a2g(cosmo, a) * delta # 1 + delta
-    
-        print("kai")
-        # return jnp.ones(mesh_shape)
-        delta = bE * jnp.fft.irfftn(init_mesh)
-        return 1 + 0.5 * delta # 1 + delta
+        delta = bE * delta + a2f(cosmo, a) * mu2_delta
+        return 1 + a2g(cosmo, a) * delta # 1 + delta
 
 
 def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_shape, los=(0,0,0)):
@@ -670,44 +660,6 @@ def rsd_ap_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology, cu
 ######################
 # Mask and Selection #
 ######################
-def mesh2masked(mesh, mask=None):
-    if mask is None:
-        return mesh
-    else:
-        return mesh[...,mask]
-
-def masked2mesh(masked, mask=None):
-    if mask is None:
-        return masked
-    else:
-        shape = jnp.shape(masked)[:-1] + jnp.shape(mask)
-        return jnp.zeros(shape).at[...,mask].set(masked)
-
-def radecrad2cart(ra, dec, radius):
-    """
-    Convert ra, dec (in degrees), and radius to cartesian coordinates.
-    """
-    ra = jnp.deg2rad(ra)
-    dec = jnp.deg2rad(dec)
-    x = jnp.cos(dec) * jnp.cos(ra)
-    y = jnp.cos(dec) * jnp.sin(ra)
-    z = jnp.sin(dec)
-    cart = jnp.moveaxis(radius * jnp.stack((x, y, z)), 0, -1)
-    return cart
-
-def cart2radecrad(cart:jnp.ndarray):
-    """
-    Convert cartesian coordinates to ra, dec (in degrees), and radius.
-    * ra \\in [0, 360]
-    * dec \\in [-90, 90]
-    * radius \\in [0, \\infty[
-    """
-    radius = jnp.linalg.norm(cart, axis=-1)
-    x, y, z = jnp.moveaxis(cart, -1, 0)
-    ra = jnp.rad2deg(jnp.arctan2(y, x)) % 360.
-    dec = jnp.rad2deg(jnp.arcsin(z / radius))
-    return ra, dec, radius
-
 def radecz2cart(cosmo:Cosmology, radecz:dict):
     """
     Convert RA, DEC, Z dictionary (in degrees) to cartesian array (in Mpc/h).
@@ -786,9 +738,9 @@ def gennorm_selection(box_center, box_rot, box_shape, mesh_shape, curved_sky,
                        r_loc=None, r_scale=None, order:float=2.):
     """
     Return a generalized normal selection mesh.
-    if r_loc is None, it is set to the distance of the box center.
-    if r_scale is None, it is set to a 4th of the box length along the line-of-sight of the box center.
-    order is in [0, +inf].
+    * if r_loc is None, it is set to the distance of the box center.
+    * if r_scale is None, it is set to a 4th of the box length along the line-of-sight of the box center.
+    * order in [0, +\\infty].
     """
     rmesh = radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky)
     if r_loc is None:

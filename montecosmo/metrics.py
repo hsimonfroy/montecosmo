@@ -2,10 +2,10 @@ import numpy as np
 from jax import numpy as jnp
 from functools import partial
 
-from scipy.special import legendre
+from scipy.special import legendre, lpmv, factorial
 from jaxpm.growth import growth_rate, growth_factor
 from montecosmo.nbody import rfftk, paint_kernel
-from montecosmo.utils import safe_div, ch2rshape
+from montecosmo.utils import safe_div, ch2rshape, cart2radecrad
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
 # from blackjax.diagnostics import effective_sample_size as effective_sample_size2
@@ -121,7 +121,8 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
     # Initialize
-    los = safe_div(np.asarray(box_center), np.linalg.norm(box_center))
+    box_center = jnp.asarray(box_center)
+    los = safe_div(box_center, np.linalg.norm(box_center))
     ells = np.atleast_1d(poles)
 
     if isinstance(deconv, int):
@@ -239,6 +240,80 @@ def kaiser_formula(cosmo:Cosmology, a, lin_kpow, bE, poles=0):
     return k, pow
 
 
+def real_sph_harm(l, m, theta, phi):
+    """
+    Compute real spherical harmonics Y(l, m, theta, phi).
+    l: degree/azimuthal number (l >= 0)
+    m: order/magnetic number (-l <= m <= l)
+    theta: polar angle/colatitude [0, pi]
+    phi: azimuthal angle/longitude [0, 2*pi]
+    """
+    m_abs = abs(m)
+    norm = ((2*l+1) / (4*np.pi) * factorial(l-m_abs) / factorial(l+m_abs))**.5
+    P_lm = lpmv(m_abs, l, np.cos(theta))
+    if m > 0:
+        Y = 2**.5 * norm * P_lm * np.cos(m * phi)
+    elif m < 0:
+        Y = 2**.5 * norm * P_lm * np.sin(m_abs * phi)
+    else:
+        Y = norm * P_lm
+    return Y
+
+
+def naive_mu2_delta(mesh, los):
+    mesh_shape = ch2rshape(mesh.shape)
+    kvec = rfftk(mesh_shape)
+    kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
+
+    mu_delta = jnp.stack([jnp.fft.irfftn(
+            safe_div(kvec[i] * mesh, kmesh)
+            ) for i in range(3)], axis=-1)
+    mu_delta = (mu_delta * los).sum(-1)
+    mu_delta = jnp.fft.rfftn(mu_delta)
+
+    mu2_delta = jnp.stack([jnp.fft.irfftn(
+            safe_div(kvec[i] * mu_delta, kmesh)
+            ) for i in range(3)], axis=-1)
+    mu2_delta = (mu2_delta * los).sum(-1)
+    return mu2_delta
+
+
+def optim_mu2_delta(mesh, los):
+    """
+    Exploit the fact that mu^2 can be expressed as a sum of Legendre polynomials, 
+    which themselves can be expressed as spherical harmonics.
+    .. math::
+        mu^2 = 1/3 L_0(mu) + 2/3 L_2(mu) = 1/3 + 8pi/15 sum_{m=-2}^{2} Y_{2m}(k) Y*_{2m}(r)
+
+    For a related computation, see [Hand+2017](https://arxiv.org/pdf/1704.02357)
+    """
+    mesh_shape = ch2rshape(mesh.shape)
+    kvec = rfftk(mesh_shape)
+
+    ra, dec, _ = cart2radecrad(los)
+    phi = np.deg2rad(ra).reshape(-1)
+    theta = np.deg2rad(90. - dec).reshape(-1)
+
+    kra, kdec, _ = cart2radecrad(jnp.stack(jnp.broadcast_arrays(*kvec), -1))
+    kphi = np.deg2rad(kra).reshape(-1)
+    ktheta = np.deg2rad(90. - kdec).reshape(-1)
+
+    delta = jnp.fft.irfftn(mesh)
+    mu2_delta = delta / 3
+    for m in range(-2, 3):
+        # In real space
+        ylos = real_sph_harm(jnp.array([2]), jnp.array([m]), theta, phi).reshape(mesh_shape)
+        yk = real_sph_harm(jnp.array([2]), jnp.array([m]), ktheta, kphi).reshape(mesh.shape)
+        yk = jnp.fft.irfftn(yk * mesh)
+
+        # In Fourier space
+        # ylos = real_sph_harm(jnp.array([2]), jnp.array([m]), theta, phi).reshape(mesh_shape)
+        # ylos = jnp.fft.rfftn(ylos * delta)
+        # yk = real_sph_harm(jnp.array([2]), jnp.array([m]), ktheta, kphi).reshape(init_mesh.shape)
+        mu2_delta += 8 * jnp.pi / 15 * ylos * yk
+    return delta, mu2_delta
+
+
 # def legendre(ell, x):
 #     """
 #     Return Legendre polynomial of given order.
@@ -305,7 +380,6 @@ def wigner3j_square(ellout, ellin, prefactor=True):
         return toret, math.factorial(p)
 
     for p in range(min(ellin, ellout) + 1):
-
         numer, denom = [], []
 
         # numerator of product of G(x)
