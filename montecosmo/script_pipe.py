@@ -42,6 +42,10 @@ tm = TaskManager(queue=queue, environ=environ,
 @tm.python_app
 def infer_model(mesh_length, eh_approx=True, cut=False):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
+    from datetime import datetime
+    print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().isoformat()}")
+    print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')}")
+    
     import numpy as np
     from functools import partial
     import matplotlib.pyplot as plt
@@ -143,7 +147,7 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
     ##########
     # Warmup #
     ##########
-    n_samples, n_runs, n_chains = 128 * 64//model.mesh_shape[0], 64, 4
+    n_samples, n_runs, n_chains = 128 * 64//model.mesh_shape[0], 16, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
@@ -347,13 +351,14 @@ if __name__ == '__main__':
         for eh_approx in eh_approxs:
             for cut in cuts:
                 print(f"\n--- mesh_length {mesh_length}, eh_approx {eh_approx}, cut {cut} ---")
-                infer_model(mesh_length, eh_approx=eh_approx, cut=cut)
+                # infer_model(mesh_length, eh_approx=eh_approx, cut=cut)
 
     overwrite = False
-    # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs_cut"
-    # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
-    # compare_chains_dir(save_dir, labels=["32", "64", "128"])
+    overwrite = True
+    save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/lpt_128"
+    make_chains_dir(save_dir, start=3, end=100, thinning=1, overwrite=overwrite)
+    save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
+    compare_chains_dir(save_dir, labels=["128", "32", "64"])
 
     spawn(queue, spawn=True)
 
