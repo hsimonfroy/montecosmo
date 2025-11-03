@@ -5,10 +5,11 @@ from jax.scipy.spatial.transform import Rotation
 
 from jax_cosmo import Cosmology, background, constants, power
 import fitsio
-from scipy.interpolate import SmoothSphereBivariateSpline
+# from scipy.interpolate import SmoothSphereBivariateSpline
 
-from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap
+from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap, cart2radecrad, radecrad2cart
 from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a, paint, read
+from montecosmo.metrics import naive_mu2_delta, optim_mu2_delta
 
 #############
 # Cosmology #
@@ -149,12 +150,13 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0,0,0)):
     For flat-sky with no light-cone, this linear model is moreover diagonal in Fourier space.
     """
     mesh_shape = ch2rshape(init_mesh.shape)
+    los = jnp.asarray(los)
 
-    if jnp.shape(los) == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
+    if los.shape == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
         init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, los)
         return 1 + jnp.fft.irfftn(init_mesh) # 1 + delta
     
-    elif jnp.shape(los) == (3,): # flat-sky, light-cone
+    elif los.shape == (3,): # flat-sky, light-cone
         kvec = rfftk(mesh_shape)
         kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
         mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
@@ -164,27 +166,15 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0,0,0)):
         return 1 + a2g(cosmo, a) * delta # 1 + delta
     
     else: # curved-sky
-        # kvec = rfftk(mesh_shape)
-        # kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
+        # # 8 FFTs
+        # mu2_delta = naive_mu2_delta(init_mesh, los)
+        # delta = jnp.fft.irfftn(init_mesh)
 
-        # mu_delta = jnp.stack([jnp.fft.irfftn(
-        #         safe_div(kvec[i] * init_mesh, kmesh)
-        #         ) for i in range(3)], axis=-1)
-        # mu_delta = (mu_delta * los).sum(-1)
-        # mu_delta = jnp.fft.rfftn(mu_delta)
+        # 6 FFTs
+        delta, mu2_delta = optim_mu2_delta(init_mesh, los)
 
-        # mu2_delta = jnp.stack([jnp.fft.irfftn(
-        #         safe_div(kvec[i] * mu_delta, kmesh)
-        #         ) for i in range(3)], axis=-1)
-        # mu2_delta = (mu2_delta * los).sum(-1)
-
-        # delta = bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * mu2_delta
-        # return 1 + a2g(cosmo, a) * delta # 1 + delta
-    
-        print("kai")
-        # return jnp.ones(mesh_shape)
-        delta = bE * jnp.fft.irfftn(init_mesh)
-        return 1 + 0.5 * delta # 1 + delta
+        delta = bE * delta + a2f(cosmo, a) * mu2_delta
+        return 1 + a2g(cosmo, a) * delta # 1 + delta
 
 
 def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_shape, los=(0,0,0)):
@@ -362,14 +352,14 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape,
 
 def b_phi(b1, p=1., delta_c=1.686):
     """
-    Primordial scale-dependant bias parameter. See []()
+    Primordial scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
     """
     # 2 * delta_c * (bE1 - p) and bE1 = 1 + b1
     return 2 * delta_c * (1 + b1 - p)
 
 def b_phi_delta(b1, b2, bp, delta_c=1.686):
     """
-    Primordial-density scale-dependant bias parameter. See []()
+    Primordial-density scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
     """
     # bp - (bE1 - 1) + delta_c * (bE2 - 8 / 21 * (bE1 - 1)) and bE2 = b2 + 8/21 * b1
     # TODO: check for the factor 2
@@ -670,44 +660,6 @@ def rsd_ap_auto(pos, vel, rpos, los, a, cosmo:Cosmology, cosmo_fid:Cosmology, cu
 ######################
 # Mask and Selection #
 ######################
-def mesh2masked(mesh, mask=None):
-    if mask is None:
-        return mesh
-    else:
-        return mesh[...,mask]
-
-def masked2mesh(masked, mask=None):
-    if mask is None:
-        return masked
-    else:
-        shape = jnp.shape(masked)[:-1] + jnp.shape(mask)
-        return jnp.zeros(shape).at[...,mask].set(masked)
-
-def radecrad2cart(ra, dec, radius):
-    """
-    Convert ra, dec (in degrees), and radius to cartesian coordinates.
-    """
-    ra = jnp.deg2rad(ra)
-    dec = jnp.deg2rad(dec)
-    x = jnp.cos(dec) * jnp.cos(ra)
-    y = jnp.cos(dec) * jnp.sin(ra)
-    z = jnp.sin(dec)
-    cart = jnp.moveaxis(radius * jnp.stack((x, y, z)), 0, -1)
-    return cart
-
-def cart2radecrad(cart:jnp.ndarray):
-    """
-    Convert cartesian coordinates to ra, dec (in degrees), and radius.
-    * ra \\in [0, 360]
-    * dec \\in [-90, 90]
-    * radius \\in [0, \\infty[
-    """
-    radius = jnp.linalg.norm(cart, axis=-1)
-    x, y, z = jnp.moveaxis(cart, -1, 0)
-    ra = jnp.rad2deg(jnp.arctan2(y, x)) % 360.
-    dec = jnp.rad2deg(jnp.arcsin(z / radius))
-    return ra, dec, radius
-
 def radecz2cart(cosmo:Cosmology, radecz:dict):
     """
     Convert RA, DEC, Z dictionary (in degrees) to cartesian array (in Mpc/h).
@@ -755,34 +707,55 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
 
 
 
-def simple_selection(mesh_shape, padding=0., ord:float=np.inf):
+def tophat_selection(mesh_shape, padding=0., order:float=np.inf):
     """
     Return an `ord-norm ball binary selection mesh, with a `padding` 1D padded fraction.
     Therefore, `1/(1+padding)` is the mesh axes to ball axes ratio.
     """
-    ord = float(ord)
-    rx = jnp.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
-    ry = jnp.abs((np.arange(mesh_shape[1]) + .5) * 2 / mesh_shape[1] - 1)
-    rz = jnp.abs((np.arange(mesh_shape[2]) + .5) * 2 / mesh_shape[2] - 1)
+    order = float(order)
+    rx = np.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
+    ry = np.abs((np.arange(mesh_shape[1]) + .5) * 2 / mesh_shape[1] - 1)
+    rz = np.abs((np.arange(mesh_shape[2]) + .5) * 2 / mesh_shape[2] - 1)
 
     rx = rx.reshape([-1, 1, 1])
     ry = ry.reshape([1, -1, 1])
     rz = rz.reshape([1, 1, -1])
     rvec = rx, ry, rz
 
-    if ord == np.inf:
+    if order == np.inf:
         rmesh = np.maximum(np.maximum(rvec[0], rvec[1]), rvec[2])
-    elif ord == -np.inf:
+    elif order == -np.inf:
         rmesh = np.minimum(np.minimum(rvec[0], rvec[1]), rvec[2])
     else:
-        rmesh = sum(ri**ord for ri in rvec)**(1 / ord)
+        rmesh = sum(ri**order for ri in rvec)**(1 / order)
 
     selec_mesh = (rmesh < 1 / (1 + padding)).astype(float)
     # NOTE: selection normalization to unit mean within its support.
     selec_mesh /= selec_mesh[selec_mesh > 0].mean()
     return selec_mesh
 
-def simple_box(pos):
+def gennorm_selection(box_center, box_rot, box_shape, mesh_shape, curved_sky,
+                       r_loc=None, r_scale=None, order:float=2.):
+    """
+    Return a generalized normal selection mesh.
+    * if r_loc is None, it is set to the distance of the box center.
+    * if r_scale is None, it is set to a 4th of the box length along the line-of-sight of the box center.
+    * order in [0, +\\infty].
+    """
+    rmesh = radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky)
+    if r_loc is None:
+        r_loc = jnp.linalg.norm(box_center)
+    if r_scale is None:
+        los = safe_div(box_center, jnp.linalg.norm(box_center))
+        los = box_rot.apply(los, inverse=True) # cell los
+        r_scale = box_shape @ jnp.abs(los) / 4 # 4th of the box length along los 
+
+    selec_mesh = jnp.exp(- jnp.abs((rmesh - r_loc) / r_scale)**order)
+    # NOTE: selection normalization to unit mean within its support.
+    selec_mesh /= selec_mesh[selec_mesh > 0].mean()
+    return selec_mesh
+
+def minmax_box(pos):
     """
     Return box configuration (center, rotvec, shape) for a given set of positions.
     The box is simply computed from the min and max of the positions along each axis.
@@ -828,7 +801,7 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_orde
     """
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
-    box_center, box_rotvec, box_shape = simple_box(pos)
+    box_center, box_rotvec, box_shape = minmax_box(pos)
     mesh_shape, cell_length = get_mesh_shape(box_shape, cell_budget, padding)
     box_shape = mesh_shape * cell_length # box_shape update due to rounding and padding
     box_rot = Rotation.from_rotvec(box_rotvec)
@@ -842,7 +815,11 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_orde
 
 
 def set_radial_count(mesh, rmesh, redges, rcounts):
-    # assert len(redges) == len(rcounts) + 1
+    """
+    Multiply mesh by radial counts
+    where radiuses are given by rmesh and radial bins are given by redges.
+    """
+    assert len(redges) == len(rcounts) + 1
     xs = jnp.stack((rcounts, redges[:-1], redges[1:]), axis=-1)
 
     def step(carry, x):

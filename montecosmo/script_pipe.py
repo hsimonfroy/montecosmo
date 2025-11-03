@@ -238,6 +238,7 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
 
     # overwrite = True
     overwrite = False
+    start = 1
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
         print("Warming up 2...")
         # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
@@ -261,18 +262,15 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
 
         pdump(state, save_path+"_warm2_state.p")
         pdump(config, save_path+"_conf.p")
-        start = 1
 
     elif not os.path.exists(save_path+"_last_state.p") or overwrite:
         state = pload(save_path+"_warm2_state.p")
         config = pload(save_path+"_conf.p")
-        start = 1
 
     else:
         state = pload(save_path+"_last_state.p")
         config = pload(save_path+"_conf.p")
-        start = 1
-        while os.path.exists(save_path+f"_{start}.npz") and start <= end:
+        while os.path.exists(save_path+f"_{start}.npz") and start <= n_runs:
             start += 1
         print(f"Resuming at run {start}...")
 
@@ -281,9 +279,8 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
     run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
     key = jr.key(42)
 
-    end = start + n_runs - 1
-    for i_run in tqdm(range(start, end + 1)):
-        print(f"run {i_run}/{end}")
+    for i_run in tqdm(range(start, n_runs + 1)):
+        print(f"run {i_run}/{n_runs}")
         key, run_key = jr.split(key, 2)
         state, samples = run_fn(jr.split(run_key, n_chains), state, config)
         
