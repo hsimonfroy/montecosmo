@@ -239,8 +239,13 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, pow, *args, **kwargs)
     else:
-        scis = credint(pow, fill, axis=0)
-        out = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-fill)**.5} | kwargs)
+        fill = np.atleast_1d(fill)
+        out, color = [], None
+        for f in fill:
+            scis = credint(pow, f, axis=0)
+            collec = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-f)**.5, 'color': color} | kwargs)
+            color = collec.get_facecolor()
+            out.append(collec)
     plt.xlabel("$k$ [$h$/Mpc]")
     return out
 
@@ -249,8 +254,13 @@ def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, trans, *args, **kwargs)
     else:
-        scis = credint(trans, fill, axis=0)
-        out = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-fill)**.5} | kwargs)
+        fill = np.atleast_1d(fill)
+        out, color = [], None
+        for f in fill:
+            scis = credint(trans, f, axis=0)
+            collec = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-f)**.5, 'color': color} | kwargs)
+            color = collec.get_facecolor()
+            out.append(collec)
     if log:
         plt.xscale('log')
     plt.yscale('log'), plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
@@ -261,8 +271,13 @@ def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, coh, *args, **kwargs)
     else:
-        scis = credint(coh, fill, axis=0)
-        out = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-fill)**.5} | kwargs)
+        fill = np.atleast_1d(fill)
+        out, color = [], None
+        for f in fill:
+            scis = credint(coh, f, axis=0)
+            collec = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-f)**.5, 'color': color} | kwargs)
+            color = collec.get_facecolor()
+            out.append(collec)
     if log:
         plt.xscale('log')
     plt.yscale('log'), plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")

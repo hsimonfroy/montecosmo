@@ -352,14 +352,14 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape,
 
 def b_phi(b1, p=1., delta_c=1.686):
     """
-    Primordial scale-dependant bias parameter. See []()
+    Primordial scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
     """
     # 2 * delta_c * (bE1 - p) and bE1 = 1 + b1
     return 2 * delta_c * (1 + b1 - p)
 
 def b_phi_delta(b1, b2, bp, delta_c=1.686):
     """
-    Primordial-density scale-dependant bias parameter. See []()
+    Primordial-density scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
     """
     # bp - (bE1 - 1) + delta_c * (bE2 - 8 / 21 * (bE1 - 1)) and bE2 = b2 + 8/21 * b1
     # TODO: check for the factor 2

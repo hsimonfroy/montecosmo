@@ -16,12 +16,14 @@ save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/pickles/") #
 # load_dir = Path("./scratch/abacus_c0_i0_z08_lrg/")
 
 
-task_id = int(os.environ['SLURM_ARRAY_TASK_ID'])
+task_id = os.environ['SLURM_ARRAY_TASK_ID']
 print("SLURM_ARRAY_TASK_ID:", task_id)
-mesh_length = np.array([8, 16, 32, 64, 128, 256])[task_id]
-print("mesh_length:", mesh_length)
+task_id = int(task_id)
+mesh_length = int(np.array([8, 16, 32, 64, 128, 256])[task_id % 10])
+evolution = str(np.array(["lpt", "nbody"])[task_id // 10 % 10])
+print("mesh_length:", mesh_length, "evolution:", evolution)
 
-save_dir = save_dir / f"2lpt_{mesh_length:d}"
+save_dir = save_dir / f"fast_{evolution}_{mesh_length:d}"
 save_path = save_dir / "test"
 save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -41,7 +43,7 @@ model = FieldLevelModel(**default_config |
                         'cell_length': cell_length, # in Mpc/h
                         'box_center': (0.,0.,cell_length * mesh_length), # in Mpc/h
                         'box_rotvec': (0.,0.,0.), # rotation vector in radians
-                        'evolution': 'lpt',
+                        'evolution': evolution,
                         'a_obs': 0.5, # light-cone if None
                         'curved_sky': True, # curved vs. flat sky
                         'ap_auto': None, # parametrized AP vs. auto AP
@@ -70,7 +72,7 @@ truth = {
     'fNL': 0.,
     'alpha_iso': 1.,
     'alpha_ap': 1.,
-    'ngbars': 1e-3,
+    'ngbars': 5e-4,
     }
 
 
@@ -87,7 +89,7 @@ jnp.savez(save_dir / "truth.npz", **truth)
 ##########
 # Warmup #
 ##########
-n_samples, n_runs, n_chains = 128 if model.mesh_shape[0]==128 else 32, 64 if model.mesh_shape[0]==128 else 32, 8
+n_samples, n_runs, n_chains = 32 if model.mesh_shape[0]==128 else 128, 64 if model.mesh_shape[0]==128 else 32, 8
 print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
 tune_mass = True
 
@@ -231,20 +233,4 @@ for i_run in tqdm(range(start, n_runs + 1)):
 from montecosmo.script import load_model, warmup1, warmup2run, make_chains
 make_chains(save_path, start=1, end=100)
 
-
-print("Running...")
-run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
-key = jr.key(42)
-
-end = start + n_runs - 1
-for i_run in tqdm(range(start, end + 1)):
-    print(f"run {i_run}/{end}")
-    key, run_key = jr.split(key, 2)
-    state, samples = run_fn(jr.split(run_key, n_chains), state, config)
-    
-    print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
-    jnp.savez(save_path+f"_{i_run}.npz", **samples)
-    pdump(state, save_path+"_last_state.p")
-
-from montecosmo.script import load_model, warmup1, warmup2run, make_chains
-make_chains(save_path, start=1, end=100)
+raise
