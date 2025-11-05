@@ -104,7 +104,7 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
                             'paint_order':2, # order of interpolation kernel
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
-                            'init_power': load_dir / f'init_pmesh_{mesh_length}.npy' if not eh_approx else None, # if None, use EH power
+                            'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None, # if None, use EH power
                             'init_oversamp':1., # initial mesh 1D oversampling factor
                             'ptcl_oversamp':1., # particle grid 1D oversampling factor
                             'paint_oversamp':1., # painted mesh 1D oversampling factor
@@ -341,21 +341,22 @@ def compare_chains_dir(save_dir, labels):
 if __name__ == '__main__':
     print("Demat")
     mesh_lengths = [32, 64, 128]
-    eh_approxs = [True, False]
+    eh_approxs = [False]
     cuts = [False]
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
             for cut in cuts:
                 print(f"\n--- mesh_length {mesh_length}, eh_approx {eh_approx}, cut {cut} ---")
-                # infer_model(mesh_length, eh_approx=eh_approx, cut=cut)
+                infer_model(mesh_length, eh_approx=eh_approx, cut=cut)
 
-    overwrite = False
-    overwrite = True
-    save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/lpt_128"
-    make_chains_dir(save_dir, start=3, end=100, thinning=1, overwrite=overwrite)
-    save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
-    compare_chains_dir(save_dir, labels=["128", "32", "64"])
+    # overwrite = False
+    # overwrite = True
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/lpt_128"
+    # make_chains_dir(save_dir, start=3, end=100, thinning=1, overwrite=overwrite)
+
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
+    # compare_chains_dir(save_dir, labels=["128", "32", "64"])
 
     spawn(queue, spawn=True)
 

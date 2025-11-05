@@ -13,7 +13,7 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug, lax
 from jax.scipy.spatial.transform import Rotation
 
 from jax_cosmo import Cosmology
-from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, add_png,
+from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias,
                                tophat_selection, gennorm_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
@@ -39,7 +39,8 @@ default_config={
         # 'box_shape':3 * (320.,), # in Mpc/h
         'k_cut': None, # in h/Mpc, if None, k_nyquist, if jnp.inf, no cut
         # Init
-        'init_power':None, # if None, use EH approx, if str or Path, path to initial power mesh file
+        'init_power':None, # if None, use EH approx, if str or Path, path to initial (wavenumber, power) file
+        'png': None, # if None, no PNG
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_steps':5, # number of N-body steps
@@ -63,8 +64,8 @@ default_config={
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':'{\\Omega}_m', 
-                            'loc':0.3111,
-                            # 'loc':0.3137721,
+                            # 'loc':0.3111,
+                            'loc':0.3137721,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -85,8 +86,8 @@ default_config={
                 #             'high': 1.},
                 'sigma8': {'group':'cosmo',
                             'label':'{\\sigma}_8',
-                            'loc':0.8102,
-                            # 'loc':0.8,
+                            # 'loc':0.8102,
+                            'loc':0.8,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.,
@@ -272,7 +273,7 @@ class Model():
 
     def condition(self, data={}, from_base=False):
         """
-        Substitue rnadom variables by their provided values, 
+        Substitute random variables by their provided values, 
         optionally reparametrizing base values into sample values.
         Values are stored in attribute data.
         """
@@ -375,6 +376,7 @@ class FieldLevelModel(Model):
     k_cut:None|float
     # Init  
     init_power:None|str|Path
+    png:None|str
     # Evolution
     evolution:str
     nbody_steps:int
@@ -426,10 +428,10 @@ class FieldLevelModel(Model):
 
         # Initial power spectrum
         if self.init_power is None:
-            self.init_pmesh = None
+            self.init_kpow = None
         elif isinstance(self.init_power, (str, Path.__base__)):
             self.init_power = str(self.init_power) # cast to str to allow yaml saving
-            self.init_pmesh = np.load(self.init_power)
+            self.init_kpow = np.load(self.init_power)
         else:
             raise ValueError("init_power should be None, str, or Path.")
         
@@ -531,7 +533,8 @@ class FieldLevelModel(Model):
     def evolve(self, params:tuple):
         cosmology, bias, ap, syst, init = params
 
-        # init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_shape) ######
+        if self.png is not None:
+            init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_shape)
 
         if self.evolution=='kaiser':
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_shape, self.mesh_shape,
@@ -579,7 +582,7 @@ class FieldLevelModel(Model):
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_shape, **bias, **init, read_order=1)
+            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_shape, **init, **bias, png=self.png, read_order=1)
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
@@ -639,30 +642,36 @@ class FieldLevelModel(Model):
         mesh, syst = params
 
         if self.observable == 'field':
-            obs = mesh2masked(mesh, self.mask)
-            selec = mesh2masked(self.selec_mesh, self.mask)
-            obs *= selec
-            # obs /= obs.mean()
+            mesh -= 1
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
-
-            # ngbars_ = sample('ngbars_', dist.Normal(jnp.zeros(len(self.redges)-1), 1e2))
-            # ngbars = (1e-5 * ngbars_ + 1e-3)
-            # rcounts = ngbars * self.cell_length**3
-
             rcounts = syst['ngbars'] * self.cell_length**3
-            mean_count = rcounts.mean()            
-            obs = set_radial_count(obs, self.rmasked, self.redges, rcounts)
+            mean_count = rcounts.mean()
+            obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
 
-            # Gaussian noise
-            obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
-            # obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5 / 1e9))
-            # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
-            # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
+            # obs = sample('obs', dist.Poisson(jnp.abs(mesh + 1) * mean_count)) / mean_count - 1
+            return obs
 
-            # Poisson noise
-            # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
-            return obs 
+
+        # if self.observable == 'field':
+        #     obs = mesh2masked(mesh, self.mask)
+        #     selec = mesh2masked(self.selec_mesh, self.mask)
+        #     obs *= selec
+        #     # obs /= obs.mean()
+        #     # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
+        #     # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
+
+        #     rcounts = syst['ngbars'] * self.cell_length**3
+        #     mean_count = rcounts.mean()            
+        #     obs = set_radial_count(obs, self.rmasked, self.redges, rcounts)
+
+        #     # Gaussian noise
+        #     obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
+        #     # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
+        #     # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
+
+        #     # Poisson noise
+        #     # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
+        #     return obs 
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
@@ -807,7 +816,8 @@ class FieldLevelModel(Model):
         if self.init_power is None:
             pmesh = lin_power_mesh(cosmo, self.mesh_shape, self.box_shape)
         else:
-            pmesh = self.init_pmesh * (cosmo.sigma8 / self.cosmo_fid.sigma8)**2
+            pmesh = kpower_mesh(self.init_kpow, self.mesh_shape, self.box_shape, transfer=cosmo.sigma8)
+            # NOTE: init_kpow normalized to sigma8=1, so scale by current sigma8
 
         if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.mesh_shape)
@@ -825,7 +835,7 @@ class FieldLevelModel(Model):
         
         elif self.precond=='kaiser_dyn':
             bE = 1 + bias['b1']
-            count = syst['ngbar'] * self.cell_length**3
+            count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.mesh_shape, self.los_fid)
             selec = (self.selec_mesh**2).mean()**.5
 
@@ -997,8 +1007,8 @@ class FieldLevelModel(Model):
         # because many high-wavevector amplitudes can be set to high.
         post_mesh *= scale_field 
 
-        # start_params = self.loc_fid | {'init_mesh': post_mesh}
-        start_params = {k: self.loc_fid[k] for k in self.loc_fid.keys() - self.data.keys()} | {'init_mesh': post_mesh}
+        start_params = {k: self.loc_fid[k] for k in self.loc_fid.keys() - self.data.keys()}
+        start_params |= {k: post_mesh for k in {'init_mesh'} - self.data.keys()}
         if base:
             return start_params
         else:

@@ -121,7 +121,7 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
     # Initialize
-    box_center = jnp.asarray(box_center)
+    box_center = np.asarray(box_center)
     los = safe_div(box_center, np.linalg.norm(box_center))
     ells = np.atleast_1d(poles)
 

@@ -350,7 +350,9 @@ def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2, grad_fd=False, lap_
     if isinstance(mesh, tuple):
         mesh = jnp.fft.rfftn(paint(pos, mesh, order=read_order))
         # If painted field, double deconv to account for both painting and reading 
-        # mesh /= paint_kernel(kvec, order=paint_order)**2
+        # kvec = rfftk(ch2rshape(mesh.shape))
+        # mesh /= paint_kernel(kvec, order=read_order)**2
+        # print("deconv")
 
     # Compute gravitational potential
     kvec = rfftk(ch2rshape(mesh.shape))

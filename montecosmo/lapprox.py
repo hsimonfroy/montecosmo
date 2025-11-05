@@ -29,10 +29,10 @@ def cov_x_from_pot_x_y(pot_fn, x, y, method='exact', chunk_size=None, eps_diag=1
     if chunk_size is None:
         chunk_size = n
     if method == 'exact':
-        diag_D = diag_in_chunks(partial(pot_fn, x), y, chunk_size=chunk_size) # NOTE: JAX>=0.4.32 for batch_size
-        # diag_D = diag_exact(partial(pot_fn, x), y, chunk_size=chunk_size)
+        diag_D = hess_diag_in_chunks(partial(pot_fn, x), y, chunk_size=chunk_size) # NOTE: JAX>=0.4.32 for batch_size
+        # diag_D = hess_diag_exact(partial(pot_fn, x), y, chunk_size=chunk_size)
     elif method == 'hutchinson':
-        diag_D = diag_hutchinson(partial(pot_fn, x), y, n_probes=chunk_size, seed=42)
+        diag_D = hess_diag_hutchinson(partial(pot_fn, x), y, n_probes=chunk_size, seed=42)
     diag_Dinv = 1.0 / (diag_D + eps_diag)  # shape (n,) regularized
 
     # 3) Define function that computes (B D^-1 B^T) v for arbitrary v in R^m
@@ -52,7 +52,7 @@ def cov_x_from_pot_x_y(pot_fn, x, y, method='exact', chunk_size=None, eps_diag=1
     cov_x = jnp.linalg.inv(schur)
     return cov_x, schur
 
-def diag_in_chunks(pot_fn, y, chunk_size=64):
+def hess_diag_in_chunks(pot_fn, y, chunk_size=64):
     def body(_, ids):
         # For each index k in idxs, form unit basis e_k and jvp
         def per_k(k):
@@ -71,7 +71,7 @@ def diag_in_chunks(pot_fn, y, chunk_size=64):
     _, diag = lax.scan(body, None, ids)
     return diag.reshape(-1)[:n]
 
-def diag_exact(pot_fn, y, chunk_size=64):
+def hess_diag_exact(pot_fn, y, chunk_size=64):
     def fn(idx):
         # For each index k in idxs, form unit basis e_k and jvp
         e = jnp.zeros_like(y).at[idx].set(1.0)
@@ -81,7 +81,7 @@ def diag_exact(pot_fn, y, chunk_size=64):
     
     return lax.map(fn, jnp.arange(y.shape[0]), batch_size=chunk_size) # NOTE: JAX>=0.4.32 for batch_size
 
-def diag_hutchinson(pot_fn, y, n_probes=64, seed=42):
+def hess_diag_hutchinson(pot_fn, y, n_probes=64, seed=42):
     if isinstance(seed, int):
         seed = jr.key(seed)
     seeds = jr.split(seed, n_probes)

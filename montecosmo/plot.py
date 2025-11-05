@@ -82,6 +82,8 @@ def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1.,
         The limit values for colormap. 
         * If float, specifies the proportion of values discarded bilateraly. 
         * If tuple, specifies (vmin, vmax).
+    transpose : bool, optional
+        If True, transpose the x and y axes in the plot.
     **kwargs : keyword arguments
         Additional arguments passed to `plt.pcolormesh`.
 
