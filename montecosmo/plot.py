@@ -241,8 +241,9 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, pow, *args, **kwargs)
     else:
+        out = [] 
         fill = np.atleast_1d(fill)
-        out, color = [], None
+        color = plt.gca()._get_patches_for_fill.get_next_color()
         for f in fill:
             scis = credint(pow, f, axis=0)
             collec = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-f)**.5, 'color': color} | kwargs)
@@ -256,8 +257,9 @@ def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, trans, *args, **kwargs)
     else:
+        out = [] 
         fill = np.atleast_1d(fill)
-        out, color = [], None
+        color = plt.gca()._get_patches_for_fill.get_next_color()
         for f in fill:
             scis = credint(trans, f, axis=0)
             collec = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-f)**.5, 'color': color} | kwargs)
@@ -273,8 +275,9 @@ def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, coh, *args, **kwargs)
     else:
+        out = [] 
         fill = np.atleast_1d(fill)
-        out, color = [], None
+        color = plt.gca()._get_patches_for_fill.get_next_color()
         for f in fill:
             scis = credint(coh, f, axis=0)
             collec = plt.fill_between(ks[0], *scis.T, *args, **{'alpha':(1-f)**.5, 'color': color} | kwargs)

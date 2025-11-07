@@ -39,10 +39,11 @@ Planck18 = partial(Cosmology,
 
 # from cosmoprimo.fiducial import AbacusSummit; AbacusSummit(0).get_params('cosmology')
 AbacusSummit0 = partial(Cosmology,
-    # Omega_m = 0.3137721
+    # Omega_m = 0.3151917236644108
+    # Omega_cb = 0.3137721
     Omega_c=0.26447041,
     Omega_b=0.04930169,
-    sigma8=0.8,
+    sigma8=0.8076353990239834,
     Omega_k=0.0,
     h=0.6736,
     n_s=0.9649,

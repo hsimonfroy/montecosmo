@@ -40,7 +40,7 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 @tm.python_app
-def infer_model(mesh_length, eh_approx=True, cut=False):
+def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     from datetime import datetime
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().isoformat()}")
@@ -63,10 +63,11 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacs0") # Perlmutter
     load_dir = Path("./scratch/abacus_c0_i0_z08_lrg/")
 
-    save_dir += f"_eh{eh_approx:d}_cut{cut:d}"
+    save_dir += f"_eh{eh_approx:d}_ovsamp{ovsamp:d}"
     save_dir = save_dir / f"lpt_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
+    print(f"SAVE DIR: {save_dir}")
 
     jconfig.update("jax_compilation_cache_dir", str(save_dir / "jax_cache/"))
     jconfig.update("jax_persistent_cache_min_entry_size_bytes", -1)
@@ -84,12 +85,12 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
     selection = None
     mesh_length = round(cell_budget**(1/3))
 
-    cut_config = {
+    ovsamp_config = {
         'init_oversamp':7/4,
         'ptcl_oversamp':7/4,
         'paint_oversamp':3/2,
-        'k_cut':None,    
-        } if cut else {}
+        'k_cut':jnp.inf,    
+        } if ovsamp else {}
 
     model = FieldLevelModel(**default_config | 
                             {'mesh_shape': 3*(mesh_length,), 
@@ -109,30 +110,42 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
                             'ptcl_oversamp':1., # particle grid 1D oversampling factor
                             'paint_oversamp':1., # painted mesh 1D oversampling factor
                             'k_cut':jnp.inf,
-                            } | cut_config)
+                            } | ovsamp_config)
 
     print(model)
     # model.render()
     truth = {
         'Omega_m': 0.3137721, 
-        # 'Omega_c': 0.3-0.04860,
-        # 'Omega_b': 0.04860,
-        'sigma8': 0.8,
+        'sigma8': 0.8076353990239834,
         # 'b1': 1.,
-        # 'b2': 0.,
-        # 'bs2': 0.,
-        # 'bn2': 0.,
+        'b1': 0.,
+        'b2': 0.,
+        'bs2': 0.,
+        'bn2': 0.,
         'bnp': 0.,
         'fNL': 0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
-        # 'ngbars': 0.00084,
+        'ngbars': 0.00084,
         }
-    mesh_true = jnp.load(load_dir / f"init_mesh_{model.mesh_shape[0]}.npy")
-    truth = truth | {'init_mesh': jnp.fft.rfftn(mesh_true)}
+    init_mesh = jnp.load(load_dir / f'init_mesh_{mesh_length}.npy')
+    truth |= {'init_mesh': jnp.fft.rfftn(init_mesh)}
+    del init_mesh
 
-    tracer_mesh = jnp.load(load_dir / f"tracer_mesh_6746545_{model.mesh_shape[0]}.npy")
-    truth = truth | {'obs': tracer_mesh}
+    # Abacus-truth
+    obs_mesh = jnp.load(load_dir / f'fin_paint_{mesh_length}.npy')
+    # obs_mesh = jnp.load(load_dir / f'tracer_mesh_6746545_{mesh_length}.npy')
+
+    obs_mesh -= 1
+    mean_count = truth['ngbars'] * model.cell_length**3
+    if poisson:
+        obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count) / mean_count - 1
+    else:
+        obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) / mean_count**.5
+    truth |= {'obs': obs_mesh}
+    del obs_mesh
+
+    # # Self-specified
     # truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
 
     model.save(save_dir / "model.yaml")    
@@ -176,13 +189,13 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh
     from montecosmo.bricks import lin_power_interp
 
-    mesh_true = truth.pop('init_mesh')
-    kpow_true = model.spectrum(mesh_true)
-    kptcs_init = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x)['init_mesh']))(params_start)
-    kptcs_warm = vmap(lambda x: model.powtranscoh(mesh_true, model.reparam(x)['init_mesh']))(state.position)
-    del mesh_true # We won't need it anymore
+    init_mesh = truth.pop('init_mesh')
+    kpow_true = model.spectrum(init_mesh)
+    kptcs_init = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(params_start)
+    kptcs_warm = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(state.position)
+    del init_mesh # We won't need it anymore
     kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid)(kptcs_warm[0][0])
-    prob = 0.95
+    prob = [0.68, 0.95]
 
     plt.figure(figsize=(12, 4), layout='constrained')
     def plot_kptcs(kptcs, label=None):
@@ -220,7 +233,8 @@ def infer_model(mesh_length, eh_approx=True, cut=False):
     from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
-    obs = ['obs','fNL','bnp','alpha_iso','alpha_ap']
+    obs = ['obs','fNL','bnp','alpha_iso','alpha_ap','b1','b2','bs2','bn2']
+    # obs = ['obs','fNL','bnp','alpha_iso','alpha_ap']
     obs += ['Omega_m'] if not eh_approx else []
     # obs = ['obs','Omega_m','sigma8','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
     # obs = ['obs','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
@@ -342,13 +356,17 @@ if __name__ == '__main__':
     print("Demat")
     mesh_lengths = [32, 64, 128]
     eh_approxs = [False]
-    cuts = [False]
+    ovsamps = [True, False]
+    poissons = [True, False]
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
-            for cut in cuts:
-                print(f"\n--- mesh_length {mesh_length}, eh_approx {eh_approx}, cut {cut} ---")
-                infer_model(mesh_length, eh_approx=eh_approx, cut=cut)
+            for ovsamp in ovsamps:
+                for poisson in poissons:
+                    
+                    if not (not ovsamp and poisson): # avoid poisson noise and no oversampling
+                        print(f"\n--- mesh_length {mesh_length}, eh_approx {eh_approx}, ovsamp {ovsamp}, poisson {poisson} ---")
+                        infer_model(mesh_length, eh_approx=eh_approx, ovsamp=ovsamp, poisson=poisson)
 
     # overwrite = False
     # overwrite = True

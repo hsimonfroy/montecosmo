@@ -40,9 +40,10 @@ default_config={
         'k_cut': None, # in h/Mpc, if None, k_nyquist, if jnp.inf, no cut
         # Init
         'init_power':None, # if None, use EH approx, if str or Path, path to initial (wavenumber, power) file
-        'png': None, # if None, no PNG
+        'png': None, # if None, no PNG, TODO: choose PNG parametrization
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
+        'nbody_a_start':0., # starting scale factor for N-body, following LPT
         'nbody_steps':5, # number of N-body steps
         'nbody_snapshots':None, # number of N-body snapshots to save, if None, only save last
         'lpt_order':2, # order of LPT displacement
@@ -56,7 +57,7 @@ default_config={
         'poles':(0,2,4), # multipoles order to compute, if observable is 'powspec'
         'a_obs':None, # if None, light-cone
         'curved_sky':True, # curved vs. flat sky
-        'ap_auto': True, # auto AP vs. parametric AP
+        'ap_auto': None, # auto AP vs. parametric AP
         'selection':None, # if float, padded fraction, if str or Path, path to selection mesh file
         'n_rbins':None, # if None, set to maximum number of radial bins
         # Latents
@@ -64,8 +65,7 @@ default_config={
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':'{\\Omega}_m', 
-                            # 'loc':0.3111,
-                            'loc':0.3137721,
+                            'loc':0.3111,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -86,15 +86,15 @@ default_config={
                 #             'high': 1.},
                 'sigma8': {'group':'cosmo',
                             'label':'{\\sigma}_8',
-                            # 'loc':0.8102,
-                            'loc':0.8,
+                            'loc':0.8102,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.,
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
                             'label':'{b}_1',
-                            'loc':1.,
+                            # 'loc':1., ###########
+                            'loc':0.,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             },
@@ -575,7 +575,7 @@ class FieldLevelModel(Model):
                 gxy_mesh *= (self.mesh_shape / self.ptcl_shape).prod()
     
         else:
-            # Create regular grid of particles, and get their scale factors and line-of-sights
+            # Create regular grid of particles, and get their scale factors
             init = tree.map(partial(chreshape, shape=r2chshape(self.init_shape)), init)
             pos = regular_pos(self.init_shape, self.ptcl_shape)
             _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_shape, self.init_shape, 
@@ -622,6 +622,7 @@ class FieldLevelModel(Model):
             # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
 
             gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, deconv=True)
+            # gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, deconv=False)
             gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.mesh_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
@@ -648,7 +649,7 @@ class FieldLevelModel(Model):
             mean_count = rcounts.mean()
             obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
 
-            # obs = sample('obs', dist.Poisson(jnp.abs(mesh + 1) * mean_count)) / mean_count - 1
+            # sample('obs', dist.Poisson(jnp.abs(mesh + 1) * mean_count)) / mean_count - 1
             return obs
 
 

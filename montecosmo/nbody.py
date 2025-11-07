@@ -376,7 +376,7 @@ def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, lap_fd=False, grad_fd=Fa
     for i in range(3):
         # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
         hess_ii = gradient_kernel(kvec, i, grad_fd)**2
-        hess_ii = jnp.fft.irfftn(hess_ii * pot) # TODO: to pad
+        hess_ii = jnp.fft.irfftn(hess_ii * pot)
         delta2 += hess_ii * hesses 
         hesses += hess_ii
 
