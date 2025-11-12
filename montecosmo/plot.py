@@ -62,7 +62,7 @@ def mean_proj(mesh, ids:float|slice|np.ndarray=1., axis=-1):
     return np.moveaxis(mesh, axis, -1)[...,ids].mean(-1)
 
 
-def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1., 
+def plot_mesh(mesh, box_size=None, ids:float|slice|np.ndarray=1., 
               axis=-1, vlim:float|tuple[float,float]=1e-4, transpose=False, **kwargs):
     """
     Plot a 2D mean projection of a 3D mesh along given axis.
@@ -71,7 +71,7 @@ def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1.,
     ----------
     mesh : ndarray
         The 3D mesh to be plotted.
-    box_shape : tuple of int, optional
+    box_size : tuple of int, optional
         The shape of the mesh physical box in Mpc/h. If None, defaults to mesh shape.
     ids : float, slice, or ndarray, optional
         Indices to be averaged along the given axis of the mesh. 
@@ -95,10 +95,10 @@ def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1.,
     mesh_shape = np.array(mesh.shape)
     axids = [0,1,2]
     axids.remove(axids[axis])
-    if box_shape is None:
-        box_shape = mesh_shape
+    if box_size is None:
+        box_size = mesh_shape
     else:
-        box_shape = np.asarray(box_shape)
+        box_size = np.asarray(box_size)
         xlab, ylab = np.array(["x", "y", "z"])[axids]
         if transpose:
             xlab, ylab = ylab, xlab
@@ -112,7 +112,7 @@ def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1.,
         vlim = np.quantile(mesh2d, [vlim/2, 1-vlim/2])
     vmin, vmax = vlim
 
-    xb, yb = box_shape[axids]
+    xb, yb = box_size[axids]
     xm, ym = mesh_shape[axids]
     xs, ys = np.linspace(0, xb, xm, endpoint=False), np.linspace(0, yb, ym, endpoint=False)
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
@@ -123,7 +123,7 @@ def plot_mesh(mesh, box_shape=None, ids:float|slice|np.ndarray=1.,
     return quad
 
 
-def anim_meshes(meshes, box_shape=None, vlim:float|tuple[float,float]=1e-4, 
+def anim_meshes(meshes, box_size=None, vlim:float|tuple[float,float]=1e-4, 
                 cmap='viridis', pause=10):
     """
     Animate a list of 2D meshes.
@@ -137,7 +137,7 @@ def anim_meshes(meshes, box_shape=None, vlim:float|tuple[float,float]=1e-4,
     elif isinstance(vlim, float):
         vlim = np.quantile(meshes, [vlim/2, 1-vlim/2])
 
-    quad = plot_mesh(meshes[0,...,None], box_shape, 1., vlim, cmap)
+    quad = plot_mesh(meshes[0,...,None], box_size, 1., vlim, cmap)
     plt.colorbar()
 
     def update(i):
@@ -185,10 +185,10 @@ def scan_mesh3d(mesh, n:int|float=1/16):
     return np.moveaxis(circ_mean(mesh, n, axis=-1), -1, 0)
 
 
-def anim_scan(mesh, box_shape=None, n:int|float=1/16, vlim:float|tuple[float,float]=1e-4, 
+def anim_scan(mesh, box_size=None, n:int|float=1/16, vlim:float|tuple[float,float]=1e-4, 
               cmap='viridis', pause=0):
     scan = scan_mesh3d(mesh, n)
-    anim_meshes(scan, box_shape, vlim=vlim, cmap=cmap, pause=pause)   
+    anim_meshes(scan, box_size, vlim=vlim, cmap=cmap, pause=pause)   
     
 
 

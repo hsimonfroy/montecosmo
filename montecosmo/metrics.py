@@ -4,7 +4,7 @@ from functools import partial
 
 from scipy.special import legendre, lpmv, factorial
 from jaxpm.growth import growth_rate, growth_factor
-from montecosmo.nbody import rfftk, paint_kernel
+from montecosmo.nbody import rfftk, rectangular_hat
 from montecosmo.utils import safe_div, ch2rshape, cart2radecrad
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
@@ -17,13 +17,13 @@ from jax_cosmo import Cosmology
 ############
 # Spectrum #
 ############
-# def power_spectrum(mesh, box_shape, kmin, dk, los=[0,0,1], multipoles=0, kcount=False, galaxy_density=1):
+# def power_spectrum(mesh, box_size, kmin, dk, los=[0,0,1], multipoles=0, kcount=False, galaxy_density=1):
 #     # Initialize values related to powerspectra (wavenumber bins and edges)
 #     mesh_shape = np.array(mesh.shape)
-#     box_shape, los = np.asarray(box_shape), np.asarray(los)
+#     box_size, los = np.asarray(box_size), np.asarray(los)
 #     los /= np.linalg.norm(los)
 #     multipoles = np.atleast_1d(multipoles)
-#     dig, ksum, kedges, mumesh = _initialize_pk(mesh_shape, box_shape, kmin, dk, los)
+#     dig, ksum, kedges, mumesh = _initialize_pk(mesh_shape, box_size, kmin, dk, los)
 
 #     # Square modulus of FFT
 #     field_k = jnp.fft.fftn(mesh, norm='ortho')
@@ -35,7 +35,7 @@ from jax_cosmo import Cosmology
 #         real_weights = field2_k * (2*ell+1) * legendre(ell)(mumesh)
 #         Psum = Psum.at[i_ell].set(jnp.bincount(dig, weights=real_weights.reshape(-1), length=kedges.size+1))
 #     # Normalization and convertion from cell units to (Mpc/h)^3
-#     P = (Psum / ksum)[:,1:-1] * (box_shape / mesh_shape).prod()
+#     P = (Psum / ksum)[:,1:-1] * (box_size / mesh_shape).prod()
     
 #     covs = ksum[1:-1]
 #     if False:
@@ -58,13 +58,13 @@ from jax_cosmo import Cosmology
 #         return pk    
 
 
-def _waves(mesh_shape, box_shape, kedges, los):
+def _waves(mesh_shape, box_size, kedges, los):
     """
     Parameters
     ----------
     mesh_shape : tuple of int
         Shape of the mesh grid.
-    box_shape : tuple of float
+    box_size : tuple of float
         Physical dimensions of the box.
     kedges : None, int, float, or list
         * If None, set dk to sqrt(dim) times the fundamental wavenumber.
@@ -88,9 +88,9 @@ def _waves(mesh_shape, box_shape, kedges, los):
     """
     if isinstance(kedges, (type(None), int, float)):
         kmin = 0.
-        kmax = np.pi * (mesh_shape / box_shape).min() # = knyquist
+        kmax = np.pi * (mesh_shape / box_size).min() # = knyquist
         if kedges is None:
-            dk = len(mesh_shape)**.5 * 2 * np.pi / box_shape.min() # sqrt(d) times fundamental
+            dk = len(mesh_shape)**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
             n_kedges = max(int((kmax - kmin) / dk), 1)
         if isinstance(kedges, int):
             n_kedges = kedges # final number of bins will be nedges-1
@@ -101,7 +101,7 @@ def _waves(mesh_shape, box_shape, kedges, los):
         kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
 
     kvec = rfftk(mesh_shape) # cell units
-    kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_shape)] # h/Mpc physical units
+    kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_size)] # h/Mpc physical units
     kmesh = sum(ki**2 for ki in kvec)**.5
 
     mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
@@ -115,7 +115,7 @@ def _waves(mesh_shape, box_shape, kedges, los):
     return kedges, kmesh, mumesh, rfftw
 
 
-def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None, 
+def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, 
              deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
@@ -136,19 +136,19 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
         mesh_shape = np.array(ch2rshape(mesh.shape))
 
     kvec = rfftk(mesh_shape) # cell units
-    mesh /= paint_kernel(kvec, order=deconv[0])
+    mesh /= rectangular_hat(kvec, order=deconv[0])
 
     if mesh2 is None:
         mmk = mesh.real**2 + mesh.imag**2
     else:
         if jnp.isrealobj(mesh2):
             mesh2 = jnp.fft.rfftn(mesh2)
-        mesh2 /= paint_kernel(kvec, order=deconv[1])
+        mesh2 /= rectangular_hat(kvec, order=deconv[1])
         mmk = mesh * mesh2.conj()
 
     # Binning
-    box_shape = mesh_shape if box_shape is None else np.asarray(box_shape)
-    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_shape, kedges, los)
+    box_size = mesh_shape if box_size is None else np.asarray(box_size)
+    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, los)
     n_bins = len(kedges) + 1
     dig = np.digitize(kmesh.reshape(-1), kedges)
 
@@ -172,7 +172,7 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
             psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)[1:-1]
             psum = (psum_real**2 + psum_imag**2)**.5
         pow = pow.at[i_ell].set(psum)
-    pow *= (box_shape / mesh_shape**2).prod() / kcount # from cell units to [Mpc/h]^3
+    pow *= (box_size / mesh_shape**2).prod() / kcount # from cell units to [Mpc/h]^3
 
     # kpow = jnp.concatenate([kavg[None], pk])
     if poles==0:
@@ -182,27 +182,27 @@ def spectrum(mesh, mesh2=None, box_shape=None, kedges:int|float|list=None,
 
 
 
-def transfer(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+def transfer(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
-    pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
+    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges)
     ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, (pow1 / pow0)**.5
 
-def coherence(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+def coherence(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
-    pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
+    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges)
     ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
     ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
     return ks, pow01 / (pow0 * pow1)**.5
 
-def powtranscoh(mesh0, mesh1, box_shape, kedges:int|float|list=None, deconv=(0, 0)):
+def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
-    pow_fn = partial(spectrum, box_shape=box_shape, kedges=kedges)
+    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges)
     ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
     ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
     ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
@@ -250,14 +250,14 @@ def real_sph_harm(l, m, theta, phi):
     """
     m_abs = abs(m)
     norm = ((2*l+1) / (4*np.pi) * factorial(l-m_abs) / factorial(l+m_abs))**.5
-    P_lm = lpmv(m_abs, l, np.cos(theta))
+    asso_legendre = lpmv(m_abs, l, np.cos(theta))
     if m > 0:
-        Y = 2**.5 * norm * P_lm * np.cos(m * phi)
+        ylm = 2**.5 * norm * asso_legendre * np.cos(m * phi)
     elif m < 0:
-        Y = 2**.5 * norm * P_lm * np.sin(m_abs * phi)
+        ylm = 2**.5 * norm * asso_legendre * np.sin(m_abs * phi)
     else:
-        Y = norm * P_lm
-    return Y
+        ylm = norm * asso_legendre
+    return ylm
 
 
 def naive_mu2_delta(mesh, los):

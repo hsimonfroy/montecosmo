@@ -40,7 +40,7 @@ def fftk(shape):
     return kx, ky, kz
 
 
-def invlaplace_kernel(kvec, fd=False):
+def invlaplace_hat(kvec, fd=False):
     """
     Compute the inverse Laplace kernel.
 
@@ -63,7 +63,7 @@ def invlaplace_kernel(kvec, fd=False):
     return - safe_div(1, kk)
 
 
-def gradient_kernel(kvec, direction:int, fd=False):
+def gradient_hat(kvec, direction:int, fd=False):
     """
     Compute the gradient kernel in the given direction
     
@@ -87,7 +87,7 @@ def gradient_kernel(kvec, direction:int, fd=False):
     return 1j * ki
 
 
-def gaussian_kernel(kvec, kcut=np.inf):
+def gaussian_hat(kvec, kcut=np.inf):
     """
     Compute the gaussian kernel
     
@@ -112,12 +112,12 @@ def gaussian_kernel(kvec, kcut=np.inf):
         return np.exp(-kk * rcut**2 / 2)
 
 
-def tophat_kernel(kvec, kcut=np.inf):
+def top_hat(kvec, kcut=np.inf):
     """
     Compute the tophat kernel. 
     Note that it is more efficient to compute 
-    `where(tophat_kernel(...), mesh, 0.)`
-    than `tophat_kernel(...) * mesh`.
+    `where(top_hat(...), mesh, 0.)`
+    than `top_hat(...) * mesh`.
     
     Parameters
     -----------
@@ -136,9 +136,20 @@ def tophat_kernel(kvec, kcut=np.inf):
     else:
         kk = sum(ki**2 for ki in kvec)
         return np.where(kk < kcut**2, True, False)
-    
 
-def paint_kernel(kvec, order:int=2):
+
+def rectangular(s, order):
+    funclist = [
+        lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
+        lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
+        lambda s: 1 - s, # CIC
+        lambda s: (s <= 1/2) * (3/4 - s**2) + (1/2 < s) / 2 * (3/2 - s)**2, # TSC
+        lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
+    ]
+    return funclist[order](jnp.abs(s))
+
+
+def rectangular_hat(kvec, order:int=2):
     """
     Compute painting kernel of given order.
 
@@ -155,31 +166,68 @@ def paint_kernel(kvec, order:int=2):
         * 4: Piecewise-Cubic Spline (PCS)
 
         cf. [Sefusatti+2017](http://arxiv.org/abs/1512.07295), 
-        [List+Hahn2024](https://arxiv.org/abs/2309.10865)
+        [List&Hahn2024](https://arxiv.org/abs/2309.10865)
 
     Returns
     -------
     weights: array
         Complex kernel values
     """
-    ws = 1.
+    kernel = lambda k: np.sinc(k / (2 * np.pi))**order
+    out = 1.
     for ki in kvec:
-        ws = ws * np.sinc(ki / (2 * np.pi))**order
-    return ws
+        out = out * kernel(ki)
+    return out
 
 
-def deconv_paint(mesh, order:int=2):
+def kaiser_bessel(s, order, kcut):
     """
-    Deconvolve the mesh by the paint kernel of given order.
+    See [Barnet+2019](http://arxiv.org/abs/1808.06736)
     """
+    s = s * 2 / order
+    kcut = kcut * order / 2
+    out = jnp.i0(kcut * (1 - s**2)**.5)
+    out /= order * jnp.sinh(kcut) / kcut
+    return out
+
+
+def kaiser_bessel_hat(kvec, order, kcut):
+    """
+    See [Barnet+2019](http://arxiv.org/abs/1808.06736)
+    """
+    def kernel(k, kcut):
+        k = k * order / 2
+        kcut = kcut * order / 2
+        dist = jnp.abs(kcut**2 - k**2)**.5
+        bulk = jnp.sinh(dist) / dist
+        tail = jnp.sin(dist) / dist
+        out = jnp.where(jnp.abs(k) <= kcut, bulk, tail)
+        out /= jnp.sinh(kcut) / kcut
+        return out
+
+    out = 1.
+    for ki in kvec:
+        out = out * kernel(ki, kcut)
+    return out
+
+
+def deconv_paint(mesh, order:int=2, kernel_type='rectangular', oversamp=1.):
+    """
+    Deconvolve the mesh by the paint kernel of given order and type.
+    """
+    if kernel_type == 'rectangular':
+        kernel = lambda kvec: rectangular_hat(kvec, order)
+    elif kernel_type == 'kaiser_bessel':
+        kernel = lambda kvec: kaiser_bessel_hat(kvec, order, optim_kcut(oversamp))
+    
     if jnp.isrealobj(mesh):
         kvec = rfftk(mesh.shape)
         mesh = jnp.fft.rfftn(mesh)
-        mesh /= paint_kernel(kvec, order)
+        mesh /= kernel(kvec)
         mesh = jnp.fft.irfftn(mesh)
     else:
         kvec = rfftk(ch2rshape(mesh.shape))
-        mesh /= paint_kernel(kvec, order)
+        mesh /= kernel(kvec)
     return mesh
 
 
@@ -187,14 +235,6 @@ def deconv_paint(mesh, order:int=2):
 # Mass-assignment #
 ###################
 # See also https://github.com/adematti/jax-power/blob/45edcda356d29f337fc276044e77cf3363b92820/jaxpower/resamplers.py
-
-paint_kernels = [
-    lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
-    lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
-    lambda s: 1 - s, # CIC
-    lambda s: (s <= 1/2) * (3/4 - s**2) + (1/2 < s) / 2 * (3/2 - s)**2, # TSC
-    lambda s: (s <= 1) / 6 * (4 - 6 * s**2 + 3 * s**3) + (1 < s) / 6 * (2 - s)**3, # PCS
-]
 
 # def cic_alpha(s, alpha=1.):
 #     m = (1 + alpha) / 2
@@ -211,18 +251,21 @@ paint_kernels = [
 # ]
 
 
-def paint(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2):
+def optim_kcut(oversamp, safety=0.98):
+    """
+    See [Barnet+2019](http://arxiv.org/abs/1808.06736)
+    """
+    return safety * jnp.pi * (2 - 1 / oversamp)
+
+
+def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', oversamp=1.):
     """
     Paint the positions onto the mesh. 
     If mesh is a tuple, paint on a zero mesh with such shape.
     """
-    if isinstance(mesh, tuple):
-        mesh = jnp.zeros(mesh)
-    else:
-        mesh = jnp.asarray(mesh)
-
     dtype = 'int16' # int16 -> +/- 32_767, trkl
-    shape = np.asarray(mesh.shape, dtype=dtype)
+    shape = np.asarray(shape, dtype=dtype)
+    mesh = jnp.zeros(shape)
     def wrap(idx):
         return idx % shape
     
@@ -230,21 +273,25 @@ def paint(pos, mesh:tuple|jnp.ndarray, weights=1., order:int=2):
     ishifts = np.arange(order) - (order - 1) // 2
     ishifts = np.array(list(product(* len(shape) * (ishifts,))), dtype=dtype)
 
+    if kernel_type == 'rectangular':
+        kernel = lambda s: rectangular(s, order)
+    elif kernel_type == 'kaiser_bessel':
+        kernel = lambda s: kaiser_bessel(s, order, optim_kcut(oversamp))
+
     def step(carry, ishift):
         idx = id0 + ishift
-        s = jnp.abs(idx - pos)
-        idx, ker = wrap(idx), paint_kernels[order](s).prod(-1)
+        idx, ker = wrap(idx), kernel(idx - pos).prod(-1)
 
         # idx = jnp.unstack(idx, axis=-1)
         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
         carry = carry.at[idx].add(weights * ker)
         return carry, None
-    
+
     mesh = lax.scan(step, mesh, ishifts)[0]
     return mesh
 
 
-def read(pos, mesh:jnp.ndarray, order:int=2):
+def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp=1.):
     """
     Read the value at the positions from the mesh.
     """
@@ -257,10 +304,14 @@ def read(pos, mesh:jnp.ndarray, order:int=2):
     ishifts = np.arange(order) - (order - 1) // 2
     ishifts = np.array(list(product(* len(shape) * (ishifts,))), dtype=dtype)
 
+    if kernel_type == 'rectangular':
+        kernel = lambda s: rectangular(s, order)
+    elif kernel_type == 'kaiser_bessel':
+        kernel = lambda s: kaiser_bessel(s, order, optim_kcut(oversamp))
+    
     def step(carry, ishift):
         idx = id0 + ishift
-        s = jnp.abs(idx - pos)
-        idx, ker = wrap(idx), paint_kernels[order](s).prod(-1)
+        idx, ker = wrap(idx), kernel(idx - pos).prod(-1)
 
         # idx = jnp.unstack(idx, axis=-1)
         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
@@ -319,23 +370,24 @@ def read(pos, mesh:jnp.ndarray, order:int=2):
 
 
 
-def interlace(pos, mesh_shape, weights=1., paint_order:int=2, interlace_order:int=2, deconv=True):
+def interlace(pos, shape:tuple, weights=1., paint_order:int=2, interlace_order:int=2, 
+              kernel_type='rectangular', oversamp=1., deconv=True):
     """
     Equal-spacing interlacing. Carefull with `interlace_order`>=3, it is not isotropic.
     See [Wang&Yu2024](https://arxiv.org/abs/2403.13561)
     """
+    kvec = rfftk(shape)
+    mesh = jnp.zeros(r2chshape(shape), dtype=complex)
     shifts = jnp.arange(interlace_order) / interlace_order
-    kvec = rfftk(mesh_shape)
-    mesh = jnp.zeros(r2chshape(mesh_shape), dtype=complex)
 
     def step(carry, shift):
-        mesh = paint(pos + shift, tuple(mesh_shape), weights, paint_order)
+        mesh = paint(pos + shift, shape, weights, paint_order, kernel_type, oversamp)
         carry += jnp.fft.rfftn(mesh) * jnp.exp(1j * shift * sum(kvec)) / interlace_order
         return carry, None
 
     mesh = lax.scan(step, mesh, shifts)[0]
     if deconv:
-        mesh /= paint_kernel(kvec, paint_order)
+        mesh = deconv_paint(mesh, paint_order, kernel_type=kernel_type, oversamp=oversamp)
     return mesh
 
 
@@ -343,24 +395,25 @@ def interlace(pos, mesh_shape, weights=1., paint_order:int=2, interlace_order:in
 ##########
 # Forces #
 ##########
-def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2, grad_fd=False, lap_fd=False, kcut=np.inf):
+def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2, 
+              paint_deconv:bool=False, grad_fd=False, lap_fd=False, kcut=np.inf):
     """
     Compute gravitational forces on particles using a PM scheme
     """
     if isinstance(mesh, tuple):
         mesh = jnp.fft.rfftn(paint(pos, mesh, order=read_order))
-        # If painted field, double deconv to account for both painting and reading 
-        # kvec = rfftk(ch2rshape(mesh.shape))
-        # mesh /= paint_kernel(kvec, order=read_order)**2
-        # print("deconv")
+        # If painted field, double deconv to account for both painting and reading
+        if paint_deconv:
+            kvec = rfftk(ch2rshape(mesh.shape))
+            mesh /= rectangular_hat(kvec, order=read_order)**2
 
     # Compute gravitational potential
     kvec = rfftk(ch2rshape(mesh.shape))
-    pot = mesh * invlaplace_kernel(kvec, lap_fd) * gaussian_kernel(kvec, kcut)
+    pot = mesh * invlaplace_hat(kvec, lap_fd) * gaussian_hat(kvec, kcut)
 
     # Compute gravitational forces
     # NOTE: for regularly spaced positions, reading with paint_order=2 <=> paint_order=1
-    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_kernel(kvec, i, grad_fd) * pot), read_order) 
+    return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_hat(kvec, i, grad_fd) * pot), read_order) 
                       for i in range(3)], axis=-1)
 
 
@@ -369,20 +422,20 @@ def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, lap_fd=False, grad_fd=Fa
     Return 2LPT source term.
     """
     kvec = rfftk(ch2rshape(mesh.shape))
-    pot = mesh * invlaplace_kernel(kvec, lap_fd)
+    pot = mesh * invlaplace_hat(kvec, lap_fd)
 
     delta2 = 0.
     hesses = 0.
     for i in range(3):
         # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
-        hess_ii = gradient_kernel(kvec, i, grad_fd)**2
+        hess_ii = gradient_hat(kvec, i, grad_fd)**2
         hess_ii = jnp.fft.irfftn(hess_ii * pot)
         delta2 += hess_ii * hesses 
         hesses += hess_ii
 
         for j in range(i+1, 3):
             # Substract squared strict-up-triangle terms
-            hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
+            hess_ij = gradient_hat(kvec, i, grad_fd) * gradient_hat(kvec, j, grad_fd)
             delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
     force2 = pm_forces(pos, jnp.fft.rfftn(delta2), read_order, grad_fd=grad_fd, lap_fd=lap_fd)
@@ -401,7 +454,7 @@ def lpt(
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute first or second order LPT displacement, at given scale factor(s).
-    See e.g. Eq. 3.5 and 3.7 [List and Hahn](https://arxiv.org/abs/2409.19049)
+    See e.g. Eq. 3.5 and 3.7 [List&Hahn](https://arxiv.org/abs/2409.19049)
     or Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
 
     If `init_mesh` is provided in real space, perform an additional rfftn.
@@ -643,15 +696,16 @@ def chi2a(cosmo, chi, log10_amin=dist_log10_amin, steps=dist_steps):
 ###########
 # Solvers #
 ###########
-def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, grad_fd=False, lap_fd=False):
+def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, 
+                paint_deconv=False, grad_fd=False, lap_fd=False):
     """
     BullFrog vector field.
     """
     def alpha_bf(cosmo, g0, dg):
         '''
         BullFrog growth-time integrator coefficient.
-        
-        See Eq. 2.3 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)
+
+        See Eq. 2.3 in [List&Hahn2024](https://arxiv.org/abs/2106.00461)
         '''
         g1 = g0 + dg / 2
         g2 = g0 + dg
@@ -665,7 +719,7 @@ def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, grad_f
         '''
         FastPM growth-time integrator coefficient.
 
-        See Eq. 3.16 in [List and Hahn, 2024](https://arxiv.org/abs/2106.00461)
+        See Eq. 3.16 in [List&Hahn2024](https://arxiv.org/abs/2106.00461)
         '''
         g2 = g0 + dg
         a0, a2 = g2a(cosmo, g0), g2a(cosmo, g2)
@@ -707,33 +761,39 @@ from diffrax import diffeqsolve, ODETerm, SaveAt, Euler
 def save_y(t, y, args):
     return y
 
-def nbody_bf(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int=2,
-              grad_fd=False, lap_fd=False, snapshots:int|list=None, fn=save_y):
+def nbody_bf(cosmo:Cosmology, init_mesh, pos, a0=0., a1=1., n_steps=5, 
+             paint_order:int=2, lpt_order:int=2, grad_fd=False, lap_fd=False, 
+             snapshots:int|list=None, fn=save_y):
     """
     N-body simulation with BullFrog solver.
     """
     n_steps = int(n_steps)
-    g = a2g(cosmo, a)
-    dg = g / n_steps
+    g0 = a2g(cosmo, a0)
+    g1 = a2g(cosmo, a1)
+    dg = (g1 - g0) / n_steps
     
     mesh_shape = ch2rshape(init_mesh.shape)
     terms = ODETerm(bullfrog_vf(cosmo, dg, mesh_shape, paint_order, grad_fd=grad_fd, lap_fd=lap_fd))
     solver = Euler()
 
-    vel = pm_forces(pos, init_mesh, paint_order, grad_fd=grad_fd, lap_fd=lap_fd)
-    state = pos, vel
-    
+    # vel = pm_forces(pos, init_mesh, read_order=1, grad_fd=grad_fd, lap_fd=lap_fd)
+    # dpos = g0 * vel # 1LPT initial displacement
+    dpos, vel = lpt(cosmo, init_mesh, pos=pos, a=a0, lpt_order=lpt_order, 
+                read_order=1, grad_fd=grad_fd, lap_fd=lap_fd)
+    state = pos + dpos, vel
+
     if snapshots is None: 
         saveat = SaveAt(t1=True)
-    elif isinstance(snapshots, int) and snapshots <= 1: 
-        saveat = SaveAt(t1=True, fn=fn)
-    elif isinstance(snapshots, int): 
-        # saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(0., a, snapshots)), fn=fn)
-        saveat = SaveAt(ts=jnp.linspace(0., g, snapshots), fn=fn)
+    elif isinstance(snapshots, int):
+        if snapshots <= 1:
+            saveat = SaveAt(t1=True, fn=fn)
+        else:
+            # saveat = SaveAt(ts=a2g(cosmo, jnp.linspace(a0, a1, snapshots)), fn=fn)
+            saveat = SaveAt(ts=jnp.linspace(g0, g1, snapshots), fn=fn)
     else: 
         saveat = SaveAt(ts=a2g(cosmo, jnp.asarray(snapshots)), fn=fn)   
 
-    sol = diffeqsolve(terms, solver, 0., g, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat) # cosmo as args may leak
+    sol = diffeqsolve(terms, solver, g0, g1, dt0=dg, y0=state, max_steps=n_steps, saveat=saveat) # cosmo as args may leak
     states = sol.ys
     # debug.print("bullfrog n_steps: {n}", n=sol.stats['num_steps'])
     return states
@@ -802,20 +862,20 @@ def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int
 
     if lpt_order == 2:
         kvec = rfftk(mesh_shape)
-        pot = delta_k * invlaplace_kernel(kvec, lap_fd)
+        pot = delta_k * invlaplace_hat(kvec, lap_fd)
 
         delta2 = 0
         hess_acc = 0
         for i in range(3):
             # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
-            hess_ii = gradient_kernel(kvec, i, grad_fd)**2
+            hess_ii = gradient_hat(kvec, i, grad_fd)**2
             hess_ii = jnp.fft.irfftn(hess_ii * pot)
             delta2 += hess_ii * hess_acc 
             hess_acc += hess_ii
 
             for j in range(i+1, 3):
                 # Substract squared strict-up-triangle terms
-                hess_ij = gradient_kernel(kvec, i, grad_fd) * gradient_kernel(kvec, j, grad_fd)
+                hess_ij = gradient_hat(kvec, i, grad_fd) * gradient_hat(kvec, j, grad_fd)
                 delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
         init_force2 = pm_forces(pos, np.fft.rfftn(delta2), paint_order, grad_fd=grad_fd, lap_fd=lap_fd)

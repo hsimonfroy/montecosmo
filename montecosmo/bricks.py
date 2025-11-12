@@ -8,7 +8,7 @@ import fitsio
 # from scipy.interpolate import SmoothSphereBivariateSpline
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap, cart2radecrad, radecrad2cart
-from montecosmo.nbody import rfftk, invlaplace_kernel, gradient_kernel, a2g, g2a, a2f, a2chi, chi2a, paint, read
+from montecosmo.nbody import rfftk, invlaplace_hat, gradient_hat, a2g, g2a, a2f, a2chi, chi2a, paint, read
 from montecosmo.metrics import naive_mu2_delta, optim_mu2_delta
 
 #############
@@ -82,17 +82,17 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
     return pow_fn
 
-def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_shape, a=1., n_interp=256):
+def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_size, a=1., n_interp=256):
     """
     Return linear matter power spectrum field.
     """
     pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
     
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**.5
-    return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_size))**.5
+    return pow_fn(kmesh) * (mesh_shape / box_size).prod() # from [Mpc/h]^3 to cell units
 
-def kpower_mesh(kpow, mesh_shape, box_shape, transfer=1.):
+def kpower_mesh(kpow, mesh_shape, box_size, transfer=1.):
     """
     Return power spectrum field from given (wavenumber, power).
     power can be scaled by transfer^2.
@@ -102,8 +102,8 @@ def kpower_mesh(kpow, mesh_shape, box_shape, transfer=1.):
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
     
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**.5
-    return pow_fn(kmesh) * (mesh_shape / box_shape).prod() # from [Mpc/h]^3 to cell units
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_size))**.5
+    return pow_fn(kmesh) * (mesh_shape / box_size).prod() # from [Mpc/h]^3 to cell units
 
 def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     """
@@ -127,13 +127,13 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     return trans_fn
 
 
-def add_png(cosmo:Cosmology, fNL, init_mesh, box_shape):
+def add_png(cosmo:Cosmology, fNL, init_mesh, box_size):
     """
     Add Primordial Non-Gaussianity (PNG) to the linear matter density field.
     """
     mesh_shape = ch2rshape(init_mesh.shape)
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**.5
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_size))**.5
     trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
 
     phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
@@ -193,14 +193,14 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,0.)):
         return 1 + a2g(cosmo, a) * delta # 1 + delta
 
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_shape, los=(0.,0.,0.)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_size, los=(0.,0.,0.)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
     """
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
-    pmesh = lin_power_mesh(cosmo, mesh_shape, box_shape)
+    pmesh = lin_power_mesh(cosmo, mesh_shape, box_size)
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
     selec = (selec_mesh**2).mean()**.5
 
@@ -286,7 +286,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 ########
 # Bias #
 ########
-def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape, init_mesh, 
+def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh, 
                        b1, b2, bs2, bn2, bnp, fNL, png=None, read_order:int=2):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -297,7 +297,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape, init_mesh,
         + b_{\\phi} f_\\mathrm{NL} \\phi + b_{\\phi \\delta} f_\\mathrm{NL} (\\phi \\delta_L - \\braket{\\phi \\delta_L})
     """    
     # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases?
-    # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_shape)
+    # k_nyquist = jnp.pi * jnp.min(mesh_shape / box_size)
     # init_mesh *= gaussian_kernel(kvec, kcut=k_nyquist)
 
     delta = jnp.fft.irfftn(init_mesh)
@@ -305,7 +305,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape, init_mesh,
 
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_shape))**.5 # in h/Mpc 
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_size))**.5 # in h/Mpc 
 
     # Init weights
     weights = 1.
@@ -319,17 +319,17 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape, init_mesh,
     weights += b2 * (delta2_pos - delta2_pos.mean())
 
     # Apply bshear2, non-punctual term
-    pot = init_mesh * invlaplace_kernel(kvec)
+    pot = init_mesh * invlaplace_hat(kvec)
     dims = range(len(kvec))
     shear2 = 0.
 
     for i in dims:
         # Add diagonal terms
-        nabi = gradient_kernel(kvec, i)
+        nabi = gradient_hat(kvec, i)
         shear2 += jnp.fft.irfftn(nabi**2 * pot - init_mesh / 3)**2
         for j in dims[i+1:]:
             # Add strict-up-triangle terms (counted twice)
-            nabj = gradient_kernel(kvec, j)
+            nabj = gradient_hat(kvec, j)
             shear2 += 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
 
     shear2_pos = read(pos, shear2, read_order) * growths.squeeze()**2
@@ -363,8 +363,8 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_shape, init_mesh,
 
     # Compute separately bnablapar, velocity bias term
     delta_nabpar_pos = jnp.stack([
-                read(pos, jnp.fft.irfftn(gradient_kernel(kvec, i) * (m / b) * init_mesh), read_order) 
-                for i, (m, b) in enumerate(zip(mesh_shape, box_shape))], axis=-1) # in h/Mpc 
+                read(pos, jnp.fft.irfftn(gradient_hat(kvec, i) * (m / b) * init_mesh), read_order) 
+                for i, (m, b) in enumerate(zip(mesh_shape, box_size))], axis=-1) # in h/Mpc 
     dvel = bnp * delta_nabpar_pos * growths
 
     return weights, dvel
@@ -429,44 +429,44 @@ def sobol_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
     return jnp.array(sampler.random(n=ptcl_shape.prod()) * mesh_shape)
 
 
-def cell2phys_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape):
+def cell2phys_pos(pos, box_center, box_rot:Rotation, box_size, mesh_shape):
     """
     Cell positions to physical positions.
     """
-    pos *= (box_shape / mesh_shape)
-    pos -= box_shape / 2
+    pos *= (box_size / mesh_shape)
+    pos -= box_size / 2
     pos = box_rot.apply(pos)
     pos += box_center
     return pos
 
-def phys2cell_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape):
+def phys2cell_pos(pos, box_center, box_rot:Rotation, box_size, mesh_shape):
     """
     Physical positions to cell positions.
     """
     pos -= box_center
     pos = box_rot.apply(pos, inverse=True)
-    pos += box_shape / 2
-    pos /= (box_shape / mesh_shape)
+    pos += box_size / 2
+    pos /= (box_size / mesh_shape)
     return pos
 
-def cell2phys_vel(vel, box_rot:Rotation, box_shape, mesh_shape):
+def cell2phys_vel(vel, box_rot:Rotation, box_size, mesh_shape):
     """
     Cell velocities to physical velocities.
     """
-    vel *= (box_shape / mesh_shape)
+    vel *= (box_size / mesh_shape)
     vel = box_rot.apply(vel)
     return vel
 
-def phys2cell_vel(vel, box_rot:Rotation, box_shape, mesh_shape):
+def phys2cell_vel(vel, box_rot:Rotation, box_size, mesh_shape):
     """
     Physical velocities to cell velocities.
     """
     vel = box_rot.apply(vel, inverse=True)
-    vel /= (box_shape / mesh_shape)
+    vel /= (box_size / mesh_shape)
     return vel
 
 
-def radius_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, curved_sky=True):
+def radius_mesh(box_center, box_rot:Rotation, box_size, mesh_shape, curved_sky=True):
     """
     Return physical distances of the mesh cells.
     """
@@ -479,22 +479,22 @@ def radius_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, curved_sky=
     box_center = box_rot.apply(box_center, inverse=True)
     if curved_sky:
         # Use that ||Rx + c|| = ||x + R^T c|| to avoid computing Rx
-        rvec = [r * b / m - b / 2 + c for r, m, b, c in zip(rvec, mesh_shape, box_shape, box_center)]
+        rvec = [r * b / m - b / 2 + c for r, m, b, c in zip(rvec, mesh_shape, box_size, box_center)]
         rmesh = sum(ri**2 for ri in rvec)**.5
     else:
         # Use that l^T (Rx + c) = (R^T l)^T (x + R^T c) to avoid computing Rx
         # Here l = c / ||c|| so R^T l = R^T c / ||R^T c|| 
         los = safe_div(box_center, jnp.linalg.norm(box_center))
-        rvec = [(r * b / m - b / 2 + c) * l for r, m, b, c, l in zip(rvec, mesh_shape, box_shape, box_center, los)]
+        rvec = [(r * b / m - b / 2 + c) * l for r, m, b, c, l in zip(rvec, mesh_shape, box_size, box_center, los)]
         rmesh = jnp.abs(sum(ri for ri in rvec))
     return rmesh
 
-def pos_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape):
+def pos_mesh(box_center, box_rot:Rotation, box_size, mesh_shape):
     """
     Return a mesh of the physical positions of the mesh cells.
     """
     pos = np.indices(mesh_shape, dtype=float).reshape(3,-1).T
-    pos = cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape)
+    pos = cell2phys_pos(pos, box_center, box_rot, box_size, mesh_shape)
     return pos.reshape(tuple(mesh_shape) + (3,))
 
 
@@ -541,13 +541,13 @@ def isoap2parperp(alpha_iso, alpha_ap):
 ################################
 # Cell to Physical to Redshift #
 ################################
-def tophysical_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape, 
+def tophysical_pos(pos, box_center, box_rot:Rotation, box_size, mesh_shape, 
                cosmo:Cosmology, a_obs=None, curved_sky=True):
     """
     Return physical positions, distances, line-of-sight(s), and scale factor(s)
     for the different configurations of light-cone and sky.
     """
-    pos = cell2phys_pos(pos, box_center, box_rot, box_shape, mesh_shape)
+    pos = cell2phys_pos(pos, box_center, box_rot, box_size, mesh_shape)
     if curved_sky:
         los = safe_div(pos, jnp.linalg.norm(pos, axis=-1, keepdims=True))
         rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
@@ -561,18 +561,18 @@ def tophysical_pos(pos, box_center, box_rot:Rotation, box_shape, mesh_shape,
         a = a_obs
     return pos, rpos, los, a
 
-def tophysical_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape, 
+def tophysical_mesh(box_center, box_rot:Rotation, box_size, mesh_shape, 
                     cosmo:Cosmology, a_obs=None, curved_sky=True):
     """
     Return scale factor mesh for the different configurations of light-cone and sky.
     """
     if curved_sky:
-        pomesh = pos_mesh(box_center, box_rot, box_shape, mesh_shape)
+        pomesh = pos_mesh(box_center, box_rot, box_size, mesh_shape)
         los = safe_div(pomesh, jnp.linalg.norm(pomesh, axis=-1, keepdims=True))
         rmesh = jnp.linalg.norm(pomesh, axis=-1)
     else:
         los = safe_div(box_center, np.linalg.norm(box_center))
-        rmesh = radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky)
+        rmesh = radius_mesh(box_center, box_rot, box_size, mesh_shape, curved_sky)
 
     if a_obs is None:
         a = chi2a(cosmo, rmesh)
@@ -581,13 +581,14 @@ def tophysical_mesh(box_center, box_rot:Rotation, box_shape, mesh_shape,
     return los, a
     
 
-def rsd(cosmo:Cosmology, vel, los, a, box_rot, box_shape, mesh_shape, dvel=0.):
+def rsd(cosmo:Cosmology, vel, los, a, box_rot, box_size, mesh_shape, dvel=0.):
     """
     Redshift-Space Distortions.
     """
     # Growth-time integrator vel := dq / dg = v / (H * g * f), so Dq := v / H = vel * g * f
     # v in (Mpc/h)*(km/s/(Mpc/h)) = km/s, so Dq in Mpc/h
-    vel = cell2phys_vel(vel, box_rot, box_shape, mesh_shape)
+    vel = cell2phys_vel(vel, box_rot, box_size, mesh_shape) 
+    # TODO: check with AP if it is necessary to work in physical units
     vel *= a2g(cosmo, a) * a2f(cosmo, a)
     vel += dvel
     dpos = (vel * los).sum(-1, keepdims=True) * los
@@ -721,7 +722,7 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
 #     interp = radec_interp(ra, dec, value, w=w, s=s, eps=eps)
 
 #     los = model.pos_mesh()
-#     # los = pos_mesh(box_center, box_rot, box_shape, mesh_shape)
+#     # los = pos_mesh(box_center, box_rot, box_size, mesh_shape)
 #     los = los / jnp.linalg.norm(los, axis=-1, keepdims=True)
 #     ra_mesh, dec_mesh, _ = cart2radecrad(los)
 #     val_mesh = interp(ra_mesh, dec_mesh)
@@ -756,7 +757,7 @@ def tophat_selection(mesh_shape, padding=0., order:float=np.inf):
     selec_mesh /= selec_mesh[selec_mesh > 0].mean()
     return selec_mesh
 
-def gennorm_selection(box_center, box_rot, box_shape, mesh_shape, curved_sky,
+def gennorm_selection(box_center, box_rot, box_size, mesh_shape, curved_sky,
                        r_loc=None, r_scale=None, order:float=2.):
     """
     Return a generalized normal selection mesh.
@@ -764,13 +765,13 @@ def gennorm_selection(box_center, box_rot, box_shape, mesh_shape, curved_sky,
     * if r_scale is None, it is set to a 4th of the box length along the line-of-sight of the box center.
     * order in [0, +\\infty].
     """
-    rmesh = radius_mesh(box_center, box_rot, box_shape, mesh_shape, curved_sky)
+    rmesh = radius_mesh(box_center, box_rot, box_size, mesh_shape, curved_sky)
     if r_loc is None:
         r_loc = jnp.linalg.norm(box_center)
     if r_scale is None:
         los = safe_div(box_center, jnp.linalg.norm(box_center))
         los = box_rot.apply(los, inverse=True) # cell los
-        r_scale = box_shape @ jnp.abs(los) / 4 # 4th of the box length along los 
+        r_scale = box_size @ jnp.abs(los) / 4 # 4th of the box length along los 
 
     selec_mesh = jnp.exp(- jnp.abs((rmesh - r_loc) / r_scale)**order)
     # NOTE: selection normalization to unit mean within its support.
@@ -788,14 +789,14 @@ def minmax_box(pos):
     rotvec = jnp.zeros(jnp.shape(pos)[-1])
     return center, rotvec, shape
 
-def get_mesh_shape(box_shape, cell_budget, padding=0.):
+def get_mesh_shape(box_size, cell_budget, padding=0.):
     """
     Return mesh shape and cell length from a given box shape and cell budget, with optional padding.
     Mesh shape is rounded to the nearest even integers.
     """
-    box_shape *= 1 + padding
-    cell_length = float((box_shape.prod() / cell_budget)**(1/3))
-    mesh_shape = 2 * np.rint(box_shape / cell_length / 2).astype(int)
+    box_size *= 1 + padding
+    cell_length = float((box_size.prod() / cell_budget)**(1/3))
+    mesh_shape = 2 * np.rint(box_size / cell_length / 2).astype(int)
     return mesh_shape, cell_length
 
 def get_scaled_shape(mesh_shape, scale=1.):
@@ -806,15 +807,15 @@ def get_scaled_shape(mesh_shape, scale=1.):
     return 2 * np.rint(mesh_shape * scale / 2).astype(int)
 
 
-def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_shape, mesh_shape, paint_order:int=2):
+def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_size, mesh_shape, paint_order:int=2):
     """
     Return painted mesh from a given path to RA, DEC, Z data.
     """
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
 
-    pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
-    mesh = paint(pos, tuple(mesh_shape), paint_order)
+    pos = phys2cell_pos(pos, box_center, box_rot, box_size, mesh_shape)
+    mesh = paint(pos, mesh_shape, paint_order)
     return mesh
 
 def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:int=2):
@@ -823,13 +824,13 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_orde
     """
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
-    box_center, box_rotvec, box_shape = minmax_box(pos)
-    mesh_shape, cell_length = get_mesh_shape(box_shape, cell_budget, padding)
-    box_shape = mesh_shape * cell_length # box_shape update due to rounding and padding
+    box_center, box_rotvec, box_size = minmax_box(pos)
+    mesh_shape, cell_length = get_mesh_shape(box_size, cell_budget, padding)
+    box_size = mesh_shape * cell_length # box_size update due to rounding and padding
     box_rot = Rotation.from_rotvec(box_rotvec)
 
-    pos = phys2cell_pos(pos, box_center, box_rot, box_shape, mesh_shape)
-    selec_mesh = paint(pos, tuple(mesh_shape), paint_order)
+    pos = phys2cell_pos(pos, box_center, box_rot, box_size, mesh_shape)
+    selec_mesh = paint(pos, mesh_shape, paint_order)
 
     # NOTE: selection normalization to unit mean within its support.
     selec_mesh /= selec_mesh[selec_mesh > 0].mean()

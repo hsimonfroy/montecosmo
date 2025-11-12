@@ -45,7 +45,7 @@ Planck18 = partial(Cosmology,
 
 a_obs = 1.0
 mesh_shape = np.array([1, 1 ,1]) * 64
-box_shape = np.array([1., 1. ,1.]) * 640
+box_size = np.array([1., 1. ,1.]) * 640
 
 
 class Cosmo():
@@ -118,7 +118,7 @@ def test_nbody(a_lpt, a_obs, lpt_order, tol=1e-5):
     cosmo = Planck18()
     ref_cosmo = Cosmo(cosmo)
 
-    pm = ParticleMesh(BoxSize=box_shape, Nmesh=mesh_shape, dtype='f4')
+    pm = ParticleMesh(BoxSize=box_size, Nmesh=mesh_shape, dtype='f4')
     grid = pm.generate_uniform_particle_grid(shift=0).astype(np.float32)
     solver = Solver(pm, ref_cosmo, B=1)
     stages = np.linspace(a_lpt, a_obs, 10, endpoint=True)
@@ -135,7 +135,7 @@ def test_nbody(a_lpt, a_obs, lpt_order, tol=1e-5):
     init_mesh = lineark.c2r().value # XXX
     
     # JaxPM init to FastPM init
-    # init_mesh = linear_field(mesh_shape, box_shape, pk_fn, seed=jr.key(0)) # XXX
+    # init_mesh = linear_field(mesh_shape, box_size, pk_fn, seed=jr.key(0)) # XXX
     # lineark.value = np.fft.rfftn(init_mesh, norm='ortho') / np.prod(mesh_shape)**.5 # XXX
 
 

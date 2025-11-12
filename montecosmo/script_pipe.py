@@ -80,7 +80,7 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
     # Load #
     ########
     z_obs = 0.8
-    box_shape = 3*(2000,)
+    box_size = 3*(2000,)
     cell_budget = mesh_length**3
     selection = None
     mesh_length = round(cell_budget**(1/3))
@@ -94,7 +94,7 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
 
     model = FieldLevelModel(**default_config | 
                             {'mesh_shape': 3*(mesh_length,), 
-                            'cell_length': box_shape[0] / mesh_length, # in Mpc/h
+                            'cell_length': box_size[0] / mesh_length, # in Mpc/h
                             'box_center': (0.,0.,0.), # in Mpc/h
                             'box_rotvec': (0.,0.,0.), # rotation vector in radians
                             'evolution': 'lpt',

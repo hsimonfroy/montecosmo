@@ -104,11 +104,11 @@ print(model)
 
 # plt.figure(figsize=(12, 4), layout='constrained')
 # plt.subplot(131)
-# plot_mesh(delta_obs, model.box_shape, ind, axis)
+# plot_mesh(delta_obs, model.box_size, ind, axis)
 # plt.colorbar()
 
 # plt.subplot(132)
-# plot_mesh(delta_obs2, model.box_shape, ind, axis)
+# plot_mesh(delta_obs2, model.box_size, ind, axis)
 # plt.colorbar()
 
 # plt.subplot(133)
