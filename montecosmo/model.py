@@ -96,8 +96,8 @@ default_config={
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
                             'label':'{b}_1',
-                            # 'loc':1., ###########
-                            'loc':0.,
+                            'loc':1., ###########
+                            # 'loc':0.,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             },
