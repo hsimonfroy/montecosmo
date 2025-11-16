@@ -417,7 +417,7 @@ def distr_radial(mesh, rmesh, redges:int|float|list, aggr_fn=None):
     if isinstance(redges, (int, float)):
         rmin, rmax = rmesh.min(), rmesh.max()
         if isinstance(redges, int):
-            n_redges = redges # final number of bins will be nedges-1
+            n_redges = redges # final number of bins will be n_edges-1
         elif isinstance(redges, float):
             n_redges = max(int((rmax - rmin) / redges), 1)
         dr = (rmax - rmin) / n_redges

@@ -474,6 +474,8 @@ class FieldLevelModel(Model):
         los = safe_div(self.box_center, np.linalg.norm(self.box_center))
         self.los_fid = self.box_rot.apply(los, inverse=True) # cell los
 
+        # TODO: cell_length_init, cell_length_final, count_fid_init, count_fid_final 
+
 
     def __str__(self):
         out = ""
@@ -648,9 +650,15 @@ class FieldLevelModel(Model):
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             rcounts = syst['ngbars'] * self.cell_length**3
             mean_count = rcounts.mean()
-            obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
 
-            # sample('obs', dist.Poisson(jnp.abs(mesh + 1) * mean_count)) / mean_count - 1
+            # obs = sample('obs', dist.Normal((1 + mesh) * mean_count, mean_count**.5))
+            # obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
+
+            obs = sample('obs', dist.Normal(mesh, (jnp.maximum(1 + mesh, 1e-9) / mean_count)**.5))
+            # obs = sample('obs', dist.Normal(mesh, (jnp.abs(1 + mesh) / mean_count)**.5))
+
+            # obs = sample('obs', dist.Poisson(jnp.maximum(1 + mesh, 1e-9) * mean_count)) # / mean_count - 1
+            # obs = sample('obs', dist.Poisson(jnp.abs(1 + mesh) * mean_count)) # / mean_count - 1
             return obs
 
 
@@ -672,7 +680,7 @@ class FieldLevelModel(Model):
         #     # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
 
         #     # Poisson noise
-        #     # obs = sample('obs', dist.Poisson(jnp.abs(obs)**(1 / temp)))
+        #     # obs = sample('obs', dist.Poisson(jnp.maximum(obs, 0.)**(1 / temp)))
         #     return obs 
 
         # elif self.obs == 'pk':

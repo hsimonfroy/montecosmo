@@ -42,7 +42,7 @@ def fftk(shape):
 
 def invlaplace_hat(kvec, fd=False):
     """
-    Compute the inverse Laplace kernel.
+    Fourier transform of inverse Laplace kernel.
 
     Parameters
     -----------
@@ -65,7 +65,7 @@ def invlaplace_hat(kvec, fd=False):
 
 def gradient_hat(kvec, direction:int, fd=False):
     """
-    Compute the gradient kernel in the given direction
+    Fourier transform of gradient kernel along given direction.
     
     Parameters
     -----------
@@ -89,7 +89,7 @@ def gradient_hat(kvec, direction:int, fd=False):
 
 def gaussian_hat(kvec, kcut=np.inf):
     """
-    Compute the gaussian kernel
+    Fourier transform of gaussian kernel.
     
     Parameters
     -----------
@@ -114,7 +114,8 @@ def gaussian_hat(kvec, kcut=np.inf):
 
 def top_hat(kvec, kcut=np.inf):
     """
-    Compute the tophat kernel. 
+    Top-hat kernel (isotropic). 
+
     Note that it is more efficient to compute 
     `where(top_hat(...), mesh, 0.)`
     than `top_hat(...) * mesh`.
@@ -139,6 +140,24 @@ def top_hat(kvec, kcut=np.inf):
 
 
 def rectangular(s, order):
+    """
+    Rectangular kernel with given order.
+
+    Parameters
+    ----------
+    kvec: list
+        List of wavevectors
+    order: int
+        order of the kernel
+        * 0: Dirac
+        * 1: Nearest Grid Point (NGP)
+        * 2: Cloud-In-Cell (CIC)
+        * 3: Triangular-Shape Cloud (TSC)
+        * 4: Piecewise-Cubic Spline (PCS)
+
+        cf. [Sefusatti+2017](http://arxiv.org/abs/1512.07295), 
+        [List&Hahn2024](https://arxiv.org/abs/2309.10865)
+    """
     funclist = [
         lambda s: jnp.full(jnp.shape(s)[-1:], jnp.inf), # Dirac
         lambda s: jnp.full(jnp.shape(s)[-1:], 1.), # NGP
@@ -151,7 +170,7 @@ def rectangular(s, order):
 
 def rectangular_hat(kvec, order:int=2):
     """
-    Compute painting kernel of given order.
+    Fourier transform of rectangular kernel with given order.
 
     Parameters
     ----------
@@ -182,6 +201,8 @@ def rectangular_hat(kvec, order:int=2):
 
 def kaiser_bessel(s, order, kcut):
     """
+    Kaiser-Bessel kernel.
+
     See [Barnet+2019](http://arxiv.org/abs/1808.06736)
     """
     s = s * 2 / order
@@ -193,6 +214,8 @@ def kaiser_bessel(s, order, kcut):
 
 def kaiser_bessel_hat(kvec, order, kcut):
     """
+    Fourier transform of Kaiser-Bessel kernel.
+
     See [Barnet+2019](http://arxiv.org/abs/1808.06736)
     """
     def kernel(k, kcut):
@@ -253,6 +276,8 @@ def deconv_paint(mesh, order:int=2, kernel_type='rectangular', oversamp=1.):
 
 def optim_kcut(oversamp, safety=0.98):
     """
+    Optimal wavenumber cutoff for Prolate Spheroidal Wave Function-like (PSWF-like) kernels.
+
     See [Barnet+2019](http://arxiv.org/abs/1808.06736)
     """
     return safety * jnp.pi * (2 - 1 / oversamp)
@@ -260,8 +285,7 @@ def optim_kcut(oversamp, safety=0.98):
 
 def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', oversamp=1.):
     """
-    Paint the positions onto the mesh. 
-    If mesh is a tuple, paint on a zero mesh with such shape.
+    Paint the positions onto a mesh of given shape. 
     """
     dtype = 'int16' # int16 -> +/- 32_767, trkl
     shape = np.asarray(shape, dtype=dtype)
@@ -373,7 +397,7 @@ def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp
 def interlace(pos, shape:tuple, weights=1., paint_order:int=2, interlace_order:int=2, 
               kernel_type='rectangular', oversamp=1., deconv=True):
     """
-    Equal-spacing interlacing. Carefull with `interlace_order`>=3, it is not isotropic.
+    Equal-spacing interlacing. Carefull `interlace_order>=3` is not isotropic.
     See [Wang&Yu2024](https://arxiv.org/abs/2403.13561)
     """
     kvec = rfftk(shape)
@@ -486,7 +510,8 @@ growth_steps: int = 128
 
 # Growth from scale factor
 def _growth_factor_ODE(cosmo, a, log10_amin=growth_log10_amin, steps=growth_steps):
-    """Compute linear growth factor D(a) at a given scale factor,
+    """
+    Compute linear growth factor D(a) at a given scale factor,
     normalised such that D(a=1) = 1.
 
     Parameters
@@ -623,7 +648,8 @@ dist_log10_amin: float = -3.
 dist_steps: int = 256
 
 def a2chi(cosmo, a, log10_amin=dist_log10_amin, steps=dist_steps):
-    r"""Radial comoving distance in [Mpc/h] for a given scale factor.
+    r"""
+    Radial comoving distance in [Mpc/h] for a given scale factor.
 
     Parameters
     ----------
@@ -667,7 +693,8 @@ def a2chi(cosmo, a, log10_amin=dist_log10_amin, steps=dist_steps):
 
 
 def chi2a(cosmo, chi, log10_amin=dist_log10_amin, steps=dist_steps):
-    r"""Computes the scale factor for corresponding (array) of radial comoving
+    r"""
+    Computes the scale factor for corresponding (array) of radial comoving
     distance by reverse linear interpolation.
 
     Parameters:
