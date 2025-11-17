@@ -730,7 +730,7 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
 
 
 
-def tophat_selection(mesh_shape, padding=0., order:float=np.inf):
+def top_hat_selection(mesh_shape, padding=0., order:float=np.inf):
     """
     Return an `ord-norm ball binary selection mesh, with a `padding` 1D padded fraction.
     Therefore, `1/(1+padding)` is the mesh axes to ball axes ratio.
@@ -757,21 +757,24 @@ def tophat_selection(mesh_shape, padding=0., order:float=np.inf):
     selec_mesh /= selec_mesh[selec_mesh > 0].mean()
     return selec_mesh
 
-def gennorm_selection(box_center, box_rot, box_size, mesh_shape, curved_sky,
+def gen_gauss_selection(box_center, box_rot, box_size, mesh_shape, curved_sky,
                        r_loc=None, r_scale=None, order:float=2.):
     """
-    Return a generalized normal selection mesh.
+    Return a generalized Gaussian selection mesh.
     * if r_loc is None, it is set to the distance of the box center.
     * if r_scale is None, it is set to a 4th of the box length along the line-of-sight of the box center.
-    * order in [0, +\\infty].
+    * the order is in [0, +\\infty].
     """
     rmesh = radius_mesh(box_center, box_rot, box_size, mesh_shape, curved_sky)
     if r_loc is None:
         r_loc = jnp.linalg.norm(box_center)
     if r_scale is None:
-        los = safe_div(box_center, jnp.linalg.norm(box_center))
-        los = box_rot.apply(los, inverse=True) # cell los
-        r_scale = box_size @ jnp.abs(los) / 4 # 4th of the box length along los 
+        if r_loc == 0.:
+            r_scale = box_size.min() / 4 # 4th of the min box length
+        else: 
+            los = safe_div(box_center, jnp.linalg.norm(box_center))
+            los = box_rot.apply(los, inverse=True) # cell los
+            r_scale = box_size @ jnp.abs(los) / 4 # 4th of the box length along los 
 
     selec_mesh = jnp.exp(- jnp.abs((rmesh - r_loc) / r_scale)**order)
     # NOTE: selection normalization to unit mean within its support.

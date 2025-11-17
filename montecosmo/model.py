@@ -16,7 +16,7 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias,
-                               tophat_selection, gennorm_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
+                               top_hat_selection, gen_gauss_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
                                set_radial_count)
@@ -441,10 +441,12 @@ class FieldLevelModel(Model):
             self.selec_mesh = np.array(1.)
             self.mask = None
         elif isinstance(self.selection, float):
-            selec_mesh_tophat = tophat_selection(self.final_shape, self.selection, order=np.inf) 
-            selec_mesh_gennorm = gennorm_selection(self.box_center, self.box_rot, self.box_size, 
-                                           self.final_shape, self.curved_sky, order=4.)
-            self.selec_mesh = selec_mesh_tophat * selec_mesh_gennorm
+            selec_mesh_top_hat = top_hat_selection(self.final_shape, self.selection, order=np.inf) 
+            # selec_mesh_gen_gauss = gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
+            #                                self.final_shape, self.curved_sky, order=4.)
+            selec_mesh_gen_gauss = gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
+                                self.final_shape, True, order=4.)
+            self.selec_mesh = selec_mesh_top_hat
             self.selec_mesh /= self.selec_mesh[self.selec_mesh > 0].mean()
             self.mask = self.selec_mesh > 0
         elif isinstance(self.selection, (str, Path.__base__)):
@@ -646,6 +648,9 @@ class FieldLevelModel(Model):
         mesh, syst = params
 
         if self.observable == 'field':
+            mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
+            mesh /= mesh.mean()
+
             mesh -= 1
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             rcounts = syst['ngbars'] * self.cell_length**3
@@ -786,7 +791,7 @@ class FieldLevelModel(Model):
         rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape, self.curved_sky))
         rmasked = mesh2masked(rmesh, self.mask)
         rmin, rmax = rmasked.min(), rmasked.max()
-        dr = 3**.5 * self.cell_length
+        dr = 3**.5 * self.cell_length # minimum dr to guarantee connected shell bins
 
         n_rbins = max(int((rmax - rmin) / dr), 1) if self.n_rbins is None else self.n_rbins
         redges = np.linspace(rmin - dr/1000, rmax + dr/1000, n_rbins + 1)
