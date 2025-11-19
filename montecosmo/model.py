@@ -63,12 +63,14 @@ default_config={
         'ap_auto': None, # auto AP vs. parametric AP, if None, no AP
         'selection':None, # if float, padded fraction, if str or Path, path to selection mesh file
         'n_rbins':None, # if None, set to maximum number of radial bins
+        'lik_type': 'gaussian', # gaussian, poisson
         # Latents
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':'{\\Omega}_m', 
                             'loc':0.3111,
+                            # 'loc': 0.3137721, 
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
@@ -90,16 +92,17 @@ default_config={
                 'sigma8': {'group':'cosmo',
                             'label':'{\\sigma}_8',
                             'loc':0.8102,
+                            # 'loc': 0.8076353990239834,
                             'scale':0.5,
                             'scale_fid':1e-2,
                             'low': 0.,
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
                             'label':'{b}_1',
-                            'loc':1., ###########
-                            # 'loc':0.,
-                            'scale':0.5,
-                            'scale_fid':1e-2,
+                            'loc':1.,
+                            # 'scale':0.5,
+                            'scale':1.,
+                            'scale_fid':5e-2,
                             },
                 'b2': {'group':'bias',
                             'label':'{b}_2',
@@ -151,11 +154,25 @@ default_config={
                 'ngbars': {'group':'syst',
                                 'label':'{\\bar{n}_g}',
                                 # 'loc':1e-3, # in galaxy / (Mpc/h)^3
-                                'loc':0.00084, # in galaxy / (Mpc/h)^3
-                                'scale':.1,
+                                'loc':0.000843318125, # in galaxy / (Mpc/h)^3
+                                'scale':1e-2,
                                 'scale_fid':1e-6,
                                 'low':0.,
                                 'high':jnp.inf,
+                                },
+                'sigma_0': {'group':'syst',
+                                'label':'{\\sigma_{0}}',
+                                'loc':0.000843318125, # in galaxy / (Mpc/h)^3
+                                'scale':1e-2,
+                                'scale_fid':1e-4,
+                                'low':0.,
+                                'high':jnp.inf,
+                                },
+                'sigma_delta': {'group':'syst',
+                                'label':'{\\sigma_{\\delta}}',
+                                'loc':1.,
+                                'scale':1.,
+                                'scale_fid':1e-1,
                                 },
                 'init_mesh': {'group':'init',
                                 'label':'{\\delta_\\mathrm{L}}',},
@@ -395,6 +412,7 @@ class FieldLevelModel(Model):
     ap_auto:bool
     selection:None|float|str|Path
     n_rbins:None|int
+    lik_type:str
     # Latents
     precond:str
     latents:dict
@@ -446,7 +464,7 @@ class FieldLevelModel(Model):
             #                                self.final_shape, self.curved_sky, order=4.)
             selec_mesh_gen_gauss = gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
                                 self.final_shape, True, order=4.)
-            self.selec_mesh = selec_mesh_top_hat
+            self.selec_mesh = selec_mesh_top_hat * selec_mesh_gen_gauss
             self.selec_mesh /= self.selec_mesh[self.selec_mesh > 0].mean()
             self.mask = self.selec_mesh > 0
         elif isinstance(self.selection, (str, Path.__base__)):
@@ -578,7 +596,7 @@ class FieldLevelModel(Model):
                 # gxy_mesh = paint2(pos, tuple(self.mesh_shape), weights, self.paint_order, ap['alpha_iso'])
 
                 # gxy_mesh = jnp.fft.irfftn(interlace(pos, self.mesh_shape, weights, self.paint_order, self.interlace_order))
-                # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+                # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution can amplify AP-induced high-frequencies.
                 gxy_mesh *= (self.evol_shape / self.ptcl_shape).prod()
     
         else:
@@ -627,7 +645,7 @@ class FieldLevelModel(Model):
             pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.paint_shape)
             gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, 
                                  kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
-            # NOTE: final deconvolution amplifies AP-induced high-frequencies.
+            # NOTE: final deconvolution can amplify AP-induced high-frequencies.
             gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
@@ -647,46 +665,55 @@ class FieldLevelModel(Model):
         """
         mesh, syst = params
 
-        if self.observable == 'field':
-            mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
-            mesh /= mesh.mean()
-
-            mesh -= 1
-            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            rcounts = syst['ngbars'] * self.cell_length**3
-            mean_count = rcounts.mean()
-
-            # obs = sample('obs', dist.Normal((1 + mesh) * mean_count, mean_count**.5))
-            # obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
-
-            obs = sample('obs', dist.Normal(mesh, (jnp.maximum(1 + mesh, 1e-9) / mean_count)**.5))
-            # obs = sample('obs', dist.Normal(mesh, (jnp.abs(1 + mesh) / mean_count)**.5))
-
-            # obs = sample('obs', dist.Poisson(jnp.maximum(1 + mesh, 1e-9) * mean_count)) # / mean_count - 1
-            # obs = sample('obs', dist.Poisson(jnp.abs(1 + mesh) * mean_count)) # / mean_count - 1
-            return obs
-
-
         # if self.observable == 'field':
-        #     obs = mesh2masked(mesh, self.mask)
-        #     selec = mesh2masked(self.selec_mesh, self.mask)
-        #     obs *= selec
-        #     # obs /= obs.mean()
+        #     mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
+        #     mesh /= mesh.mean()
+
+        #     mesh -= 1
         #     # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-        #     # print("obs", obs.mean(), obs.std(), obs.min(), obs.max())
-
         #     rcounts = syst['ngbars'] * self.cell_length**3
-        #     mean_count = rcounts.mean()            
-        #     obs = set_radial_count(obs, self.rmasked, self.redges, rcounts)
+        #     mean_count = rcounts.mean()
 
-        #     # Gaussian noise
-        #     obs = sample('obs', dist.Normal(obs, (temp * mean_count)**.5))
-        #     # obs = sample('obs', dist.Normal(obs, jnp.abs(temp * obs)**.5))
-        #     # obs = sample('obs', dist.Normal(obs, jnp.abs(jnp.mean(temp * obs))**.5))
+        #     # if self.lik_type == 'gaussian':
+        #     #     # obs = sample('obs', dist.Normal((1 + mesh) * mean_count, mean_count**.5))
+        #     #     obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
 
-        #     # Poisson noise
-        #     # obs = sample('obs', dist.Poisson(jnp.maximum(obs, 0.)**(1 / temp)))
-        #     return obs 
+        #     # else:
+        #     #     # posit_fn = lambda x: jnp.maximum(x, 1e-9)
+        #     #     # posit_fn = jnp.abs
+        #     #     posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
+        #     #     obs = sample('obs', dist.Normal(mesh, (posit_fn(1 + syst['sigma_delta'] * mesh) / mean_count)**.5))
+        #     # return obs
+
+
+        if self.observable == 'field':
+            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
+            mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
+            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
+            # mesh /= mesh.mean()
+
+            rcounts = syst['ngbars'] * self.cell_length**3
+            mean_count = rcounts.mean()            
+            # nmesh = set_radial_count(mesh, self.rmasked, self.redges, rcounts)
+
+            # posit_fn = lambda x: jnp.maximum(x, 1e-9)
+            # posit_fn = jnp.abs
+            posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
+
+            if self.lik_type == 'poisson':
+                # intens = posit_fn(mesh * mean_count)
+                intens = posit_fn(mesh) * mean_count
+                obs = sample('obs', dist.Poisson(intens**(1 / temp)))
+            else:
+                if self.lik_type == 'gaussian':
+                    var = syst['sigma_0']
+                elif self.lik_type == 'gaussian_delta':
+                    delta = mesh - 1
+                    var = posit_fn(1 + syst['sigma_delta'] * delta) * syst['sigma_0']
+                    # var = posit_fn((1 + syst['sigma_delta'] * delta) * syst['sigma_0'])
+
+                obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var * self.cell_length**3)**.5))
+            return obs 
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
@@ -895,7 +922,19 @@ class FieldLevelModel(Model):
     #     rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape, self.curved_sky))
     #     return mesh2masked(rmesh, self.mask)
     
-    
+    def new_latents_from_loc(self, loc:dict, update_prior:bool=False):
+        """
+        Return a new latents config wih updated fiducial location based on given location dict.
+        If `update_prior` is True, also update prior location (if it exists).
+        """
+        new = {}
+        for name, conf in self.latents.items():
+            new[name] = conf.copy()
+            if name in loc:
+                new[name]['loc_fid'] = loc[name]
+                if update_prior and 'loc' in conf:
+                    new[name]['loc'] = loc[name]
+        return new
 
 
     ########
@@ -926,9 +965,8 @@ class FieldLevelModel(Model):
 
         alpha_selec = self.selec_mesh * mesh.mean() / self.selec_mesh.mean()
         return (mesh - alpha_selec) / (alpha_selec**2).mean()**.5
-
     
-    def add_selection(self, load_path:str|Path, cell_budget, padding=0., save_path:str|Path=None):
+    def add_selection(self, load_path:str|Path, cell_budget:float, padding:float=0., save_path:str|Path=None):
         """
         Compute and save a painted selection mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
         """
@@ -1000,7 +1038,7 @@ class FieldLevelModel(Model):
         """
         Return wavenumber, power spectrum, transfer function, and coherence 
         of meshes in chains compared to a reference mesh.
-        Precisely return under the key "kptc" a tuple 
+        Precisely, return under the key "kptc" a tuple 
         (k, pow1, (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5).
         """
         chains = chains.copy()

@@ -282,7 +282,6 @@ def optim_kcut(oversamp, safety=0.98):
     """
     return safety * jnp.pi * (2 - 1 / oversamp)
 
-
 def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', oversamp=1.):
     """
     Paint the positions onto a mesh of given shape. 
@@ -314,7 +313,8 @@ def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', 
     mesh = lax.scan(step, mesh, ishifts)[0]
     return mesh
 
-
+from jax import jit #############
+@partial(jit, static_argnames=['order', 'kernel_type', 'oversamp'])
 def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp=1.):
     """
     Read the value at the positions from the mesh.

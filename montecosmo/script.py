@@ -231,19 +231,18 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     kpow_fid = kptc_obs[0], lin_power_interp(model.cosmo_fid)(kptc_obs[0])
     plt.figure(figsize=(12, 4), layout='constrained')
     def plot_kptcs(kptcs, label=None, i_color=0):
-        plot_powtranscoh(*kptcs, fill=0.68, color=SetDark2(i_color))
-        plot_powtranscoh(*kptcs, fill=0.95, color=SetDark2(i_color))
+        plot_powtranscoh(*kptcs, fill=(0.68, 0.95), color=SetDark2(i_color))
         plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), 
                          color=SetDark2(i_color), label=label)
 
     plt.subplot(131)
     plot_pow(*kpow_ref, 'k:', label='true')
-    plot_pow(*kpow_fid, 'k--', label='fiducial')
+    plot_pow(*kpow_fid, 'k--', alpha=0.5, label='fiducial')
     plt.subplot(132)
     plt.axhline(1., linestyle=':', color='k', alpha=0.5)
     plt.subplot(133)
     plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
-    plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs')
+    plot_coh(kptc_obs[0], kptc_obs[3], 'k--', alpha=0.5, label='obs')
 
     kptcs = tree.map(jnp.concatenate, chains['kptc'])
     plot_kptcs(kptcs, label='post')

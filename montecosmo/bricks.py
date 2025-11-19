@@ -401,7 +401,8 @@ def regular_pos(mesh_shape:tuple, ptcl_shape:tuple=None):
         ptcl_shape = mesh_shape
 
     pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape)]
-    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
+    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3) 
+    # NOTE: pos must be cast to jnp.array
     return pos
 
 def unif_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
@@ -821,7 +822,7 @@ def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_size, mesh_shap
     mesh = paint(pos, mesh_shape, paint_order)
     return mesh
 
-def catalog2selection(path, cosmo:Cosmology, cell_budget, padding=0., paint_order:int=2):
+def catalog2selection(path, cosmo:Cosmology, cell_budget:float, padding:float=0., paint_order:int=2):
     """
     Return painted selection mesh and box configuration from a given path to RA, DEC, Z data.
     """

@@ -39,8 +39,8 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 
-@tm.python_app
-def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
+# @tm.python_app
+def infer_model(mesh_length, eh_approx=True, oversamp=False):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     from datetime import datetime
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().isoformat()}")
@@ -57,13 +57,14 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
     from montecosmo.model import FieldLevelModel, default_config
     from montecosmo.utils import pdump, pload, Path
 
-    # save_dir = Path(os.path.expanduser("~/scratch/png/"))
+    # save_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z08_lrg/test")) # FMN
+    # load_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z08_lrg/load/")) # FMN
     # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
-    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacs0") # Perlmutter
-    load_dir = Path("./scratch/abacus_c0_i0_z08_lrg/")
+    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer") # Perlmutter
+    load_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/load/") # Perlmutter
 
-    save_dir += f"_eh{eh_approx:d}_ovsamp{ovsamp:d}"
+    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_nos8"
     save_dir = save_dir / f"lpt_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -79,46 +80,55 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
     ########
     # Load #
     ########
-    z_obs = 0.8
     box_size = 3*(2000,)
-    cell_budget = mesh_length**3
     selection = None
-    mesh_length = round(cell_budget**(1/3))
+    # mesh_length = 96
+    z_obs = 0.8
 
-    ovsamp_config = {
-        'init_oversamp':7/4,
-        'ptcl_oversamp':7/4,
-        'paint_oversamp':3/2,
+    oversamp_config = {
+        # 'evol_oversamp':7/4,
+        # 'ptcl_oversamp':7/4,
+        # 'paint_oversamp':3/2,
+        'evol_oversamp':2.,
+        'ptcl_oversamp':2.,
+        'paint_oversamp':2.,
         'k_cut':jnp.inf,    
-        } if ovsamp else {}
+        } if oversamp else {}
 
     model = FieldLevelModel(**default_config | 
-                            {'mesh_shape': 3*(mesh_length,), 
+                            {'final_shape': 3*(mesh_length,), 
                             'cell_length': box_size[0] / mesh_length, # in Mpc/h
                             'box_center': (0.,0.,0.), # in Mpc/h
-                            'box_rotvec': (0.,0.,0.), # rotation vector in radians
+                            'box_rotvec': (0.,0.,0.,), # rotation vector in radians
                             'evolution': 'lpt',
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
                             'curved_sky': False, # curved vs. flat sky
                             'ap_auto': None, # parametrized AP vs. auto AP
                             'selection': selection, # if float, padded fraction, if str or Path, path to window mesh file
                             'paint_order':2, # order of interpolation kernel
+                            'paint_deconv': True, # whether to deconvolve painted field
+                            'kernel_type':'rectangular', # 'rectangular', 'kaiser_bessel'
+                            'init_oversamp':1., # initial mesh 1D oversampling factor
+                            # 'evol_oversamp':2., # evolution mesh 1D oversampling factor
+                            # 'ptcl_oversamp':2., # particle cloud 1D oversampling factor
+                            # 'paint_oversamp':2., # painted mesh 1D oversampling factor
+                            'evol_oversamp':1., # evolution mesh 1D oversampling factor
+                            'ptcl_oversamp':1., # particle cloud 1D oversampling factor
+                            'paint_oversamp':1., # painted mesh 1D oversampling factor
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
-                            'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None, # if None, use EH power
-                            'init_oversamp':1., # initial mesh 1D oversampling factor
-                            'ptcl_oversamp':1., # particle grid 1D oversampling factor
-                            'paint_oversamp':1., # painted mesh 1D oversampling factor
-                            'k_cut':jnp.inf,
-                            } | ovsamp_config)
+                            'k_cut': np.inf,
+                            'init_power': load_dir / f'init_kpow.npy',
+                            # 'init_power': None,
+                            'lik_type': 'gaussian_delta',
+                            } | oversamp_config)
 
-    print(model)
-    # model.render()
     truth = {
         'Omega_m': 0.3137721, 
         'sigma8': 0.8076353990239834,
-        # 'b1': 1.,
-        'b1': 0.,
+        # 'b1': 0.,
+        # 'b1': 1.15,
+        'b1': 1.05,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
@@ -126,27 +136,42 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
         'fNL': 0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
-        'ngbars': 0.00084,
+        'ngbars': 0.000843318125,
+        'sigma_0': 0.000843318125,
+        # 'ngbars': 4e-3, # matter noise
+        # 'sigma_0': 4e-3, # matter noise
+        # 'ngbars': 10000., # neglect lik noise
+        # 'sigma_0': 10000., # neglect lik noise
+        'sigma_delta': 1.,
         }
+
+    latents = model.new_latents_from_loc(truth, update_prior=True)
+    model = FieldLevelModel(**model.asdict() | {'latents': latents})
+    print(model)
+    # model.render()
+
+    # # Abacus matter
+    # # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl2_deconv0_{mesh_length}.npy')
+    # # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl1_deconv1_{mesh_length}.npy')
+    # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl2_deconv1_{mesh_length}.npy')
+    # # obs_mesh = (1 + truth['b1']) * (obs_mesh - 1) + 1
+    # obs_mesh *= truth['ngbars'] * model.cell_length**3
+    # var = truth['sigma_0'] * model.cell_length**3
+    # obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) * var**.5
+    # # obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count)
+
+    # Abacus tracer
+    obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
+    obs_mesh *= truth['ngbars'] * model.cell_length**3
+
     init_mesh = jnp.load(load_dir / f'init_mesh_{mesh_length}.npy')
-    truth |= {'init_mesh': jnp.fft.rfftn(init_mesh)}
+    truth = truth | {'init_mesh': jnp.fft.rfftn(init_mesh)} | {'obs': obs_mesh}
+    del obs_mesh
     del init_mesh
 
-    # Abacus-truth
-    obs_mesh = jnp.load(load_dir / f'fin_paint_{mesh_length}.npy')
-    # obs_mesh = jnp.load(load_dir / f'tracer_mesh_6746545_{mesh_length}.npy')
-
-    obs_mesh -= 1
-    mean_count = truth['ngbars'] * model.cell_length**3
-    if poisson:
-        obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count) / mean_count - 1
-    else:
-        obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) / mean_count**.5
-    truth |= {'obs': obs_mesh}
-    del obs_mesh
-
-    # # Self-specified
-    # truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
+    # Self-specified
+    # truth |= {'init_mesh': truth0['init_mesh']}
+    # truth1 = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
 
     model.save(save_dir / "model.yaml")    
     jnp.savez(save_dir / "truth.npz", **truth)
@@ -160,14 +185,15 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
     ##########
     # Warmup #
     ##########
-    n_samples, n_runs, n_chains = 128 * 64//model.mesh_shape[0], 16, 4
+    # n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 16, 4
+    n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 8, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
     model.reset()
     model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
     model.block()
-    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=1/5)))(jr.split(jr.key(45), n_chains))
+    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
     print('start params:', params_start.keys())
 
     # overwrite = True
@@ -176,8 +202,8 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
         print("Warming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**15, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, save_path+"_warm_state.p")
@@ -186,6 +212,9 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
         state = pload(save_path+"_warm_state.p")
         config = pload(save_path+"_warm_conf.p")
 
+    ###############
+    # Plot Warmup #
+    ###############
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh
     from montecosmo.bricks import lin_power_interp
 
@@ -233,13 +262,16 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
     from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
-    obs = ['obs','fNL','bnp','alpha_iso','alpha_ap','b1','b2','bs2','bn2']
-    # obs = ['obs','fNL','bnp','alpha_iso','alpha_ap']
-    obs += ['Omega_m'] if not eh_approx else []
-    # obs = ['obs','Omega_m','sigma8','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
-    # obs = ['obs','fNL','b1','b2','bs2','bn2','bnp','alpha_iso','alpha_ap','ngbars']
-    # obs = ['obs','fNL','alpha_iso','alpha_ap']
-    # obs = ['obs','fNL','bnp','alpha_iso','alpha_ap']
+    obs = ['obs','fNL','bnp',
+            # 'b1','b2','bs2','bn2', 
+            # 'ngbars', 
+            # 'sigma_0',
+            # 'sigma_delta', 
+            'Omega_m',
+            'sigma8',
+            # 'init_mesh',
+        'alpha_iso','alpha_ap',]
+    # obs += ['Omega_m'] if not eh_approx else []
     obs = {k: truth[k] for k in obs}
 
     model.reset()
@@ -262,18 +294,22 @@ def infer_model(mesh_length, eh_approx=True, ovsamp=False, poisson=False):
 
         eval_per_ess = 1e3
         ss = jnp.median(config.step_size)
-        config = MCLMCAdaptationState(L=0.4 * eval_per_ess/2 * ss, 
+        config = MCLMCAdaptationState(L=0.4 * eval_per_ess / 2 * ss, 
                                     step_size=ss, 
                                     inverse_mass_matrix=jnp.median(config.inverse_mass_matrix, 0))
         config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
-        
-        print("ss: ", config.step_size)
-        print("L: ", config.L)
-        from jax.flatten_util import ravel_pytree
-        _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
-        print("inv_mm:", unrav_fn(config.inverse_mass_matrix[0]))
-        print(tree.map(vmap(lambda x: jnp.isnan(x).sum()), state.position))
 
+        def print_mclmc_config(config, state):
+            print("ss: ", config.step_size)
+            print("L: ", config.L)
+            from jax.flatten_util import ravel_pytree
+            _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
+            invmm = config.inverse_mass_matrix[0]
+            print("inv_mm:", unrav_fn(invmm))
+            print(f"inv_mm mean: {invmm.mean()}, std: {invmm.std()}")
+            print("nan count:", tree.map(vmap(lambda x: jnp.isnan(x).sum()), state.position))
+        
+        print_mclmc_config(config, state)
         pdump(state, save_path+"_warm2_state.p")
         pdump(config, save_path+"_conf.p")
 
@@ -354,24 +390,22 @@ def compare_chains_dir(save_dir, labels):
 
 if __name__ == '__main__':
     print("Demat")
-    mesh_lengths = [32, 64, 128]
+    # mesh_lengths = [32, 64, 96]
+    mesh_lengths = [64]
+    # mesh_lengths = [32]
     eh_approxs = [False]
-    ovsamps = [True, False]
-    poissons = [True, False]
+    oversamps = [True]
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
-            for ovsamp in ovsamps:
-                for poisson in poissons:
-                    
-                    if not (not ovsamp and poisson): # avoid poisson noise and no oversampling
-                        print(f"\n--- mesh_length {mesh_length}, eh_approx {eh_approx}, ovsamp {ovsamp}, poisson {poisson} ---")
-                        infer_model(mesh_length, eh_approx=eh_approx, ovsamp=ovsamp, poisson=poisson)
+            for oversamp in oversamps:
+                print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp} ---")
+                infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp)
 
     # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/lpt_128"
-    # make_chains_dir(save_dir, start=3, end=100, thinning=1, overwrite=overwrite)
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/matter_eh0_ovsamp1_s8_s0/lpt_64"
+    # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
 
     # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
     # compare_chains_dir(save_dir, labels=["128", "32", "64"])
