@@ -4,7 +4,6 @@ from jax import numpy as jnp, grad, vmap, lax
 from jax.scipy.spatial.transform import Rotation
 
 from jax_cosmo import Cosmology, background, constants, power
-import fitsio
 # from scipy.interpolate import SmoothSphereBivariateSpline
 
 from montecosmo.utils import std2trunc, trunc2std, rg2cgh, cgh2rg, ch2rshape, r2chshape, safe_div, nvmap, cart2radecrad, radecrad2cart
@@ -815,6 +814,7 @@ def catalog2mesh(path, cosmo:Cosmology, box_center, box_rot, box_size, mesh_shap
     """
     Return painted mesh from a given path to RA, DEC, Z data.
     """
+    import fitsio
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
 
@@ -826,6 +826,7 @@ def catalog2selection(path, cosmo:Cosmology, cell_budget:float, padding:float=0.
     """
     Return painted selection mesh and box configuration from a given path to RA, DEC, Z data.
     """
+    import fitsio
     data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
     box_center, box_rotvec, box_size = minmax_box(pos)
