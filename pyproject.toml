@@ -7,7 +7,13 @@ name = "montecosmo"
 version = "0.0.1"
 authors = [{name="Hugo Simon-Onfroy"}] # email=""
 description = "A differentiable cosmological pipeline for galaxy density field inference."
-dependencies = ["numpy"]
+dependencies = ["numpyro",
+                "jax-cosmo",
+                "diffrax",
+                "blackjax>=1.2.5",
+                "getdist",
+                "desipipe @ git+https://github.com/cosmodesi/desipipe.git",
+                "fitsio",]
 readme = "README.md"
 requires-python = ">=3.7"
 urls = {Repository="https://github.com/hsimonfroy/montecosmo"} # Documentation=""
