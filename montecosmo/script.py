@@ -240,6 +240,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     plot_pow(*kpow_fid, 'k--', alpha=0.5, label='fiducial')
     plt.subplot(132)
     plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plot_trans(kpow_ref[0], (kpow_fid[1] / kpow_ref[1])**.5, 'k--', alpha=0.5, label='fiducial')
     plt.subplot(133)
     plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
     plot_coh(kptc_obs[0], kptc_obs[3], 'k--', alpha=0.5, label='obs')

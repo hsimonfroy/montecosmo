@@ -198,19 +198,19 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
 
     # overwrite = True
     overwrite = False
-    if not os.path.exists(save_path+"_warm_state.p") or overwrite:
+    if not os.path.exists(save_path+"_warm1_state.p") or overwrite:
         print("Warming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
-        pdump(state, save_path+"_warm_state.p")
-        pdump(config, save_path+"_warm_conf.p")
+        pdump(state, save_path+"_warm1_state.p")
+        pdump(config, save_path+"_warm1_conf.p")
     else:
-        state = pload(save_path+"_warm_state.p")
-        config = pload(save_path+"_warm_conf.p")
+        state = pload(save_path+"_warm1_state.p")
+        config = pload(save_path+"_warm1_conf.p")
 
     ###############
     # Plot Warmup #
@@ -237,13 +237,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
 
     plt.subplot(131)
     plot_pow(*kpow_true, 'k:', label='true')
-    plot_pow(*kpow_fid, 'k--', label='fiducial')
+    plot_pow(*kpow_fid, 'k--', alpha=0.5, label='fiducial')
     plt.legend()
     plt.subplot(132)
-    plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', label='fiducial')
     plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', alpha=0.5, label='fiducial')
     plt.subplot(133)
-    # plot_coh(kptc_obs[0], kptc_obs[3], 'k:', alpha=0.5, label='obs');
     plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
     plt.savefig(save_path+f'_init_warm.png')   
 
@@ -287,8 +286,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     start = 1
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
         print("Warming up 2...")
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
 
@@ -311,15 +310,15 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         
         print_mclmc_config(config, state)
         pdump(state, save_path+"_warm2_state.p")
-        pdump(config, save_path+"_conf.p")
+        pdump(config, save_path+"_warm2_conf.p")
 
     elif not os.path.exists(save_path+"_last_state.p") or overwrite:
         state = pload(save_path+"_warm2_state.p")
-        config = pload(save_path+"_conf.p")
+        config = pload(save_path+"_warm2_conf.p")
 
     else:
         state = pload(save_path+"_last_state.p")
-        config = pload(save_path+"_conf.p")
+        config = pload(save_path+"_warm2_conf.p")
         while os.path.exists(save_path+f"_{start}.npz") and start <= n_runs:
             start += 1
         print(f"Resuming at run {start}...")
