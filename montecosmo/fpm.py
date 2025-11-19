@@ -1,4 +1,4 @@
-from collections.abc import Callable
+# from collections.abc import Callable
 # from typing import ClassVar
 # from typing_extensions import TypeAlias
 

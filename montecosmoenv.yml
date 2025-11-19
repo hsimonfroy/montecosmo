@@ -56,26 +56,3 @@ dependencies:
 # If struggling with cuda versions:
 # pip install tensorflow[and-cuda] 
 
-
-# name: montenv
-# channels:
-#   - conda-forge
-# dependencies:
-#   - python # tests on >=3.11.6,<=3.12.2
-#   - pip
-#   - jupyterlab
-#   - matplotlib
-#   - ipympl
-#   - numpy
-#   - getdist
-#   - mlflow
-#   - ffmpeg
-#   - pip: 
-#     - numpyro
-#     - jax-cosmo
-#     - git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git
-#     - diffrax==0.5.0
-#     - --editable=git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
-#     - -U "jax[cuda11_pip]==0.4.25" 
-#     - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-#     - nvidia-cudnn-cu11==8.9.4.25 # to correct jax install

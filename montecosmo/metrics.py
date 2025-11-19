@@ -3,8 +3,7 @@ from jax import numpy as jnp
 from functools import partial
 
 from scipy.special import legendre, lpmv, factorial
-from jaxpm.growth import growth_rate, growth_factor
-from montecosmo.nbody import rfftk, rectangular_hat
+from montecosmo.nbody import rfftk, rectangular_hat, a2g, a2f
 from montecosmo.utils import safe_div, ch2rshape, cart2radecrad
 
 from numpyro.diagnostics import effective_sample_size, gelman_rubin
@@ -220,9 +219,9 @@ def kaiser_formula(cosmo:Cosmology, a, lin_kpow, bE, poles=0):
     bE is the Eulerien linear bias
     """
     poles = jnp.atleast_1d(poles)
-    beta = growth_rate(cosmo, a) / bE
+    beta = a2f(cosmo, a) / bE
     k, pow = lin_kpow
-    pow *= growth_factor(cosmo, a)**2
+    pow *= a2g(cosmo, a)**2
 
     weights = np.ones(len(poles)) * bE**2
     for i_ell, ell in enumerate(poles):
