@@ -138,8 +138,6 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         'alpha_ap': 1.,
         'ngbars': 0.000843318125,
         'sigma_0': 0.000843318125,
-        # 'ngbars': 4e-3, # matter noise
-        # 'sigma_0': 4e-3, # matter noise
         # 'ngbars': 10000., # neglect lik noise
         # 'sigma_0': 10000., # neglect lik noise
         'sigma_delta': 1.,
@@ -202,8 +200,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         print("Warming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, save_path+"_warm1_state.p")
@@ -286,8 +284,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     start = 1
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
         print("Warming up 2...")
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
 
@@ -395,16 +393,16 @@ if __name__ == '__main__':
     eh_approxs = [False]
     oversamps = [True]
     
-    for mesh_length in mesh_lengths:
-        for eh_approx in eh_approxs:
-            for oversamp in oversamps:
-                print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp} ---")
-                infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp)
+    # for mesh_length in mesh_lengths:
+    #     for eh_approx in eh_approxs:
+    #         for oversamp in oversamps:
+    #             print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp} ---")
+    #             infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp)
 
     # overwrite = False
-    # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/matter_eh0_ovsamp1_s8_s0/lpt_64"
-    # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
+    overwrite = True
+    save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_eh0_ovsamp1_nos8/lpt_64"
+    make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
 
     # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
     # compare_chains_dir(save_dir, labels=["128", "32", "64"])

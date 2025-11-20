@@ -315,8 +315,6 @@ def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', 
     mesh = lax.scan(step, mesh, ishifts)[0]
     return mesh
 
-from jax import jit #############
-@partial(jit, static_argnames=['order', 'kernel_type', 'oversamp'])
 def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp=1.):
     """
     Read the value at the positions from the mesh.

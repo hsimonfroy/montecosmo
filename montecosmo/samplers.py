@@ -294,7 +294,7 @@ def mclmc_warmup(seed, init_pos, logdf, n_steps=0, config=None,
     if config is None:
         n_dim = len(ravel_pytree(state.position)[0])
         config = MCLMCAdaptationState(
-            n_dim**.5, n_dim**.5 / 4, inverse_mass_matrix=jnp.ones(n_dim))
+            n_dim**.5, n_dim**.5 / 1e4, inverse_mass_matrix=jnp.ones(n_dim))
         
     elif isinstance(config, dict):
         L = config['L']
@@ -304,7 +304,7 @@ def mclmc_warmup(seed, init_pos, logdf, n_steps=0, config=None,
 
     else:
         assert isinstance(config, MCLMCAdaptationState), \
-        "config must be either None, a dict, or a MCLMCAdaptationState"
+        "config must be either None, dict, or MCLMCAdaptationState"
 
     if n_steps > 0:
         # Build the kernel
@@ -333,7 +333,7 @@ def mclmc_warmup(seed, init_pos, logdf, n_steps=0, config=None,
             frac_tune2=frac_tune2,
             frac_tune3=frac_tune3,
             num_effective_samples=256, # NOTE: higher value implies slower averaging rate
-            # TODO: add config as first guess (next blackjax update)
+            params=config
             )
         debug.print("Perform {n_steps_tot} adaptation steps", n_steps_tot=n_steps_tot)  
 
@@ -603,6 +603,7 @@ from blackjax.base import SamplingAlgorithm, VIAlgorithm
 from blackjax.progress_bar import progress_bar_scan
 from blackjax.types import ArrayLikeTree, PRNGKey
 
+# TODO: wait for blackjax > 1.3
 def run_with_thinning(
     seed: PRNGKey,
     inference_algorithm: SamplingAlgorithm|VIAlgorithm,
