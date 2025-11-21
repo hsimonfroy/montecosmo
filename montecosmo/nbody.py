@@ -346,6 +346,41 @@ def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp
     out = lax.scan(step, out, ishifts)[0]
     return out
 
+# def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp=1.):
+#     """
+#     Read the value at the positions from the mesh.
+#     """
+#     dtype = 'int16' # int16 -> +/- 32_767, trkl
+#     shape = np.asarray(mesh.shape, dtype=dtype)
+#     def wrap(idx):
+#         return idx % shape
+    
+#     id0 = (jnp.round if order % 2 else jnp.floor)(pos).astype(dtype)
+#     ishifts = np.arange(order) - (order - 1) // 2
+#     ishifts = np.array(list(product(* len(shape) * (ishifts,))), dtype=dtype)
+
+#     if kernel_type == 'rectangular':
+#         kernel = lambda s: rectangular(s, order)
+#     elif kernel_type == 'kaiser_bessel':
+#         kernel = lambda s: kaiser_bessel(s, order, optim_kcut(oversamp))
+    
+#     def step(carry, ishift):
+#         car, id0 = carry
+#         idx = id0 + ishift
+#         idx, ker = wrap(idx), kernel(idx - pos).prod(-1)
+
+#         # idx = jnp.unstack(idx, axis=-1)
+#         idx = tuple(jnp.moveaxis(idx, -1, 0)) # TODO: JAX >= 0.4.28 for unstack
+#         car += mesh[idx] * ker
+#         carry = car, id0
+#         return carry, None
+    
+#     out = jnp.zeros(id0.shape[:-1])
+#     carry = out, id0
+#     carry = lax.scan(step, carry, ishifts)[0]
+#     out = carry[0]
+#     return out
+
 
 # def mass_assignment2(pos, shape, order:int=2, alpha:float=1.):
 #     """

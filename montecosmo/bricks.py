@@ -400,7 +400,7 @@ def regular_pos(mesh_shape:tuple, ptcl_shape:tuple=None):
         ptcl_shape = mesh_shape
 
     pos = [np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape)]
-    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3) 
+    pos = jnp.stack(np.meshgrid(*pos, indexing='ij'), axis=-1).reshape(-1, 3)
     # NOTE: pos must be cast to jnp.array
     return pos
 

@@ -61,10 +61,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     # load_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z08_lrg/load/")) # FMN
     # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
-    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer") # Perlmutter
+    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real") # Perlmutter
     load_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/load/") # Perlmutter
 
-    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_nos8"
+    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8_b1prior"
     save_dir = save_dir / f"lpt_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -127,8 +127,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         'Omega_m': 0.3137721, 
         'sigma8': 0.8076353990239834,
         # 'b1': 0.,
-        # 'b1': 1.15,
-        'b1': 1.05,
+        'b1': 1.15,
+        # 'b1': 1.05,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
@@ -265,7 +265,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
             # 'sigma_0',
             # 'sigma_delta', 
             'Omega_m',
-            'sigma8',
+            # 'sigma8',
             # 'init_mesh',
         'alpha_iso','alpha_ap',]
     # obs += ['Omega_m'] if not eh_approx else []
@@ -278,7 +278,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
     params_warm = params_start | state.position
     print('warm params:', params_warm.keys())
-
+    from jax import shard_map, P
+    
     # overwrite = True
     overwrite = False
     start = 1
@@ -321,7 +322,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
             start += 1
         print(f"Resuming at run {start}...")
 
-
+# partial(shardmap, in_spec=(P(),P(),P()))
     print("Running...")
     run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
     key = jr.key(42)
@@ -329,7 +330,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     for i_run in tqdm(range(start, n_runs + 1)):
         print(f"run {i_run}/{n_runs}")
         key, run_key = jr.split(key, 2)
+        # Falcutatif lax.with_sharding_constraint(state)
         state, samples = run_fn(jr.split(run_key, n_chains), state, config)
+
+        # TODO: process_allgather(state and samples, tiled=False), sync_global_devices
         
         print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
@@ -388,21 +392,21 @@ def compare_chains_dir(save_dir, labels):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [64]
-    # mesh_lengths = [32]
+    mesh_lengths = [32,64]
     eh_approxs = [False]
     oversamps = [True]
+    infer_model = tm.python_app(infer_model)
     
-    # for mesh_length in mesh_lengths:
-    #     for eh_approx in eh_approxs:
-    #         for oversamp in oversamps:
-    #             print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp} ---")
-    #             infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp)
+    for mesh_length in mesh_lengths:
+        for eh_approx in eh_approxs:
+            for oversamp in oversamps:
+                print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp} ---")
+                infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp)
 
-    # overwrite = False
-    overwrite = True
-    save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_eh0_ovsamp1_nos8/lpt_64"
-    make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
+    # # overwrite = False
+    # overwrite = True
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_eh0_ovsamp1_nos8/lpt_64"
+    # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
 
     # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
     # compare_chains_dir(save_dir, labels=["128", "32", "64"])

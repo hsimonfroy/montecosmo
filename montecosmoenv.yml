@@ -39,6 +39,21 @@ dependencies:
     # - "jax[cuda12_pip]" # NERSC
     # - --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
+# dependencies:
+#   - python # tests on >=3.11.6,<=3.12.2
+#   - pip
+#   - jupyterlab
+#   - ipympl
+#   - pip:
+#     - numpyro
+#     - blackjax
+#     - jax-cosmo
+#     - diffrax
+#     - fitsio
+#     - git+https://github.com/cosmodesi/desipipe.git
+#     - jax[cuda12]
+#     - -e git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
+
 # Optionally:
   # - bccp::nbodykit # only for python<3.8
   # - pip:
