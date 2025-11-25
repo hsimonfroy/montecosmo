@@ -540,6 +540,8 @@ def lpt(
 ###########
 # Growths #
 ###########
+# growth_log10_amin: float = -3.
+# growth_steps: int = 128
 growth_log10_amin: float = -3.
 growth_steps: int = 128
 

@@ -369,6 +369,19 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     return weights, dvel
 
 
+def b1_L2E(b1, inv=False):
+    if not inv:
+        b1 = 1 + b1
+    else:
+        b1 = b1 - 1
+    return b1
+
+def b2_L2E(b2, b1L, inv=False):
+    if not inv:
+        b2 = b2 + 8 / 21 * b1L
+    else:
+        b2 = b2 - 8 / 21 * b1L
+    return b2
 
 def b_phi(b1, p=1., delta_c=1.686):
     """

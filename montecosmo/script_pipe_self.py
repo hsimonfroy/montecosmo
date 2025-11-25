@@ -131,7 +131,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     tune_mass = True
 
     model.reset()
-    model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
+    model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
     model.block()
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
     print('start params:', params_start.keys())
@@ -212,7 +212,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     obs = {k: truth[k] for k in obs}
 
     model.reset()
-    model.condition(obs, from_base=True)
+    model.substitute(obs, from_base=True)
     model.block()
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
     params_warm = params_start | state.position

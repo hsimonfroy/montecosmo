@@ -50,6 +50,7 @@ dependencies:
 #     - jax-cosmo
 #     - diffrax
 #     - fitsio
+#     - plotly
 #     - git+https://github.com/cosmodesi/desipipe.git
 #     - jax[cuda12]
 #     - -e git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo

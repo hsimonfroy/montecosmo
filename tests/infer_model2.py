@@ -136,7 +136,7 @@ params_init = jit(vmap(partial(model.kaiser_post, delta_obs=delta_obs, scale_fie
 if not os.path.exists(save_path+"_warm_state.p") or overwrite:
     print("Warming up...")
     model.reset()
-    model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
+    model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
     model.block()
 
     from montecosmo.samplers import get_mclmc_warmup
@@ -160,7 +160,7 @@ obs = ['obs','alpha_iso','alpha_ap']
 obs = {k: truth[k] for k in obs}
 
 model.reset()
-model.condition(obs, from_base=True)
+model.substitute(obs, from_base=True)
 # model.render()
 model.block()
 

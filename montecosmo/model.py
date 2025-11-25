@@ -15,7 +15,7 @@ from jax.scipy.spatial.transform import Rotation
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
-                               lagrangian_bias,
+                               lagrangian_bias, b1_L2E, b2_L2E,
                                top_hat_selection, gen_gauss_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
@@ -71,7 +71,7 @@ default_config={
                             'label':'{\\Omega}_m', 
                             'loc':0.3111,
                             # 'loc': 0.3137721, 
-                            'scale':0.5,
+                            'scale':0.1,
                             'scale_fid':1e-2,
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                             'high': 1.},
@@ -93,31 +93,35 @@ default_config={
                             'label':'{\\sigma}_8',
                             'loc':0.8102,
                             # 'loc': 0.8076353990239834,
-                            'scale':0.5,
-                            'scale_fid':1e-2,
+                            'scale':1e-1,
+                            'scale_fid':1e-1, # Real-space
+                            # 'scale_fid':1e-2, # Redshift-space
                             'low': 0.,
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
                             'label':'{b}_1',
+                            # 'label':'{b}_1 \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':1.,
-                            # 'scale':1e0,
-                            'scale':1e-1,
+                            'scale':1.,
                             'scale_fid':1e-2,
                             },
                 'b2': {'group':'bias',
                             'label':'{b}_2',
+                            # 'label':'{b}_2 \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':3e-2,
                             },
                 'bs2': {'group':'bias',
                             'label':'{b}_{s^2}',
+                            # 'label':'{b}_{s^2} \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':1e-1,
                             },
                 'bn2': {'group':'bias',
                             'label':'{b}_{\\nabla^2}',
+                            # 'label':'{b}_{\\nabla^2} \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':1e0,
@@ -163,7 +167,7 @@ default_config={
                 'sigma_0': {'group':'syst',
                                 'label':'{\\sigma_{0}}',
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
-                                'scale':1e-2,
+                                'scale':1e-3,
                                 'scale_fid':1e-4,
                                 'low':0.,
                                 'high':jnp.inf,
@@ -293,7 +297,7 @@ class Model():
     def seed(self, seed):
         self.model = handlers.seed(self.model, rng_seed=seed)
 
-    def condition(self, data={}, from_base=False):
+    def substitute(self, data={}, from_base=False):
         """
         Substitute random variables by their provided values, 
         optionally reparametrizing base values into sample values.
@@ -537,7 +541,15 @@ class FieldLevelModel(Model):
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
         cosmo, bias, ap, syst = tup
-        cosmology = get_cosmology(**cosmo)        
+        cosmology = get_cosmology(**cosmo)    
+
+        print("\nprior b1s8/s8fid:", bias)
+        # bias['b1'], bias['b2'] = self.reparam_bias(bias['b1'], bias['b2'], cosmo['sigma8'])
+        bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'])
+        bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'])
+        # # bias |= {k: v * self.loc_fid['sigma8'] / cosmo['sigma8'] for k, v in bias.items() if k in ['b1','b2','bs2','bn2']}    
+        # bias |= {k: v * self.loc_fid['sigma8'] / cosmology.sigma8 for k, v in bias.items() if k in ['b1','b2','bs2','bn2']}    
+        print("prior b1:", bias)
 
         # Sample, reparametrize, and register initial conditions
         init = {}
@@ -746,9 +758,33 @@ class FieldLevelModel(Model):
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
-        bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+        # bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
         ap = samp2base(ap_, self.latents, inv=inv, temp=temp)
         syst = samp2base(syst_, self.latents, inv=inv, temp=temp)
+
+        if not inv:
+            bias = samp2base(bias_, self.latents, temp=temp)
+            print("\nb1s8/s8fid:", bias)
+            if 'b1' in bias:
+                bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'])
+                if 'b2' in bias:
+                    bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'])
+
+            # if {'b1','sigma8'} <= bias.keys() | cosmo.keys():
+            #     bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'])
+            # if {'b1','b2','sigma8'} <= bias.keys() | cosmo.keys():
+            #     bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'])
+            # bias |= {k: v * self.loc_fid['sigma8'] / cosmo['sigma8'] for k, v in bias.items() if k in ['b1','b2','bs2','bn2']}
+            print("b1:", bias)
+        else:
+            print("\nb1:", bias_)
+        #     bias_ |= {k: v * cosmo_['sigma8'] / self.loc_fid['sigma8'] for k, v in bias_.items() if k in ['b1','b2','bs2','bn2']}
+            if 'b1' in bias_:
+                if 'b2' in bias_:
+                    bias_['b2'] = self.reparam_b2(bias_['b2'], bias_['b1'], cosmo_['sigma8'], inv=True)
+                bias_['b1'] = self.reparam_b1(bias_['b1'], cosmo_['sigma8'], inv=True)
+            print("b1s8/s8fid:", bias_)
+            bias = samp2base(bias_, self.latents, inv=True, temp=temp)
 
         # Initial conditions
         if len(init) > 0:
@@ -774,6 +810,39 @@ class FieldLevelModel(Model):
         rest = {k:v for k,v in rest.items() if k in params} # do not return data
         out = rest | out # possibly update rest
         return out
+
+        
+    def reparam_b1(self, b1, sigma8, eulerian=False, inv=False):
+        """
+        Transform sigma8-scaled b1 parameter into unscaled b1 parameter.
+        """
+        alpha = sigma8 / self.loc_fid['sigma8']
+
+        if not eulerian:
+            b1 = b1_L2E(b1)
+        if inv:
+            b1 *= alpha
+        else:
+            b1 /= alpha
+        if not eulerian:
+            b1 = b1_L2E(b1, inv=True)
+        return b1
+
+    def reparam_b2(self, b2, b1L, sigma8, eulerian=False, inv=False):
+        """
+        Transform sigma8-scaled b2 parameter into unscaled b2 parameter.
+        """
+        alpha = sigma8 / self.loc_fid['sigma8']
+
+        if not eulerian:
+            b2 = b2_L2E(b2, b1L)
+        if inv:
+            b2 *= alpha**2
+        else:
+            b2 /= alpha**2
+        if not eulerian:
+            b2 = b2_L2E(b2, b1L, inv=True)
+        return b2
 
 
 
@@ -1023,9 +1092,9 @@ class FieldLevelModel(Model):
         return Chains.load_runs(path, start, end, transforms, 
                                 groups=self.groups | self.groups_, labels=self.labels, batch_ndim=batch_ndim)
 
-    def reparam_chains(self, chains:Chains, fourier=False, batch_ndim=2) -> Chains:
+    def reparam_chains(self, chains:Chains, fourier=False, inv=False, batch_ndim=2) -> Chains:
         chains = chains.copy()
-        chains.data = nvmap(partial(self.reparam, fourier=fourier), batch_ndim)(chains.data)
+        chains.data = nvmap(partial(self.reparam, fourier=fourier, inv=inv), batch_ndim)(chains.data)
         return chains
     
     # def predict_chains(self, chains:Chains, seed=42, batch_ndim=2, 

@@ -64,7 +64,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real") # Perlmutter
     load_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/load/") # Perlmutter
 
-    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8_b1prior"
+    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8biases"
     save_dir = save_dir / f"lpt_{mesh_length:d}"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -136,11 +136,11 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         'fNL': 0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
-        'ngbars': 0.000843318125,
-        'sigma_0': 0.000843318125,
+        'ngbars': 8.43318125e-4,
+        'sigma_0': 8.e-4,
         # 'ngbars': 10000., # neglect lik noise
         # 'sigma_0': 10000., # neglect lik noise
-        'sigma_delta': 1.,
+        'sigma_delta': 0.6,
         }
 
     latents = model.new_latents_from_loc(truth, update_prior=True)
@@ -184,15 +184,17 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     # Warmup #
     ##########
     # n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 16, 4
-    n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 8, 4
+    # n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 8, 4
+    n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 4, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
     model.reset()
-    model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
+    model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
     model.block()
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
     print('start params:', params_start.keys())
+    # jlogpdf = jit(model.logpdf) # TODO: test if pre-jitting helps
 
     # overwrite = True
     overwrite = False
@@ -200,8 +202,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         print("Warming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, save_path+"_warm1_state.p")
@@ -272,42 +274,45 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     obs = {k: truth[k] for k in obs}
 
     model.reset()
-    model.condition(obs, from_base=True)
+    model.substitute(obs, from_base=True)
     # model.render()
     model.block()
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
     params_warm = params_start | state.position
     print('warm params:', params_warm.keys())
-    from jax import shard_map, P
     
     # overwrite = True
     overwrite = False
     start = 1
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
         print("Warming up 2...")
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
-                                            desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
+                                            # desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
+                                            # desired_energy_var=1e-7, diagonal_preconditioning=tune_mass)))
+                                            desired_energy_var=3e-8, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
 
+        def print_mclmc_config(config, state):
+            print("\nss: ", config.step_size)
+            print("L: ", config.L)
+
+            from jax.flatten_util import ravel_pytree
+            _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
+            invmm = vmap(unrav_fn)(config.inverse_mass_matrix)
+            print("invmm mean:", tree.map(lambda x: x.mean(range(1, x.ndim)), invmm))
+            print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
+            # print("invmm nan count:", tree.map(lambda x: jnp.isnan(x).sum(range(1, x.ndim)), invmm))
+        
+        print_mclmc_config(config, state)
         eval_per_ess = 1e3
         ss = jnp.median(config.step_size)
         config = MCLMCAdaptationState(L=0.4 * eval_per_ess / 2 * ss, 
                                     step_size=ss, 
                                     inverse_mass_matrix=jnp.median(config.inverse_mass_matrix, 0))
         config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
-
-        def print_mclmc_config(config, state):
-            print("ss: ", config.step_size)
-            print("L: ", config.L)
-            from jax.flatten_util import ravel_pytree
-            _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
-            invmm = config.inverse_mass_matrix[0]
-            print("inv_mm:", unrav_fn(invmm))
-            print(f"inv_mm mean: {invmm.mean()}, std: {invmm.std()}")
-            print("nan count:", tree.map(vmap(lambda x: jnp.isnan(x).sum()), state.position))
-        
         print_mclmc_config(config, state)
+
         pdump(state, save_path+"_warm2_state.p")
         pdump(config, save_path+"_warm2_conf.p")
 
@@ -322,7 +327,6 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
             start += 1
         print(f"Resuming at run {start}...")
 
-# partial(shardmap, in_spec=(P(),P(),P()))
     print("Running...")
     run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
     key = jr.key(42)
@@ -330,7 +334,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     for i_run in tqdm(range(start, n_runs + 1)):
         print(f"run {i_run}/{n_runs}")
         key, run_key = jr.split(key, 2)
-        # Falcutatif lax.with_sharding_constraint(state)
+        # TODO: from jax import shard_map, P, partial(shardmap, in_spec=(P(),P(),P()))
+        # TODO: Falcutatif lax.with_sharding_constraint(state)
         state, samples = run_fn(jr.split(run_key, n_chains), state, config)
 
         # TODO: process_allgather(state and samples, tiled=False), sync_global_devices
@@ -392,10 +397,10 @@ def compare_chains_dir(save_dir, labels):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [32,64]
+    mesh_lengths = [32]
     eh_approxs = [False]
     oversamps = [True]
-    infer_model = tm.python_app(infer_model)
+    # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
@@ -412,7 +417,6 @@ if __name__ == '__main__':
     # compare_chains_dir(save_dir, labels=["128", "32", "64"])
 
     spawn(queue, spawn=True)
-
     print("Kenavo")
 
 

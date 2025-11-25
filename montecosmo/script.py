@@ -54,7 +54,7 @@ def warmup1(save_path, n_chains, overwrite=False):
     if not os.path.exists(save_path+"_warm_state.p") or overwrite:
         print("Warming up...")
         model.reset()
-        model.condition({'obs': truth['obs']} | model.loc_fid, from_base=True)
+        model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
         model.block()
 
         from montecosmo.samplers import get_mclmc_warmup
@@ -72,7 +72,7 @@ def warmup1(save_path, n_chains, overwrite=False):
     obs = {k: truth[k] for k in obs}
 
     model.reset()
-    model.condition(obs, from_base=True)
+    model.substitute(obs, from_base=True)
     # model.render()
     model.block()
 
@@ -200,7 +200,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     truth = dict(jnp.load(save_dir / 'truth.npz'))
     mesh_ref = truth['init_mesh']
     # mesh_ref = model.count2delta(truth['obs'])
-    model.condition(truth, from_base=True)
+    model.substitute(truth, from_base=True)
 
     transforms = [
                 #   lambda x: x[:3],

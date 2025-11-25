@@ -42,7 +42,7 @@ for sd, sp in zip(save_dirs, save_paths):
 
     obs = ['obs','Omega_m','sigma8','b1','b2','bs2','bn2','fNL','ngbar','init_mesh']
     obs = {k: truth[k] for k in obs}
-    model.condition(obs, from_base=True)
+    model.substitute(obs, from_base=True)
 
     transforms = [
                 #   lambda x: x[:3],
