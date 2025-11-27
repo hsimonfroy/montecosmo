@@ -88,6 +88,7 @@ def _waves(mesh_shape, box_size, kedges, los):
     if isinstance(kedges, (type(None), int, float)):
         kmin = 0.
         kmax = np.pi * (mesh_shape / box_size).min() # = knyquist
+        kmax *= 3**.5 * 0.9 ######
         if kedges is None:
             dk = len(mesh_shape)**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
             n_kedges = max(int((kmax - kmin) / dk), 1)

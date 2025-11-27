@@ -195,6 +195,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2
     from getdist import plots
     save_dir = save_path.parent
+    prefix = ''
 
     model = FieldLevelModel.load(save_dir / "model.yaml")
     truth = dict(jnp.load(save_dir / 'truth.npz'))
@@ -203,14 +204,15 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     model.substitute(truth, from_base=True)
 
     transforms = [
-                #   lambda x: x[:3],
+                #   lambda x: x[1:],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 model.reparam_chains,                                 # reparametrize sample variables into base variables
+                model.reparam_bias,                                 # reparametrize bias parameters
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),   # compute mesh statistics
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
     chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
-    pdump(chains, save_path + "_chains.p")
+    pdump(chains, save_path + prefix + "_chains.p")
     print(chains.shape, '\n')
 
     # gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].flatten().to_getdist()
@@ -221,7 +223,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                     filled=True, 
                     markers=truth,
                     contour_colors=[SetDark2(0)],)
-    plt.savefig(save_path + "_triangle.png")
+    plt.savefig(save_path + prefix + "_triangle.png")
 
 
 
@@ -249,33 +251,35 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     plot_kptcs(kptcs, label='post')
     plt.subplot(131)
     plt.legend()
-    plt.savefig(save_path + "_kptc.png")  
+    plt.savefig(save_path + prefix + "_kptc.png")  
 
 
 
 
     transforms = [
+                #   lambda x: x[1:],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
     chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, save_path + "_chains_.p")
+    pdump(chains, save_path + prefix + "_chains_.p")
     print(chains.shape, '\n')
 
     plt.figure(figsize=(12,12))
     chains.print_summary()
     chains.prune().flatten().plot(list(model.groups_))
-    plt.savefig(save_path + "_chains_.png")
+    plt.savefig(save_path + prefix + "_chains_.png")
 
 
 
     transforms = [
                 partial(Chains.thin, thinning=64),
                 model.reparam_chains,
+                model.reparam_bias,
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),
                 ]
     chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, save_path + "_chains_mesh.p")
+    pdump(chains, save_path + prefix + "_chains_mesh.p")
     print(chains.shape, '\n')
 
 

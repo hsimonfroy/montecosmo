@@ -40,10 +40,11 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 # @tm.python_app
-def infer_model(mesh_length, eh_approx=True, oversamp=False):
+def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     from datetime import datetime
-    print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().isoformat()}")
+    print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
+    # print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().replace(microsecond=0).isoformat()}")
     print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')}")
     
     import numpy as np
@@ -61,11 +62,13 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     # load_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z08_lrg/load/")) # FMN
     # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
-    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real") # Perlmutter
+    # save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real") # Perlmutter
+    save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_redshift") # Perlmutter
     load_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/load/") # Perlmutter
 
-    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8biases"
+    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}"
     save_dir = save_dir / f"lpt_{mesh_length:d}"
+    # save_dir = save_dir / f"lpt_{mesh_length:d}_b1prior"
     save_path = save_dir / "test"
     save_dir.mkdir(parents=True, exist_ok=True)
     print(f"SAVE DIR: {save_dir}")
@@ -98,7 +101,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
                             'cell_length': box_size[0] / mesh_length, # in Mpc/h
-                            'box_center': (0.,0.,0.), # in Mpc/h
+                            # 'box_center': (0.,0.,0.), # in Mpc/h
+                            'box_center': (0.,0.,1.), # in Mpc/h
                             'box_rotvec': (0.,0.,0.,), # rotation vector in radians
                             'evolution': 'lpt',
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
@@ -118,7 +122,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
                             'k_cut': np.inf,
-                            'init_power': load_dir / f'init_kpow.npy',
+                            'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
                             # 'init_power': None,
                             'lik_type': 'gaussian_delta',
                             } | oversamp_config)
@@ -126,9 +130,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     truth = {
         'Omega_m': 0.3137721, 
         'sigma8': 0.8076353990239834,
+        # 'sigma8': 0.81,
         # 'b1': 0.,
-        'b1': 1.15,
-        # 'b1': 1.05,
+        'b1': 1.1,
+        # 'b1': 1.15,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
@@ -137,6 +142,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         'alpha_iso': 1.,
         'alpha_ap': 1.,
         'ngbars': 8.43318125e-4,
+        # 'sigma_0': 8.43318125e-4,
         'sigma_0': 8.e-4,
         # 'ngbars': 10000., # neglect lik noise
         # 'sigma_0': 10000., # neglect lik noise
@@ -148,6 +154,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     print(model)
     # model.render()
 
+
     # # Abacus matter
     # # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl2_deconv0_{mesh_length}.npy')
     # # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl1_deconv1_{mesh_length}.npy')
@@ -158,8 +165,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     # obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) * var**.5
     # # obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count)
 
-    # Abacus tracer
-    obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
+    # # Abacus tracer real-space
+    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
+    # obs_mesh *= truth['ngbars'] * model.cell_length**3
+
+    # Abacus tracer redshift-space
+    obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
     obs_mesh *= truth['ngbars'] * model.cell_length**3
 
     init_mesh = jnp.load(load_dir / f'init_mesh_{mesh_length}.npy')
@@ -183,9 +194,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     ##########
     # Warmup #
     ##########
-    # n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 16, 4
-    # n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 8, 4
-    n_samples, n_runs, n_chains = 128 * 64//model.final_shape[0], 4, 4
+    # n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 16, 4
+    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 8, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
@@ -194,16 +204,16 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     model.block()
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
     print('start params:', params_start.keys())
-    # jlogpdf = jit(model.logpdf) # TODO: test if pre-jitting helps
+    # model.logpdf = jit(model.logpdf) # TODO: test if pre-jitting helps
 
     # overwrite = True
     overwrite = False
     if not os.path.exists(save_path+"_warm1_state.p") or overwrite:
-        print("Warming up...")
+        print("\nWarming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, save_path+"_warm1_state.p")
@@ -270,7 +280,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
             # 'sigma8',
             # 'init_mesh',
         'alpha_iso','alpha_ap',]
-    # obs += ['Omega_m'] if not eh_approx else []
+    obs += ['Omega_m'] if not eh_approx else []
+    obs += ['sigma8'] if not s8 else []
     obs = {k: truth[k] for k in obs}
 
     model.reset()
@@ -280,29 +291,32 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
     params_warm = params_start | state.position
     print('warm params:', params_warm.keys())
+
+    print('warm params:', vmap(model.reparam)({k:v for k,v in params_warm.items() if k != 'init_mesh_'}))
     
     # overwrite = True
     overwrite = False
     start = 1
+
+    def print_mclmc_config(config, state):
+        print("\nss: ", config.step_size)
+        print("L: ", config.L)
+
+        from jax.flatten_util import ravel_pytree
+        _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
+        invmm = vmap(unrav_fn)(config.inverse_mass_matrix)
+        print("invmm mean:", tree.map(lambda x: x.mean(range(1, x.ndim)), invmm))
+        print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
+        # print("invmm nan count:", tree.map(lambda x: jnp.isnan(x).sum(range(1, x.ndim)), invmm))
+
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
-        print("Warming up 2...")
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
+        print("\nWarming up 2...")
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             # desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
-                                            # desired_energy_var=1e-7, diagonal_preconditioning=tune_mass)))
-                                            desired_energy_var=3e-8, diagonal_preconditioning=tune_mass)))
+                                            desired_energy_var=1e-7, diagonal_preconditioning=tune_mass)))
+                                            # desired_energy_var=3e-8, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
-
-        def print_mclmc_config(config, state):
-            print("\nss: ", config.step_size)
-            print("L: ", config.L)
-
-            from jax.flatten_util import ravel_pytree
-            _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
-            invmm = vmap(unrav_fn)(config.inverse_mass_matrix)
-            print("invmm mean:", tree.map(lambda x: x.mean(range(1, x.ndim)), invmm))
-            print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
-            # print("invmm nan count:", tree.map(lambda x: jnp.isnan(x).sum(range(1, x.ndim)), invmm))
         
         print_mclmc_config(config, state)
         eval_per_ess = 1e3
@@ -323,11 +337,15 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     else:
         state = pload(save_path+"_last_state.p")
         config = pload(save_path+"_warm2_conf.p")
+        # print_mclmc_config(config, state)
+        # config = config._replace(step_size=config.step_size / 3,)
+        # print_mclmc_config(config, state)
+
         while os.path.exists(save_path+f"_{start}.npz") and start <= n_runs:
             start += 1
         print(f"Resuming at run {start}...")
 
-    print("Running...")
+    print("\nRunning...")
     run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
     key = jr.key(42)
 
@@ -335,7 +353,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         print(f"run {i_run}/{n_runs}")
         key, run_key = jr.split(key, 2)
         # TODO: from jax import shard_map, P, partial(shardmap, in_spec=(P(),P(),P()))
-        # TODO: Falcutatif lax.with_sharding_constraint(state)
+        # TODO: Falcutatif lax.with_sharding_constraint(state), ensure_compile_time_eval
         state, samples = run_fn(jr.split(run_key, n_chains), state, config)
 
         # TODO: process_allgather(state and samples, tiled=False), sync_global_devices
@@ -371,8 +389,30 @@ def make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=False):
             make_chains(save_path, start=start, end=end, thinning=thinning)
 
 
+# # @tm.python_app
+# def compare_chains_dir(save_dir, labels):
+#     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
+#     from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree, pmap
+#     from montecosmo.script import compare_chains
+#     from montecosmo.utils import Path
+#     jconfig.update("jax_enable_x64", True)
+#     print('\n', jdevices())
+
+#     save_paths = []
+#     save_dir = Path(save_dir)
+#     dirs = [dir for dir in sorted(os.listdir(save_dir)) if (save_dir / dir).is_dir()]
+#     dirs.append("") # also process save_dir itself
+#     for dir in dirs:
+#         save_path = save_dir / dir / "test"
+#         # Check if there are chains
+#         if os.path.exists(save_path + "_chains.p"): 
+#             save_paths.append(save_path)
+#             print(f"Adding {dir} to comparison")
+#     compare_chains(save_paths, labels, save_dir)  
+
+
 # @tm.python_app
-def compare_chains_dir(save_dir, labels):
+def compare_chains_dir(save_dir, suffixes, labels):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree, pmap
     from montecosmo.script import compare_chains
@@ -382,16 +422,13 @@ def compare_chains_dir(save_dir, labels):
 
     save_paths = []
     save_dir = Path(save_dir)
-    dirs = [dir for dir in sorted(os.listdir(save_dir)) if (save_dir / dir).is_dir()]
-    dirs.append("") # also process save_dir itself
-    for dir in dirs:
-        save_path = save_dir / dir / "test"
+    for suffix in suffixes:
+        save_path = save_dir / suffix / "test"
         # Check if there are chains
         if os.path.exists(save_path + "_chains.p"): 
             save_paths.append(save_path)
-            print(f"Adding {dir} to comparison")
-    compare_chains(save_paths, labels, save_dir)  
-
+            print(f"Adding {suffix} to comparison")
+    compare_chains(save_paths, labels, save_dir) 
 
 
 if __name__ == '__main__':
@@ -400,25 +437,26 @@ if __name__ == '__main__':
     mesh_lengths = [32]
     eh_approxs = [False]
     oversamps = [True]
+    s8s = [True]
     # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
             for oversamp in oversamps:
-                print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp} ---")
-                infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp)
+                for s8 in s8s:
+                    print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp}, s8 {s8} ---")
+                    infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8)
 
     # # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_eh0_ovsamp1_nos8/lpt_64"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real_eh0_ovsamp1_s80/lpt_96"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacs0_eh1_cut0/"
-    # compare_chains_dir(save_dir, labels=["128", "32", "64"])
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real_eh0_ovsamp1_s81"
+    # compare_chains_dir(save_dir, suffixes=["lpt_32", "lpt_32_nobiasreparam"], labels=["32", "32 no bias reparam"])
 
-    spawn(queue, spawn=True)
+    # spawn(queue, spawn=True)
     print("Kenavo")
-
 
 
 

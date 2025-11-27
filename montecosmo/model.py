@@ -93,9 +93,10 @@ default_config={
                             'label':'{\\sigma}_8',
                             'loc':0.8102,
                             # 'loc': 0.8076353990239834,
-                            'scale':1e-1,
-                            'scale_fid':1e-1, # Real-space
+                            # 'scale':1e-1, # Redshift-space
                             # 'scale_fid':1e-2, # Redshift-space
+                            'scale':3e-2, # Real-space
+                            'scale_fid':3e-2, # Real-space
                             'low': 0.,
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
@@ -107,21 +108,18 @@ default_config={
                             },
                 'b2': {'group':'bias',
                             'label':'{b}_2',
-                            # 'label':'{b}_2 \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':3e-2,
                             },
                 'bs2': {'group':'bias',
                             'label':'{b}_{s^2}',
-                            # 'label':'{b}_{s^2} \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':1e-1,
                             },
                 'bn2': {'group':'bias',
                             'label':'{b}_{\\nabla^2}',
-                            # 'label':'{b}_{\\nabla^2} \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':1e0,
@@ -141,8 +139,7 @@ default_config={
                 'alpha_iso': {'group':'ap',
                                 'label':'{\\alpha_\\mathrm{iso}}',
                                 'loc':1.,
-                                # 'scale':1e-1,
-                                'scale':1e-2,
+                                'scale':1e-1,
                                 'scale_fid':1e-2,
                                 'low':0.,
                                 'high':jnp.inf,
@@ -167,8 +164,10 @@ default_config={
                 'sigma_0': {'group':'syst',
                                 'label':'{\\sigma_{0}}',
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
-                                'scale':1e-3,
+                                # 'scale':1e-3,
                                 'scale_fid':1e-4,
+                                'scale':1e-2,
+                                # 'scale_fid':3e-4,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -176,7 +175,8 @@ default_config={
                                 'label':'{\\sigma_{\\delta}}',
                                 'loc':1.,
                                 'scale':1.,
-                                'scale_fid':1e-1,
+                                # 'scale_fid':1e-1,
+                                'scale_fid':3e-2,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -541,15 +541,12 @@ class FieldLevelModel(Model):
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
         cosmo, bias, ap, syst = tup
-        cosmology = get_cosmology(**cosmo)    
+        cosmology = get_cosmology(**cosmo)
 
-        print("\nprior b1s8/s8fid:", bias)
-        # bias['b1'], bias['b2'] = self.reparam_bias(bias['b1'], bias['b2'], cosmo['sigma8'])
-        bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'])
-        bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'])
-        # # bias |= {k: v * self.loc_fid['sigma8'] / cosmo['sigma8'] for k, v in bias.items() if k in ['b1','b2','bs2','bn2']}    
-        # bias |= {k: v * self.loc_fid['sigma8'] / cosmology.sigma8 for k, v in bias.items() if k in ['b1','b2','bs2','bn2']}    
-        print("prior b1:", bias)
+        if 'b1' in bias:
+            bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'], eulerian=False)
+            if 'b2' in bias:
+                bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'], eulerian=False)   
 
         # Sample, reparametrize, and register initial conditions
         init = {}
@@ -758,33 +755,9 @@ class FieldLevelModel(Model):
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
-        # bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+        bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
         ap = samp2base(ap_, self.latents, inv=inv, temp=temp)
         syst = samp2base(syst_, self.latents, inv=inv, temp=temp)
-
-        if not inv:
-            bias = samp2base(bias_, self.latents, temp=temp)
-            print("\nb1s8/s8fid:", bias)
-            if 'b1' in bias:
-                bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'])
-                if 'b2' in bias:
-                    bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'])
-
-            # if {'b1','sigma8'} <= bias.keys() | cosmo.keys():
-            #     bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'])
-            # if {'b1','b2','sigma8'} <= bias.keys() | cosmo.keys():
-            #     bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'])
-            # bias |= {k: v * self.loc_fid['sigma8'] / cosmo['sigma8'] for k, v in bias.items() if k in ['b1','b2','bs2','bn2']}
-            print("b1:", bias)
-        else:
-            print("\nb1:", bias_)
-        #     bias_ |= {k: v * cosmo_['sigma8'] / self.loc_fid['sigma8'] for k, v in bias_.items() if k in ['b1','b2','bs2','bn2']}
-            if 'b1' in bias_:
-                if 'b2' in bias_:
-                    bias_['b2'] = self.reparam_b2(bias_['b2'], bias_['b1'], cosmo_['sigma8'], inv=True)
-                bias_['b1'] = self.reparam_b1(bias_['b1'], cosmo_['sigma8'], inv=True)
-            print("b1s8/s8fid:", bias_)
-            bias = samp2base(bias_, self.latents, inv=True, temp=temp)
 
         # Initial conditions
         if len(init) > 0:
@@ -844,7 +817,26 @@ class FieldLevelModel(Model):
             b2 = b2_L2E(b2, b1L, inv=True)
         return b2
 
+    def reparam_bias(self, params:dict, eulerian=False, inv=False):
+        """
+        Transform sigma8-scaled bias parameters into unscaled bias parameters.
+        Consequently, params must contain 'sigma8' key.
+        """
+        out = self.data | params
+        sigma8 = out['sigma8']
+        if 'b1' in out:
+            b1_ = out['b1']
+            b1 = self.reparam_b1(b1_, sigma8, eulerian=eulerian, inv=inv)
+            out['b1'] = b1
 
+            if 'b2' in out:
+                b1u = b1_ if inv else b1 # unscaled b1
+                b1L = b1_L2E(b1u, inv=True) if eulerian else b1u # unscaled b1L
+                out['b2'] = self.reparam_b2(out['b2'], b1L, sigma8, eulerian=eulerian, inv=inv)
+        
+        # Do not return data, and potentially cast into Chains
+        out = params | {k:out[k] for k in params} 
+        return out
 
     ###########
     # Getters #
