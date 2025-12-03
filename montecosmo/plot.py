@@ -14,10 +14,10 @@ from montecosmo.bdec import credint
 ###########
 # General #
 ###########
-def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, mode='mesh', **kwargs):
+def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
     """
     Plot bivariate function fn, that should be vectorized first.
-    mode can be 'mesh', 'contour', 'contourf', 'surf'.
+    type can be 'mesh', 'contour', 'contourf', 'surf'.
 
     Example
     --------
@@ -25,7 +25,7 @@ def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, mode='mesh', **kwargs):
     # pdf = lambda x, y: np.exp( -(x**2 + y**2) / 2) / (2 * np.pi)
     pdf = lambda x: np.exp( -(x**2).sum(-1) / 2) / (2 * np.pi)
     plt.subplot(121, projection="3d")
-    plot_bivar(pdf, mode='surf')
+    plot_bivar(pdf, type='surf')
     ```
     """
     if isinstance(box, (int, float)):
@@ -36,13 +36,13 @@ def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, mode='mesh', **kwargs):
     # zz = fn(xx.reshape(-1), yy.reshape(-1)).reshape(n, n)
     zz = fn(np.stack((xx, yy), -1).reshape(-1, 2)).reshape(n, n)
 
-    if mode=='surf':
+    if type=='surf':
         out = plt.gca().plot_surface(xx, yy, zz, **kwargs)
-    elif mode=='mesh':
+    elif type=='mesh':
         out = plt.pcolormesh(xx, yy, zz, **kwargs)
-    elif mode=='contour':
+    elif type=='contour':
         out = plt.contour(xx, yy, zz, **kwargs)
-    elif mode=='contourf':
+    elif type=='contourf':
         out = plt.contourf(xx, yy, zz, **kwargs)
     return out
 

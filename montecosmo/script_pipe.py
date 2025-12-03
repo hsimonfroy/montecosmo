@@ -40,7 +40,7 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 # @tm.python_app
-def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
+def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     from datetime import datetime
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
@@ -66,7 +66,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_redshift") # Perlmutter
     load_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/load/") # Perlmutter
 
-    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}"
+    save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = save_dir / f"lpt_{mesh_length:d}"
     # save_dir = save_dir / f"lpt_{mesh_length:d}_b1prior"
     save_path = save_dir / "test"
@@ -89,14 +89,21 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
     z_obs = 0.8
 
     oversamp_config = {
-        # 'evol_oversamp':7/4,
-        # 'ptcl_oversamp':7/4,
-        # 'paint_oversamp':3/2,
+        'init_oversamp':1.,
         'evol_oversamp':2.,
         'ptcl_oversamp':2.,
         'paint_oversamp':2.,
+        # 'evol_oversamp':7/4,
+        # 'ptcl_oversamp':7/4,
+        # 'paint_oversamp':3/2,
         'k_cut':jnp.inf,    
-        } if oversamp else {}
+        } if oversamp==1 else {
+        'init_oversamp':1.5,
+        'evol_oversamp':2.,
+        'ptcl_oversamp':2.,
+        'paint_oversamp':2.,
+        'k_cut':jnp.inf,
+        } if oversamp==2 else {}
 
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
@@ -112,41 +119,41 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
                             'paint_order':2, # order of interpolation kernel
                             'paint_deconv': True, # whether to deconvolve painted field
                             'kernel_type':'rectangular', # 'rectangular', 'kaiser_bessel'
+
                             'init_oversamp':1., # initial mesh 1D oversampling factor
-                            # 'evol_oversamp':2., # evolution mesh 1D oversampling factor
-                            # 'ptcl_oversamp':2., # particle cloud 1D oversampling factor
-                            # 'paint_oversamp':2., # painted mesh 1D oversampling factor
                             'evol_oversamp':1., # evolution mesh 1D oversampling factor
                             'ptcl_oversamp':1., # particle cloud 1D oversampling factor
                             'paint_oversamp':1., # painted mesh 1D oversampling factor
+
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
                             'k_cut': np.inf,
                             'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
                             # 'init_power': None,
                             'lik_type': 'gaussian_delta',
+                            'png': True,
+                            # 'precond': 'kaiser_dyn'
                             } | oversamp_config)
 
     truth = {
         'Omega_m': 0.3137721, 
         'sigma8': 0.8076353990239834,
-        # 'sigma8': 0.81,
         # 'b1': 0.,
-        'b1': 1.1,
+        # 'b2': 0.,
+        # 'bs2': 0.,
         # 'b1': 1.15,
-        'b2': 0.,
-        'bs2': 0.,
+        'b1': 1.1,
+        'b2': 0.2,
+        'bs2': -0.2,
         'bn2': 0.,
         'bnp': 0.,
         'fNL': 0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
         'ngbars': 8.43318125e-4,
-        # 'sigma_0': 8.43318125e-4,
-        'sigma_0': 8.e-4,
         # 'ngbars': 10000., # neglect lik noise
-        # 'sigma_0': 10000., # neglect lik noise
-        'sigma_delta': 0.6,
+        'sigma_0': 0.5,
+        'sigma_delta': 0.7,
         }
 
     latents = model.new_latents_from_loc(truth, update_prior=True)
@@ -173,8 +180,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
     obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
     obs_mesh *= truth['ngbars'] * model.cell_length**3
 
-    init_mesh = jnp.load(load_dir / f'init_mesh_{mesh_length}.npy')
-    truth = truth | {'init_mesh': jnp.fft.rfftn(init_mesh)} | {'obs': obs_mesh}
+    # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{mesh_length}.npy'))
+    from montecosmo.utils import chreshape, r2chshape
+    init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{576}.npy'))
+    init_mesh = chreshape(init_mesh, r2chshape(model.init_shape))
+
+    truth = truth | {'init_mesh': init_mesh} | {'obs': obs_mesh}
     del obs_mesh
     del init_mesh
 
@@ -212,8 +223,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
         print("\nWarming up...")
 
         from montecosmo.samplers import get_mclmc_warmup
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, save_path+"_warm1_state.p")
@@ -271,7 +282,9 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
     from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 
-    obs = ['obs','fNL','bnp',
+    obs = ['obs',
+        #    'fNL',
+        #    'bnp',
             # 'b1','b2','bs2','bn2', 
             # 'ngbars', 
             # 'sigma_0',
@@ -311,8 +324,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False, s8=False):
 
     if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
         print("\nWarming up 2...")
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             # desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
                                             desired_energy_var=1e-7, diagonal_preconditioning=tune_mass)))
                                             # desired_energy_var=3e-8, diagonal_preconditioning=tune_mass)))
@@ -436,8 +449,8 @@ if __name__ == '__main__':
     # mesh_lengths = [32, 64, 96]
     mesh_lengths = [32]
     eh_approxs = [False]
-    oversamps = [True]
-    s8s = [True]
+    oversamps = [1]
+    s8s = [False]
     # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
@@ -449,11 +462,12 @@ if __name__ == '__main__':
 
     # # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real_eh0_ovsamp1_s80/lpt_96"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_redshift_eh0_ovsamp2_s81/lpt_64"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real_eh0_ovsamp1_s81"
-    # compare_chains_dir(save_dir, suffixes=["lpt_32", "lpt_32_nobiasreparam"], labels=["32", "32 no bias reparam"])
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/comp_tracer_real_red_iosamp1"
+    # compare_chains_dir(save_dir, suffixes=["lpt_32_real", "lpt_64_real", "lpt_32_red", "lpt_64_red"], 
+    #                    labels=["32, real", "64, real", "32, redshift", "64, redshift"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

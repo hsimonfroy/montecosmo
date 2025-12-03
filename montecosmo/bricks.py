@@ -192,7 +192,7 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,0.)):
         return 1 + a2g(cosmo, a) * delta # 1 + delta
 
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_size, los=(0.,0.,0.)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, noise, selec_mesh, a, box_size, los=(0.,0.,0.)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -203,8 +203,8 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, count, selec_mesh, a, box_s
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
     selec = (selec_mesh**2).mean()**.5
 
-    stds = (pmesh / (1 + selec * count * boost**2 * pmesh))**.5
-    means = stds**2 * boost * count * selec * delta_obs
+    stds = (pmesh / (1 + selec / noise * boost**2 * pmesh))**.5
+    means = stds**2 * boost * selec / noise * delta_obs
     return means, stds
 
 
@@ -388,7 +388,7 @@ def b_phi(b1, p=1., delta_c=1.686):
     Primordial scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
     """
     # 2 * delta_c * (bE1 - p) and bE1 = 1 + b1
-    return 2 * delta_c * (1 + b1 - p)
+    return 2 * delta_c * (b1 + 1 - p)
 
 def b_phi_delta(b1, b2, delta_c=1.686):
     """

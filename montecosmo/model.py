@@ -93,10 +93,10 @@ default_config={
                             'label':'{\\sigma}_8',
                             'loc':0.8102,
                             # 'loc': 0.8076353990239834,
-                            # 'scale':1e-1, # Redshift-space
-                            # 'scale_fid':1e-2, # Redshift-space
-                            'scale':3e-2, # Real-space
-                            'scale_fid':3e-2, # Real-space
+                            'scale':1e-1, # Redshift-space
+                            'scale_fid':1e-2, # Redshift-space
+                            # 'scale':3e-2, # Real-space
+                            # 'scale_fid':3e-2, # Real-space
                             'low': 0.,
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
@@ -163,11 +163,9 @@ default_config={
                                 },
                 'sigma_0': {'group':'syst',
                                 'label':'{\\sigma_{0}}',
-                                'loc':0.000843318125, # in galaxy / (Mpc/h)^3
-                                # 'scale':1e-3,
-                                'scale_fid':1e-4,
-                                'scale':1e-2,
-                                # 'scale_fid':3e-4,
+                                'loc':1.,
+                                'scale':1.,
+                                'scale_fid':1e-1,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -175,8 +173,7 @@ default_config={
                                 'label':'{\\sigma_{\\delta}}',
                                 'loc':1.,
                                 'scale':1.,
-                                # 'scale_fid':1e-1,
-                                'scale_fid':3e-2,
+                                'scale_fid':1e-1,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -546,7 +543,11 @@ class FieldLevelModel(Model):
         if 'b1' in bias:
             bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'], eulerian=False)
             if 'b2' in bias:
-                bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'], eulerian=False)   
+                bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'], eulerian=False)
+        print(cosmo['sigma8'])
+
+        # print(f"b1: {bias['b1']}, {cosmo['sigma8'] * b1_L2E(bias['b1'])}, ")  
+        # print(f"b2: {bias['b2']}, {cosmo['sigma8']**2 * b2_L2E(bias['b2'], bias['b1'])}, ")  
 
         # Sample, reparametrize, and register initial conditions
         init = {}
@@ -568,15 +569,16 @@ class FieldLevelModel(Model):
 
     def evolve(self, params:tuple):
         cosmology, bias, ap, syst, init = params
-
+        
+        init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
         if self.png is not None:
             init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_size)
 
         if self.evolution=='kaiser':
-            los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.init_shape,
+            los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
-            gxy_mesh = kaiser_model(cosmology, a, bE=1 + bias['b1'], **init, los=cell_los)
+            gxy_mesh = kaiser_model(cosmology, a, bE=b1_L2E(bias['b1']), **init, los=cell_los)
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
             # gxy_mesh = jnp.abs(gxy_mesh)
@@ -609,10 +611,14 @@ class FieldLevelModel(Model):
                 # gxy_mesh = jnp.fft.irfftn(interlace(pos, self.mesh_shape, weights, self.paint_order, self.interlace_order))
                 # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution can amplify AP-induced high-frequencies.
                 gxy_mesh *= (self.evol_shape / self.ptcl_shape).prod()
+                
+            if tuple(self.init_shape) != tuple(self.final_shape):
+                gxy_mesh = jnp.fft.rfftn(gxy_mesh)
+                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
+                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
     
         else:
             # Create regular grid of particles, and get their scale factors
-            init = tree.map(partial(chreshape, shape=r2chshape(self.evol_shape)), init)
             pos = regular_pos(self.evol_shape, self.ptcl_shape)
             _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
@@ -723,7 +729,8 @@ class FieldLevelModel(Model):
                     var = posit_fn(1 + syst['sigma_delta'] * delta) * syst['sigma_0']
                     # var = posit_fn((1 + syst['sigma_delta'] * delta) * syst['sigma_0'])
 
-                obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var * self.cell_length**3)**.5))
+                var *= mean_count
+                obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var)**.5))
             return obs 
 
         # elif self.obs == 'pk':
@@ -912,7 +919,7 @@ class FieldLevelModel(Model):
             else:
                 samp = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
             dic[name+'_'] = samp
-        return dic   
+        return dic  
 
     def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, syst):
         """
@@ -929,22 +936,24 @@ class FieldLevelModel(Model):
             transfer = pmesh**.5
 
         elif self.precond=='kaiser':
-            bE_fid = 1 + self.loc_fid['b1']
+            bE_fid = b1_L2E(self.loc_fid['b1'])
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.init_shape, self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
             selec = (self.selec_mesh**2).mean()**.5
+            noise = self.loc_fid['sigma_0'] / self.count_fid
 
-            scale = (1 + selec * self.count_fid * boost_fid**2 * pmesh_fid)**.5
+            scale = (1 + selec / noise * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
-            bE = 1 + bias['b1']
+            bE = b1_L2E(bias['b1'])
             count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.init_shape, self.los_fid)
             selec = (self.selec_mesh**2).mean()**.5
+            noise = syst['sigma_0'] / count
 
-            scale = (1 + selec * count * boost**2 * pmesh)**.5
+            scale = (1 + selec / noise * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -1112,9 +1121,12 @@ class FieldLevelModel(Model):
     def kaiser_post(self, seed, delta_obs, base=False, temp=1., scale_field=1.):
         if jnp.isrealobj(delta_obs):
             delta_obs = jnp.fft.rfftn(delta_obs)
+        
+        # Reshape in Fourier domain in case observed field shape != initial field shape
+        delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
 
-        bE_fid = 1 + self.loc_fid['b1']
-        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.count_fid, 
+        bE_fid = b1_L2E(self.loc_fid['b1'])
+        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.loc_fid['sigma_0'] / self.count_fid, 
                                        self.selec_mesh, self.a_fid, self.box_size, self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
