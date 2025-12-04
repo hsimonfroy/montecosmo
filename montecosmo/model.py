@@ -165,7 +165,8 @@ default_config={
                                 'label':'{\\sigma_{0}}',
                                 'loc':1.,
                                 'scale':1.,
-                                'scale_fid':1e-1,
+                                # 'scale_fid':1e-1,
+                                'scale_fid':3e-1,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -544,7 +545,6 @@ class FieldLevelModel(Model):
             bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'], eulerian=False)
             if 'b2' in bias:
                 bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'], eulerian=False)
-        print(cosmo['sigma8'])
 
         # print(f"b1: {bias['b1']}, {cosmo['sigma8'] * b1_L2E(bias['b1'])}, ")  
         # print(f"b2: {bias['b2']}, {cosmo['sigma8']**2 * b2_L2E(bias['b2'], bias['b1'])}, ")  

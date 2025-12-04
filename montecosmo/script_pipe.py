@@ -64,6 +64,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
     # save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_real") # Perlmutter
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_redshift") # Perlmutter
+    # save_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/selfspec_redshift") # Perlmutter
     load_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/load/") # Perlmutter
 
     save_dir += f"_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
@@ -141,8 +142,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        # 'b1': 1.15,
-        'b1': 1.1,
+        'b1': 1.15,
+        # 'b1': 1.1,
         'b2': 0.2,
         'bs2': -0.2,
         'bn2': 0.,
@@ -189,9 +190,9 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     del obs_mesh
     del init_mesh
 
-    # Self-specified
-    # truth |= {'init_mesh': truth0['init_mesh']}
-    # truth1 = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
+    # # Self-specified
+    # # truth |= {'init_mesh': truth0['init_mesh']}
+    # truth = model.predict(samples=truth, hide_base=False, hide_samp=False, from_base=True)
 
     model.save(save_dir / "model.yaml")    
     jnp.savez(save_dir / "truth.npz", **truth)
@@ -447,9 +448,9 @@ def compare_chains_dir(save_dir, suffixes, labels):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [32]
+    mesh_lengths = [64]
     eh_approxs = [False]
-    oversamps = [1]
+    oversamps = [2]
     s8s = [False]
     # infer_model = tm.python_app(infer_model)
     
@@ -465,9 +466,9 @@ if __name__ == '__main__':
     # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_redshift_eh0_ovsamp2_s81/lpt_64"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/comp_tracer_real_red_iosamp1"
-    # compare_chains_dir(save_dir, suffixes=["lpt_32_real", "lpt_64_real", "lpt_32_red", "lpt_64_red"], 
-    #                    labels=["32, real", "64, real", "32, redshift", "64, redshift"])
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_redshift_eh0_ovsamp2_s80_fNL/"
+    # compare_chains_dir(save_dir, suffixes=["lpt_32", "lpt_32_iosamp1", "lpt_32_kdyn"], 
+    #                    labels=["32", "32, iosamp1", "32, kaiser dyn"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")
