@@ -476,10 +476,10 @@ class FieldLevelModel(Model):
             self.selec_mesh = np.array(1.)
             self.mask = None
         elif isinstance(self.selection, float):
-            selec_mesh_top_hat = top_hat_selection(self.final_shape, self.selection, order=np.inf) 
-            selec_mesh_gen_gauss = gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
-                                self.final_shape, True, order=4.)
-            self.selec_mesh = selec_mesh_top_hat * selec_mesh_gen_gauss
+            self.selec_mesh = top_hat_selection(self.final_shape, self.selection, norm_order=np.inf)
+            self.selec_mesh *= top_hat_selection(self.final_shape, 1., norm_order=4., pow_order=4.)
+            # self.selec_mesh *= gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
+                                # self.final_shape, True, order=4.)
             self.selec_mesh /= self.selec_mesh[self.selec_mesh > 0].mean()
             self.mask = self.selec_mesh > 0
         elif isinstance(self.selection, (str, Path.__base__)):

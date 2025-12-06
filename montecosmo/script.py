@@ -307,15 +307,22 @@ def compare_chains(load_dirs, labels, save_dir="./"):
         chains = pload(load_dir / "chains/chains.p")
         print('\n', chains.shape)
         gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].to_getdist(label)
+        # gdsamp = chains.prune()[['bias','png']+['~init_mesh']].to_getdist(label)
+        # gdsamp = chains.prune()[['b1','png']+['~init_mesh']].to_getdist(label)
         chainss.append(chains)
         gdsamps.append(gdsamp)
+
+        
+    # chains['fNL_bp'] = chains['fNL'] * b_phi( chains['b1'], p=1.)
+    # chains['fNL_bpd'] = chains['fNL'] * b_phi_delta( chains['b1'], chains['b2'])
 
 
     gdplt = plots.get_subplot_plotter(width_inch=7)
     gdplt.triangle_plot(roots=gdsamps,
                     title_limit=1,
                     filled=True, 
-                    markers=truth,
+                    # markers=truth,
+                    markers={k:v for k,v in truth.items() if k in ['fNL', 'fNL_bp', 'fNL_bpd']},
                     contour_colors=[SetDark2(i) for i in range(len(gdsamps))],)
     plt.savefig(save_dir / f"triangle_{'_'.join(labels)}.png", dpi=300)
 

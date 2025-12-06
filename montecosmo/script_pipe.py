@@ -114,7 +114,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             {'final_shape': 3*(mesh_length,), 
                             'cell_length': (1+overselect) * box_size[0] / mesh_length, # in Mpc/h
                             # 'box_center': (0.,0.,0.), # in Mpc/h
-                            'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
+                            'box_center': (0.,0.,1.), # in Mpc/h
+                            # 'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
                             'box_rotvec': (0.,0.,0.,), # rotation vector in radians
                             'evolution': 'lpt',
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
@@ -178,42 +179,43 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) * var**.5
     # # obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count)
 
-    # # Abacus tracer real or redshift-space
-    # # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
-    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
-    # obs_mesh *= truth['ngbars'] * model.cell_length**3
+    # Abacus tracer real or redshift-space
+    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
+    obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
+    obs_mesh *= truth['ngbars'] * model.cell_length**3
 
-    # # # Abacus initial
-    # # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{mesh_length}.npy'))
-    # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{576}.npy'))
-    # init_mesh = chreshape(init_mesh, r2chshape(model.init_shape))
-    # truth = truth | {'init_mesh': init_mesh} | {'obs': obs_mesh}
-    # del obs_mesh
-    # del init_mesh
-
-
-    # Abacus within bigger volume 
-    # /!\ Don't known init_mesh anymore, load a fake one
-    init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f"init_mesh_fake_3000_{256}.npy"))
+    # # Abacus initial
+    # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{mesh_length}.npy'))
+    init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{576}.npy'))
     init_mesh = chreshape(init_mesh, r2chshape(model.init_shape))
-
-    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{256}.npy')
-    obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{256}.npy')
-    over_shape = 3*(int((1+overselect) * 256),)
-    selec_mesh = top_hat_selection(over_shape, model.selection, order=np.inf)
-    selec_mesh *= gen_gauss_selection(model.box_center, model.box_rot, model.box_size, over_shape, True, order=4.)
-    selec_mesh /= selec_mesh[selec_mesh > 0].mean()
-
-    obs_mesh = realreshape(obs_mesh, over_shape)
-    obs_mesh *= selec_mesh
-    obs_mesh = jnp.fft.rfftn(obs_mesh)
-    obs_mesh = jnp.fft.irfftn(chreshape(obs_mesh, r2chshape(model.final_shape)))
-    obs_mesh = model.mesh2masked(obs_mesh)
-    obs_mesh *= truth['ngbars'] * model.cell_length**3 / obs_mesh.mean()
     truth = truth | {'init_mesh': init_mesh} | {'obs': obs_mesh}
     del obs_mesh
     del init_mesh
-    del selec_mesh
+
+
+    # # Abacus within bigger volume 
+    # # /!\ Don't known init_mesh anymore, load a fake one
+    # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f"init_mesh_fake_3000_{256}.npy"))
+    # init_mesh = chreshape(init_mesh, r2chshape(model.init_shape))
+
+    # # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{256}.npy')
+    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{256}.npy')
+    # over_shape = 3*(int((1+overselect) * 256),)
+    # selec_mesh = top_hat_selection(over_shape, model.selection, norm_order=np.inf)
+    # selec_mesh *= top_hat_selection(over_shape, 1., norm_order=8., pow_order=8.)
+    # # selec_mesh *= gen_gauss_selection(model.box_center, model.box_rot, model.box_size, over_shape, True, order=4.)
+    # selec_mesh /= selec_mesh[selec_mesh > 0].mean()
+
+    # obs_mesh = realreshape(obs_mesh, over_shape)
+    # obs_mesh *= selec_mesh
+    # obs_mesh = jnp.fft.rfftn(obs_mesh)
+    # obs_mesh = jnp.fft.irfftn(chreshape(obs_mesh, r2chshape(model.final_shape)))
+    # obs_mesh = model.mesh2masked(obs_mesh)
+    # obs_mesh *= truth['ngbars'] * model.cell_length**3 / obs_mesh.mean()
+    # truth = truth | {'init_mesh': init_mesh} | {'obs': obs_mesh}
+    # del obs_mesh
+    # del init_mesh
+    # del selec_mesh
 
 
     # # Self-specified
@@ -466,26 +468,26 @@ if __name__ == '__main__':
     eh_approxs = [False]
     oversamps = [2]
     s8s = [False]
-    overselects = [0.5]
+    overselects = [None]
     # infer_model = tm.python_app(infer_model)
     
-    for mesh_length in mesh_lengths:
-        for eh_approx in eh_approxs:
-            for oversamp in oversamps:
-                for s8 in s8s:
-                    for overselect in overselects:
-                        print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect} ===")
-                        infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, overselect=overselect)
+    # for mesh_length in mesh_lengths:
+    #     for eh_approx in eh_approxs:
+    #         for oversamp in oversamps:
+    #             for s8 in s8s:
+    #                 for overselect in overselects:
+    #                     print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect} ===")
+    #                     infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, overselect=overselect)
 
     # # # overwrite = False
     # overwrite = True
     # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp1_s80_fNLb/lpt_64"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s80_fNLb"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/comp_fNL_fNLb"
     # compare_chains_dir(save_dir,
-    #                    labels=["32 png in bias", "32 iosamp1", "64 png in bias", "64 iosamp1"],
-    #                    names=["lpt_32_png_in_bias", "lpt_32_iosamp1", "lpt_64_png_in_bias", "lpt_64_iosamp1"])
+    #                    labels=["32 fNL","32 fNLb"],
+    #                    names=["lpt_32_fNL_png_in_bias", "lpt_32_fNLb"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

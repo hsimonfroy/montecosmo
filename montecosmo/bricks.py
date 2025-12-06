@@ -754,12 +754,12 @@ def cart2radecz(cosmo:Cosmology, cart:jnp.ndarray):
 
 
 
-def top_hat_selection(mesh_shape, padding=0., order:float=np.inf):
+def top_hat_selection(mesh_shape, padding=0., norm_order:float=np.inf, pow_order:float=np.inf):
     """
     Return an `ord-norm ball binary selection mesh, with a `padding` 1D padded fraction.
     Therefore, `1/(1+padding)` is the mesh axes to ball axes ratio.
     """
-    order = float(order)
+    norm_order = float(norm_order)
     rx = np.abs((np.arange(mesh_shape[0]) + .5) * 2 / mesh_shape[0] - 1)
     ry = np.abs((np.arange(mesh_shape[1]) + .5) * 2 / mesh_shape[1] - 1)
     rz = np.abs((np.arange(mesh_shape[2]) + .5) * 2 / mesh_shape[2] - 1)
@@ -769,14 +769,16 @@ def top_hat_selection(mesh_shape, padding=0., order:float=np.inf):
     rz = rz.reshape([1, 1, -1])
     rvec = rx, ry, rz
 
-    if order == np.inf:
+    if norm_order == np.inf:
         rmesh = np.maximum(np.maximum(rvec[0], rvec[1]), rvec[2])
-    elif order == -np.inf:
+    elif norm_order == -np.inf:
         rmesh = np.minimum(np.minimum(rvec[0], rvec[1]), rvec[2])
     else:
-        rmesh = sum(ri**order for ri in rvec)**(1 / order)
+        rmesh = sum(ri**norm_order for ri in rvec)**(1 / norm_order)
 
-    selec_mesh = (rmesh < 1 / (1 + padding)).astype(float)
+    # selec_mesh = (rmesh < 1 / (1 + padding)).astype(float)
+    r_scale = 1 / (1 + padding)
+    selec_mesh = jnp.exp(- (rmesh / r_scale)**pow_order)
     # NOTE: selection normalization to unit mean within its support.
     selec_mesh /= selec_mesh[selec_mesh > 0].mean()
     return selec_mesh
