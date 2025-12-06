@@ -39,7 +39,7 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 # @tm.python_app
-def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
+def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=None):
     from pathlib import Path
     from datetime import datetime
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -53,7 +53,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / f"tracer_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNLb"
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}"
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "")
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -77,7 +77,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     jconfig.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
     from montecosmo.model import FieldLevelModel, default_config
-    from montecosmo.utils import pdump, pload
+    from montecosmo.utils import pdump, pload, chreshape, r2chshape, realreshape
+    from montecosmo.bricks import top_hat_selection, gen_gauss_selection
     
 
     
@@ -85,7 +86,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     # Load #
     ########
     box_size = 3*(2000,)
-    selection = None
+    # overselect = 0.5
+    selection = None if overselect is None else overselect + 0.05
+    # selection = None
+    # selection = 0.5
     # mesh_length = 96
     z_obs = 0.8
 
@@ -108,9 +112,9 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
 
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
-                            'cell_length': box_size[0] / mesh_length, # in Mpc/h
+                            'cell_length': (1+overselect) * box_size[0] / mesh_length, # in Mpc/h
                             # 'box_center': (0.,0.,0.), # in Mpc/h
-                            'box_center': (0.,0.,1.), # in Mpc/h
+                            'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
                             'box_rotvec': (0.,0.,0.,), # rotation vector in radians
                             'evolution': 'lpt',
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
@@ -174,22 +178,43 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     # obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) * var**.5
     # # obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count)
 
-    # # Abacus tracer real-space
-    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
+    # # Abacus tracer real or redshift-space
+    # # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{mesh_length}.npy')
+    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
     # obs_mesh *= truth['ngbars'] * model.cell_length**3
 
-    # Abacus tracer redshift-space
-    obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
-    obs_mesh *= truth['ngbars'] * model.cell_length**3
+    # # # Abacus initial
+    # # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{mesh_length}.npy'))
+    # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{576}.npy'))
+    # init_mesh = chreshape(init_mesh, r2chshape(model.init_shape))
+    # truth = truth | {'init_mesh': init_mesh} | {'obs': obs_mesh}
+    # del obs_mesh
+    # del init_mesh
 
-    # init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{mesh_length}.npy'))
-    from montecosmo.utils import chreshape, r2chshape
-    init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f'init_mesh_{576}.npy'))
+
+    # Abacus within bigger volume 
+    # /!\ Don't known init_mesh anymore, load a fake one
+    init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f"init_mesh_fake_3000_{256}.npy"))
     init_mesh = chreshape(init_mesh, r2chshape(model.init_shape))
 
+    # obs_mesh = jnp.load(load_dir / f'tracer_6746545_paint2_deconv1_{256}.npy')
+    obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{256}.npy')
+    over_shape = 3*(int((1+overselect) * 256),)
+    selec_mesh = top_hat_selection(over_shape, model.selection, order=np.inf)
+    selec_mesh *= gen_gauss_selection(model.box_center, model.box_rot, model.box_size, over_shape, True, order=4.)
+    selec_mesh /= selec_mesh[selec_mesh > 0].mean()
+
+    obs_mesh = realreshape(obs_mesh, over_shape)
+    obs_mesh *= selec_mesh
+    obs_mesh = jnp.fft.rfftn(obs_mesh)
+    obs_mesh = jnp.fft.irfftn(chreshape(obs_mesh, r2chshape(model.final_shape)))
+    obs_mesh = model.mesh2masked(obs_mesh)
+    obs_mesh *= truth['ngbars'] * model.cell_length**3 / obs_mesh.mean()
     truth = truth | {'init_mesh': init_mesh} | {'obs': obs_mesh}
     del obs_mesh
     del init_mesh
+    del selec_mesh
+
 
     # # Self-specified
     # # truth |= {'init_mesh': truth0['init_mesh']}
@@ -201,14 +226,11 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
 
 
 
-
-
-
     ##########
     # Warmup #
     ##########
     # n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 16, 4
-    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 12, 4
+    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 10, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
@@ -248,7 +270,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False):
     kptcs_warm = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(state.position)
     del init_mesh # We won't need it anymore
     kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid)(kptcs_warm[0][0])
-    prob = [0.68, 0.95]
+    prob = (0.68, 0.95)
 
     plt.figure(figsize=(12, 4), layout='constrained')
     def plot_kptcs(kptcs, label=None):
@@ -442,26 +464,28 @@ if __name__ == '__main__':
     # mesh_lengths = [32, 64, 96]
     mesh_lengths = [64]
     eh_approxs = [False]
-    oversamps = [1]
+    oversamps = [2]
     s8s = [False]
+    overselects = [0.5]
     # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
             for oversamp in oversamps:
                 for s8 in s8s:
-                    print(f"\n--- mesh_length {mesh_length}, eh {eh_approx}, osamp {oversamp}, s8 {s8} ---")
-                    infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8)
+                    for overselect in overselects:
+                        print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect} ===")
+                        infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, overselect=overselect)
 
     # # # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s81_fNL/lpt_64_b10_reparb0"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp1_s80_fNLb/lpt_64"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s81_fNL/"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s80_fNLb"
     # compare_chains_dir(save_dir,
-    #                    labels=["$b_1=1.15$", "$b_1=1.16$", "$b_1=1.17$"],
-    #                    names=["lpt_64_b10_reparb0_1.15", "lpt_64_b10_reparb0_1.16", "lpt_64_b10_reparb0_1.17"])
+    #                    labels=["32 png in bias", "32 iosamp1", "64 png in bias", "64 iosamp1"],
+    #                    names=["lpt_32_png_in_bias", "lpt_32_iosamp1", "lpt_64_png_in_bias", "lpt_64_iosamp1"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")
