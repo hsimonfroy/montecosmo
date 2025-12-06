@@ -4,7 +4,6 @@ import pickle
 import yaml
 
 from functools import partial, wraps
-from pathlib import Path
 
 import numpy as np
 from jax import jit, numpy as jnp, vmap, grad, tree, lax
@@ -62,13 +61,13 @@ def get_jit(*args, **kwargs):
 #################
 # Dump and Load #
 #################
-class Path(type(Path()), Path):
-    """Pathlib path but with right-concatenation operator. Please tell me why it is not natively implemented."""
-    # See pathlib inheritance https://stackoverflow.com/questions/61689391/error-with-simple-subclassing-of-pathlib-path-no-flavour-attribute
-    def __add__(self, other):
-        if isinstance(other, (str, Path)):
-            return Path(str(self) + str(other))
-        return NotImplemented
+# class Path(type(Path()), Path):
+#     """Pathlib path but with right-concatenation operator. Please tell me why it is not natively implemented."""
+#     # See pathlib inheritance https://stackoverflow.com/questions/61689391/error-with-simple-subclassing-of-pathlib-path-no-flavour-attribute
+#     def __add__(self, other):
+#         if isinstance(other, (str, Path)):
+#             return Path(str(self) + str(other))
+#         return NotImplemented
 
 
 def pdump(obj, path):
@@ -445,14 +444,17 @@ def cgh2rg(meshk, norm="backward"):
 
 
 def chreshape(mesh, shape):
+    # TODO: optimize with slices or axis indexing only
     """
     Reshape a complex Hermitian tensor (3D),
     handling correctly zero-padding.
     """
     ids_shape = tuple(np.minimum(mesh.shape, shape))
     scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
-    ids = tuple(np.roll(np.arange(-(s//2), (s+1)//2), -(s//2)) for s in ids_shape[:-1])
-    ids += (np.arange(ids_shape[-1]),)
+
+    dtype = 'int16' # int16 -> +/- 32_767, trkl
+    ids = tuple(np.roll(np.arange(-(s//2), (s+1)//2, dtype=dtype), -(s//2)) for s in ids_shape[:-1])
+    ids += (np.arange(ids_shape[-1], dtype=dtype),)
     
     if ids_shape == shape: # downsample all axis
         out = mesh[np.ix_(*ids)]
@@ -466,6 +468,24 @@ def chreshape(mesh, shape):
     return out * scale
 
 
+def realreshape(mesh, shape):
+    """
+    Reshape a real tensor (3D),
+    with padding or truncating centered in the middle of each axis.
+    """
+    shape = np.array(shape)
+    mesh_shape = np.array(mesh.shape)
+    assert np.all(shape % 2 == 0) and np.all(mesh_shape % 2 == 0), "dimension lengths must be even."
+
+    half_down = np.maximum(mesh_shape - shape, 0) // 2
+    slices = tuple(slice(hd, None if hd==0 else -hd) for hd in half_down)
+    mesh = mesh[slices]
+
+    mesh_shape = np.array(mesh.shape)
+    half_over = np.maximum(shape - mesh_shape, 0) // 2
+    mesh = jnp.pad(mesh, pad_width=tuple((ho,ho) for ho in half_over))
+    return mesh
+    
 
 
 
@@ -481,7 +501,7 @@ def id_cgh(shape, part="real", norm="backward"):
     """
     shape = np.asarray(shape)
     sx, sy, sz = shape
-    assert sx%2 == sy%2 == sz%2 == 0, "dimensions lengths must be even."
+    assert sx%2 == sy%2 == sz%2 == 0, "dimension lengths must be even."
     
     hx, hy, hz = shape//2
     chshape = (sx, sy, hz+1)

@@ -2,6 +2,7 @@
 import os
 from itertools import product
 from typing import Self
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -275,20 +276,22 @@ class Chains(Samples):
 
 
     @classmethod
-    def load_runs(cls, path:str, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2) -> Self:
+    def load_runs(cls, path:str|Path, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2) -> Self:
         """
-        Load and append runs (or extra fields) saved in different files with same name except index.
+        Load and append runs saved in different files with names of the form `run_{i}.npz`.
 
         Both runs `start` and `end` are included.
         Runs are concatenated along last batch dimension.
         """
-        print(f"Loading: {os.path.basename(path)}, from run {start} to run {end} (included)")
+        path = Path(path)
+        print(f"Loading: {path}, from run {start} to run {end} (included)")
         for i_run in range(start, end + 1):
-            if not os.path.exists(path + f"_{i_run}.npz"):
+            run_path = path / f"run_{i_run}.npz"
+            if not os.path.exists(run_path):
                 if i_run == start:
-                    raise FileNotFoundError(f"File {path}_{i_run}.npz does not exist")
+                    raise FileNotFoundError(f"File {run_path} does not exist")
                 else:
-                    print(f"File {path}_{i_run}.npz does not exist, stopping at run {i_run-1}")
+                    print(f"File {run_path} does not exist, stopping at run {i_run-1}")
                     end = i_run - 1
                     break
             
@@ -305,7 +308,8 @@ class Chains(Samples):
 
         for i_run in range(start, end + 1):
             # Load
-            part = dict(jnp.load(path+f"_{i_run}.npz")) # better than pickle for dict of array-like
+            run_path = path / f"run_{i_run}.npz"
+            part = dict(jnp.load(run_path)) # better than pickle for dict of array-like
             part = cls(part, groups=groups, labels=labels)
             part = transform(part)
 

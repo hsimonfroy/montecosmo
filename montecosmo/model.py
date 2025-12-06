@@ -4,6 +4,7 @@ from functools import partial
 from dataclasses import dataclass, asdict
 from IPython.display import display
 from pprint import pformat
+from pathlib import Path
 
 from numpyro import sample, deterministic, render_model, handlers, distributions as dist
 from numpyro.infer.util import log_density
@@ -23,7 +24,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
                               paint, read, deconv_paint, interlace, rfftk, top_hat)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial
-from montecosmo.utils import (ysafe_dump, ysafe_load, Path,
+from montecosmo.utils import (ysafe_dump, ysafe_load,
                               cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked,
                               nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
 from montecosmo.chains import Chains
@@ -40,7 +41,7 @@ default_config={
         'k_cut': jnp.inf, # in h/Mpc, if None, k_nyquist
         # Init
         'init_power':None, # if None, use EH approx, if str or Path, path to initial (wavenumber, power) file
-        'png': None, # if None, no PNG, TODO: choose PNG parametrization
+        'png_type': None, # None, 'fNL', 'fNL_bias'
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
         'nbody_a_start':0., # starting scale factor for N-body, following 1LPT displacement
@@ -124,20 +125,32 @@ default_config={
                             'scale':5.,
                             'scale_fid':1e0,
                             },
-                'bnp': {'group':'bias',
+                'bnpar': {'group':'bias',
                             'label':'{b}_{\\nabla_\\parallel}',
                             'loc':0.,
                             'scale':5.,
                             'scale_fid':1e0,
                             },
-                'fNL': {'group':'bias',
+                'fNL': {'group':'png',
                             'label':'{f}_\\mathrm{NL}',
                             'loc':0.,
                             'scale':1e3,
                             'scale_fid':1e1,
                             },
+                'fNL_bp': {'group':'png',
+                            'label':'{f}_\\mathrm{NL} b_\\phi',
+                            'loc':0.,
+                            'scale':1e3,
+                            'scale_fid':1e1,
+                            },
+                'fNL_bpd': {'group':'png',
+                            'label':'{f}_\\mathrm{NL} b_{\\phi\\delta}',
+                            'loc':0.,
+                            'scale':1e3,
+                            'scale_fid':1e2,
+                            },
                 'alpha_iso': {'group':'ap',
-                                'label':'{\\alpha_\\mathrm{iso}}',
+                                'label':'{\\alpha}_\\mathrm{iso}',
                                 'loc':1.,
                                 'scale':1e-1,
                                 'scale_fid':1e-2,
@@ -145,7 +158,7 @@ default_config={
                                 'high':jnp.inf,
                                 },
                 'alpha_ap': {'group':'ap',
-                                'label':'{\\alpha_\\mathrm{AP}}',
+                                'label':'{\\alpha}_\\mathrm{AP}',
                                 'loc':1.,
                                 'scale':1e-1,
                                 'scale_fid':1e-2,
@@ -153,7 +166,7 @@ default_config={
                                 'high':jnp.inf,
                                 },
                 'ngbars': {'group':'syst',
-                                'label':'{\\bar{n}_g}',
+                                'label':'{\\bar{n}}_g',
                                 # 'loc':1e-3, # in galaxy / (Mpc/h)^3
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
                                 'scale':1e-2,
@@ -162,16 +175,16 @@ default_config={
                                 'high':jnp.inf,
                                 },
                 'sigma_0': {'group':'syst',
-                                'label':'{\\sigma_{0}}',
+                                'label':'{\\sigma}_{0}',
                                 'loc':1.,
                                 'scale':1.,
                                 # 'scale_fid':1e-1,
-                                'scale_fid':3e-1,
+                                'scale_fid':3e-2,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
                 'sigma_delta': {'group':'syst',
-                                'label':'{\\sigma_{\\delta}}',
+                                'label':'{\\sigma}_{\\delta}',
                                 'loc':1.,
                                 'scale':1.,
                                 'scale_fid':1e-1,
@@ -179,7 +192,7 @@ default_config={
                                 'high':jnp.inf,
                                 },
                 'init_mesh': {'group':'init',
-                                'label':'{\\delta_\\mathrm{L}}',},
+                                'label':'{\\delta}_\\mathrm{L}',},
                 },
         }
 
@@ -393,7 +406,7 @@ class FieldLevelModel(Model):
     k_cut:None|float
     # Init  
     init_power:None|str|Path
-    png:None|str
+    png_type:None|str
     # Evolution
     evolution:str
     nbody_a_start:float
@@ -464,8 +477,6 @@ class FieldLevelModel(Model):
             self.mask = None
         elif isinstance(self.selection, float):
             selec_mesh_top_hat = top_hat_selection(self.final_shape, self.selection, order=np.inf) 
-            # selec_mesh_gen_gauss = gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
-            #                                self.final_shape, self.curved_sky, order=4.)
             selec_mesh_gen_gauss = gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
                                 self.final_shape, True, order=4.)
             self.selec_mesh = selec_mesh_top_hat * selec_mesh_gen_gauss
@@ -534,17 +545,17 @@ class FieldLevelModel(Model):
         """
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
-        for g in ['cosmo', 'bias', 'ap', 'syst']:
+        for g in ['cosmo', 'bias', 'png', 'ap', 'syst']:
             dic = self._sample(self.groups[g]) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
-        cosmo, bias, ap, syst = tup
+        cosmo, bias, png, ap, syst = tup
         cosmology = get_cosmology(**cosmo)
 
-        if 'b1' in bias:
-            bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'], eulerian=False)
-            if 'b2' in bias:
-                bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'], eulerian=False)
+        # if 'b1' in bias:
+        #     bias['b1'] = self.reparam_b1(bias['b1'], cosmo['sigma8'], eulerian=False)
+        #     if 'b2' in bias:
+        #         bias['b2'] = self.reparam_b2(bias['b2'], bias['b1'], cosmo['sigma8'], eulerian=False)
 
         # print(f"b1: {bias['b1']}, {cosmo['sigma8'] * b1_L2E(bias['b1'])}, ")  
         # print(f"b2: {bias['b2']}, {cosmo['sigma8']**2 * b2_L2E(bias['b2'], bias['b1'])}, ")  
@@ -563,16 +574,14 @@ class FieldLevelModel(Model):
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
-        return cosmology, bias, ap, syst, init
+        return cosmology, bias, png, ap, syst, init
 
 
 
     def evolve(self, params:tuple):
-        cosmology, bias, ap, syst, init = params
+        cosmology, bias, png, ap, syst, init = params
         
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
-        if self.png is not None:
-            init['init_mesh'] = add_png(cosmology, bias['fNL'], init['init_mesh'], self.box_size)
 
         if self.evolution=='kaiser':
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
@@ -624,7 +633,11 @@ class FieldLevelModel(Model):
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, png=self.png, read_order=1)
+            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, **png, 
+                                                png_type=self.png_type, read_order=1)
+
+            if self.png_type is not None:
+                init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
@@ -755,14 +768,15 @@ class FieldLevelModel(Model):
         params_ = self.data | params
 
         # Extract groups from params
-        groups = ['cosmo','bias','ap','syst','init']
+        groups = ['cosmo','bias','png','ap','syst','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
         params_ = Chains(params_, self.groups | self.groups_).get(key) # use chain querying
-        cosmo_, bias_, ap_, syst_, init, rest = (q.data for q in params_)
+        cosmo_, bias_, png_, ap_, syst_, init, rest = (q.data for q in params_)
 
         # Cosmology and Biases
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
         bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+        png = samp2base(png_, self.latents, inv=inv, temp=temp)
         ap = samp2base(ap_, self.latents, inv=inv, temp=temp)
         syst = samp2base(syst_, self.latents, inv=inv, temp=temp)
 
@@ -785,7 +799,7 @@ class FieldLevelModel(Model):
             if not inv and not fourier:
                 init = tree.map(jnp.fft.irfftn, init)
 
-        out = cosmo | bias | ap | syst | init
+        out = cosmo | bias | png | ap | syst | init
         out = {k:v for k,v in out.items() if (k[:-1] if inv else k+'_') in params}
         rest = {k:v for k,v in rest.items() if k in params} # do not return data
         out = rest | out # possibly update rest

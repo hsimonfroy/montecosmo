@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 from jax import numpy as jnp, random as jr, config as jconfig, devices as jdevices, jit, vmap, grad, debug, tree
 
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.utils import pdump, pload, Path
+from montecosmo.utils import pdump, pload
+from pathlib import Path
 import os
 
 def load_model(truth0, config, cell_budget, padding, save_dir, overwrite=False):
@@ -190,13 +191,14 @@ def warmup2run(model, params_warm, save_path, n_samples, n_runs, n_chains, tune_
 
 
 
-def make_chains(save_path, start=1, end=100, thinning=1):
+def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix=""):
     from montecosmo.chains import Chains
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2
     from getdist import plots
-    save_dir = save_path.parent
-    prefix = ''
-
+    import sys
+    sys.stdout = sys.stderr = open(save_dir / "run.out", "a")
+    chains_dir = save_dir / "chains"
+    
     model = FieldLevelModel.load(save_dir / "model.yaml")
     truth = dict(jnp.load(save_dir / 'truth.npz'))
     mesh_ref = truth['init_mesh']
@@ -207,12 +209,12 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                 #   lambda x: x[1:],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 model.reparam_chains,                                 # reparametrize sample variables into base variables
-                model.reparam_bias, #####                              # reparametrize bias parameters
+                model.reparam_bias if reparb else lambda x: x,        # reparametrize bias parameters
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),   # compute mesh statistics
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
-    chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
-    pdump(chains, save_path + prefix + "_chains.p")
+    chains = model.load_runs(chains_dir, start, end, transforms=transforms, batch_ndim=2)
+    pdump(chains, chains_dir / f"{prefix}chains.p")
     print(chains.shape, '\n')
 
     # gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].flatten().to_getdist()
@@ -223,7 +225,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                     filled=True, 
                     markers=truth,
                     contour_colors=[SetDark2(0)],)
-    plt.savefig(save_path + prefix + "_triangle.png", dpi=300)
+    plt.savefig(save_dir / f"{prefix}triangle.png", dpi=300)
 
 
 
@@ -255,7 +257,7 @@ def make_chains(save_path, start=1, end=100, thinning=1):
     plot_kptcs(kptcs, label='post')
     plt.subplot(131)
     plt.legend()
-    plt.savefig(save_path + prefix + "_kptc.png", dpi=300)  
+    plt.savefig(save_dir / f"{prefix}kptc.png", dpi=300)
 
 
 
@@ -265,46 +267,45 @@ def make_chains(save_path, start=1, end=100, thinning=1):
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
-    chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, save_path + prefix + "_chains_.p")
+    chains = model.load_runs(chains_dir, 1, 100, transforms=transforms, batch_ndim=2)
+    pdump(chains, chains_dir / f"{prefix}chains_.p")
     print(chains.shape, '\n')
 
     plt.figure(figsize=(12,12))
     chains.print_summary()
     chains.prune().flatten().plot(list(model.groups_))
-    plt.savefig(save_path + prefix + "_chains_.png", dpi=300)
+    plt.savefig(save_dir / f"{prefix}chains_.png", dpi=300)
 
 
 
     transforms = [
                 partial(Chains.thin, thinning=64),
                 model.reparam_chains,
-                model.reparam_bias, #####
+                model.reparam_bias if reparb else lambda x: x,
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),
                 ]
-    chains = model.load_runs(save_path, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, save_path + prefix + "_chains_mesh.p")
+    chains = model.load_runs(chains_dir, 1, 100, transforms=transforms, batch_ndim=2)
+    pdump(chains, chains_dir / f"{prefix}chains_mesh.p")
+    
     print(chains.shape, '\n')
 
 
 
 
 
-def compare_chains(load_paths, labels, save_dir="./"):
+def compare_chains(load_dirs, labels, save_dir="./"):
     from montecosmo.chains import Chains
-    from montecosmo.utils import Path
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2
     from getdist import plots
 
     save_dir = Path(save_dir)
     chainss = []
     gdsamps = []
-    for load_path, label in zip(load_paths, labels):
-        load_dir = load_path.parent
+    for load_dir, label in zip(load_dirs, labels):
         model = FieldLevelModel.load(load_dir / "model.yaml")
         truth = dict(jnp.load(load_dir / 'truth.npz'))
-        chains = pload(load_path + "_chains.p")
-        print(chains.shape, '\n')
+        chains = pload(load_dir / "chains/chains.p")
+        print('\n', chains.shape)
         gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].to_getdist(label)
         chainss.append(chains)
         gdsamps.append(gdsamp)

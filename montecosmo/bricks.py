@@ -286,7 +286,9 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 # Bias #
 ########
 def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh, 
-                       b1, b2, bs2, bn2, bnp, fNL, png=None, read_order:int=2):
+                       b1, b2, bs2, bn2, bnpar, 
+                       fNL, fNL_bp, fNL_bpd,
+                       png_type=None, read_order:int=2):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
@@ -344,27 +346,32 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     # delta3_pos = delta_pos**3
     # weights += b3 * delta3_pos
 
-    if png is not None:
-        # Apply bphi, primordial term
+    if png_type is not None:
+        if png_type == "fNL":
+            p = 1. # tracer parameter
+            fNL_bphi = fNL * b_phi(b1, p)
+            fNL_bphidelta = fNL * b_phi_delta(b1, b2)
+
+        elif png_type == "fNL_bias":
+            fNL_bphi = fNL_bp
+            fNL_bphidelta = fNL_bpd
+
         trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
         phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
-        p = 1. # tracer parameter
-        bp = b_phi(b1, p)
 
+        # Apply bphi, primordial term
         phi_pos = read(pos, phi, read_order)
-        weights += bp * fNL * phi_pos
+        weights += fNL_bphi * phi_pos
         
         # Apply bphidelta, primordial term
         phi_delta_pos = phi_pos * delta_pos
-        bpd = b_phi_delta(b1, b2)
-
-        weights += bpd * fNL * (phi_delta_pos - phi_delta_pos.mean())
+        weights += fNL_bphidelta * (phi_delta_pos - phi_delta_pos.mean())
 
     # Compute separately bnablapar, velocity bias term
     delta_nabpar_pos = jnp.stack([
                 read(pos, jnp.fft.irfftn(gradient_hat(kvec, i) * (m / b) * init_mesh), read_order) 
                 for i, (m, b) in enumerate(zip(mesh_shape, box_size))], axis=-1) # in h/Mpc 
-    dvel = bnp * delta_nabpar_pos * growths
+    dvel = bnpar * delta_nabpar_pos * growths
 
     return weights, dvel
 
@@ -385,18 +392,22 @@ def b2_L2E(b2, b1L, inv=False):
 
 def b_phi(b1, p=1., delta_c=1.686):
     """
-    Primordial scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
+    Primordial scale-dependant bias parameter.
+    See [Giannantonio&Porciani](http://arxiv.org/abs/0911.0017), [Barreira2022](https://arxiv.org/pdf/2107.06887).
     """
-    # 2 * delta_c * (bE1 - p) and bE1 = 1 + b1
+    # bp = 2 dc (b1 + 1 - p)
+    # bE1 = 1 + b1
+    # bEp = bp = 2 dc (bE1 - p) 
     return 2 * delta_c * (b1 + 1 - p)
 
 def b_phi_delta(b1, b2, delta_c=1.686):
     """
-    Primordial-density scale-dependant bias parameter. See [Barreira2022](https://arxiv.org/pdf/2107.06887)
+    Primordial-density scale-dependant bias parameter. 
+    See [Giannantonio&Porciani](http://arxiv.org/abs/0911.0017), [Barreira2022](https://arxiv.org/pdf/2107.06887).
     """
-    # bEpd = bEp - (bE1 - 1) + delta_c * (bE2 - 8 / 21 * (bE1 - 1)) and bE2 = b2 + 8/21 * b1
-    # TODO: check for the factor 2
-    # return bp - b1 + delta_c * b2
+    # bpd = 2 (dc b2 - b1)
+    # bE2 = b2 + 8/21 * b1
+    # bEpd = bp + bpd / 2 = bEp + dc (b2 + 8/21 (bE1 - 1)) - (bE1 - 1)
     return 2 * (delta_c * b2 - b1)
 
 
