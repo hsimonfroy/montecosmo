@@ -77,7 +77,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     jconfig.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
     from montecosmo.model import FieldLevelModel, default_config
-    from montecosmo.utils import pdump, pload, chreshape, r2chshape, realreshape
+    from montecosmo.utils import pdump, pload, chreshape, r2chshape, boxreshape
     from montecosmo.bricks import top_hat_selection, gen_gauss_selection
     
 

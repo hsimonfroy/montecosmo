@@ -285,9 +285,9 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
     # return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(norm.ppf(cdf_y)))
 
 
-#############################
-# Fourier reparametrization #
-#############################
+##############################
+# Fourier (Memory efficient) #
+##############################
 def ch2rshape(shape):
     """
     Complex Hermitian shape to real shape.
@@ -295,13 +295,15 @@ def ch2rshape(shape):
     Assume last real shape is even to lift the ambiguity.
     (same convention as `fft.rfftn`)
     """
-    return (*shape[:2], 2*(shape[2]-1))
+    last_axis = len(shape) - 1
+    return (*shape[:last_axis], 2*(shape[last_axis]-1))
 
 def r2chshape(shape):
     """
     Real shape to complex Hermitian shape.
     """
-    return (*shape[:2], shape[2]//2+1)
+    last_axis = len(shape) - 1
+    return (*shape[:last_axis], shape[last_axis]//2+1)
 
 
 def _rg2cgh(mesh, part="real", norm="backward"):
@@ -444,55 +446,47 @@ def cgh2rg(meshk, norm="backward"):
 
 
 def chreshape(mesh, shape):
-    # TODO: optimize with slices or axis indexing only
     """
-    Reshape a complex Hermitian tensor (3D),
+    Reshape a complex Hermitian tensor,
     handling correctly zero-padding.
     """
-    ids_shape = tuple(np.minimum(mesh.shape, shape))
     scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
 
-    dtype = 'int16' # int16 -> +/- 32_767, trkl
-    ids = tuple(np.roll(np.arange(-(s//2), (s+1)//2, dtype=dtype), -(s//2)) for s in ids_shape[:-1])
-    ids += (np.arange(ids_shape[-1], dtype=dtype),)
+    # Center wavevectors in mesh to truncate or pad
+    for ax, s in enumerate(mesh.shape[:-1]):
+        mesh = np.roll(mesh, s//2, ax)
     
-    if ids_shape == shape: # downsample all axis
-        out = mesh[np.ix_(*ids)]
-    elif ids_shape == mesh.shape: # oversample all axis
-        out = jnp.zeros(shape, dtype=complex)
-        out = out.at[np.ix_(*ids)].set(mesh)
-    else: # down or oversample
-        out = jnp.zeros(shape, dtype=complex)
-        ids = np.ix_(*ids)
-        out = out.at[ids].set(mesh[ids])
-    return out * scale
-
-
-def realreshape(mesh, shape):
-    """
-    Reshape a real tensor (3D),
-    with padding or truncating centered in the middle of each axis.
-    """
-    shape = np.array(shape)
-    mesh_shape = np.array(mesh.shape)
-    assert np.all(shape % 2 == 0) and np.all(mesh_shape % 2 == 0), "dimension lengths must be even."
-
-    half_down = np.maximum(mesh_shape - shape, 0) // 2
-    slices = tuple(slice(hd, None if hd==0 else -hd) for hd in half_down)
+    slices = ()
+    for ax, (ms, s) in enumerate(zip(mesh.shape, shape)):
+        trunc = max(ms - s, 0)
+        if ax < len(shape) - 1:
+            trunc //= 2
+            slices += (slice(trunc, None if trunc==0 else -trunc),)
+        else:
+            slices += (slice(0, None if trunc==0 else -trunc),)
     mesh = mesh[slices]
 
-    mesh_shape = np.array(mesh.shape)
-    half_over = np.maximum(shape - mesh_shape, 0) // 2
-    mesh = jnp.pad(mesh, pad_width=tuple((ho,ho) for ho in half_over))
-    return mesh
-    
+    pad_width = ()
+    for ax, (ms, s) in enumerate(zip(mesh.shape, shape)):
+        pad = max(s - ms, 0)
+        if ax < len(shape) - 1:
+            pad //= 2
+            pad_width += ((pad, pad),)
+        else:
+            pad_width += ((0,pad),)
+    mesh = jnp.pad(mesh, pad_width=pad_width)
+
+    # Decenter wavevectors in mesh after truncate or pad
+    for ax, s in enumerate(mesh.shape[:-1]):
+        mesh = np.roll(mesh, -s//2, ax)
+    return mesh * scale
 
 
 
 
-####################################
-# Fourier reparametrization Cuda11 #
-####################################
+##################################
+# Fourier utils (Time efficient) #
+##################################
 def id_cgh(shape, part="real", norm="backward"):
     """
     Return indices and weights to permute a real Gaussian tensor of given shape (3D)
@@ -514,8 +508,9 @@ def id_cgh(shape, part="real", norm="backward"):
     else:
         assert norm=="ortho", "norm must be either 'backward', 'forward', or 'ortho'."
 
-    id = np.zeros((3, *chshape), dtype=int)
-    xyz = np.indices(shape, dtype=int)
+    dtype = 'int16' # int16 -> +/- 32_767, trkl
+    id = np.zeros((3, *chshape), dtype=dtype)
+    xyz = np.indices(shape, dtype=dtype)
 
     if part == "imag":
         slix, sliy, sliz = slice(hx+1, None), slice(hy+1, None), slice(hz+1, None)
@@ -563,7 +558,6 @@ def rg2cgh2(mesh, amp:bool=False, norm="backward"):
         return ((mesh[id_real]**2 + mesh[id_imag]**2) / 2)**.5
 
 
-
 def cgh2rg2(meshk, amp:bool=False, norm="backward"):
     """
     Permute a complex Gaussian Hermitian tensor into a real Gaussian tensor (3D).
@@ -586,11 +580,52 @@ def cgh2rg2(meshk, amp:bool=False, norm="backward"):
     return mesh
 
 
+def chreshape2(mesh, shape):
+    """
+    Reshape a complex Hermitian tensor,
+    handling correctly zero-padding.
+    """
+    ids_shape = tuple(np.minimum(mesh.shape, shape))
+    scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
+
+    dtype = 'int16' # int16 -> +/- 32_767, trkl
+    ids = tuple(np.roll(np.arange(-(s//2), (s+1)//2, dtype=dtype), -(s//2)) for s in ids_shape[:-1])
+    ids += (np.arange(ids_shape[-1], dtype=dtype),)
+    
+    if ids_shape == shape: # downsample all axis
+        out = mesh[np.ix_(*ids)]
+    elif ids_shape == mesh.shape: # oversample all axis
+        out = jnp.zeros(shape, dtype=complex)
+        out = out.at[np.ix_(*ids)].set(mesh)
+    else: # down or oversample
+        out = jnp.zeros(shape, dtype=complex)
+        ids = np.ix_(*ids)
+        out = out.at[ids].set(mesh[ids])
+    return out * scale
+
 
 
 ############
 # Geometry #
 ############
+def boxreshape(mesh, shape):
+    """
+    Reshape a tensor, with padding or truncating centered on each axis.
+    """
+    shape = np.array(shape)
+    mesh_shape = np.array(mesh.shape)
+    assert np.all(shape % 2 == 0) and np.all(mesh_shape % 2 == 0), "dimension lengths must be even."
+
+    half_down = np.maximum(mesh_shape - shape, 0) // 2
+    slices = tuple(slice(hd, None if hd==0 else -hd) for hd in half_down)
+    mesh = mesh[slices]
+
+    mesh_shape = np.array(mesh.shape)
+    half_over = np.maximum(shape - mesh_shape, 0) // 2
+    mesh = jnp.pad(mesh, pad_width=tuple((ho,ho) for ho in half_over))
+    return mesh
+    
+
 def mesh2masked(mesh, mask=None):
     if mask is None:
         return mesh
