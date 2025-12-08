@@ -454,7 +454,7 @@ def chreshape(mesh, shape):
 
     # Center wavevectors in mesh to truncate or pad
     for ax, s in enumerate(mesh.shape[:-1]):
-        mesh = np.roll(mesh, s//2, ax)
+        mesh = jnp.roll(mesh, s//2, ax)
     
     slices = ()
     for ax, (ms, s) in enumerate(zip(mesh.shape, shape)):
@@ -478,7 +478,7 @@ def chreshape(mesh, shape):
 
     # Decenter wavevectors in mesh after truncate or pad
     for ax, s in enumerate(mesh.shape[:-1]):
-        mesh = np.roll(mesh, -s//2, ax)
+        mesh = jnp.roll(mesh, -s//2, ax)
     return mesh * scale
 
 
