@@ -112,7 +112,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
 
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
-                            'cell_length': (1+overselect) * box_size[0] / mesh_length, # in Mpc/h
+                            'cell_length': (1 if overselect is None else 1+overselect) * box_size[0] / mesh_length, # in Mpc/h
                             # 'box_center': (0.,0.,0.), # in Mpc/h
                             'box_center': (0.,0.,1.), # in Mpc/h
                             # 'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
