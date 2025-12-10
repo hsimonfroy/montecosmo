@@ -481,13 +481,14 @@ if __name__ == '__main__':
 
     # # # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp1_s80_fNLb/lpt_64"
+    # # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp1_s80_fNLb/lpt_64"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s80_fNLb/lpt_64"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/comp_fNL_fNLb"
-    # compare_chains_dir(save_dir,
-    #                    labels=["32 fNL","32 fNLb"],
-    #                    names=["lpt_32_fNL_png_in_bias", "lpt_32_fNLb"])
+    save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s80_fNLb"
+    compare_chains_dir(save_dir,
+                       labels=["$k_\\mathrm{nyq} = 0.05$", "$k_\\mathrm{nyq} = 0.1$"],
+                       names=["lpt_32"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

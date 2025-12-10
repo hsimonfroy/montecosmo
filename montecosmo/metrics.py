@@ -212,6 +212,30 @@ def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0
     
 
 
+def spectrum_kcount(mesh_shape, box_size, kedges:int|float|list=None, box_center:tuple=(0.,0.,0.)):
+    # Initialize
+    box_center = np.asarray(box_center)
+    los = safe_div(box_center, np.linalg.norm(box_center))
+    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, los)
+    n_bins = len(kedges) + 1
+    dig = np.digitize(kmesh.reshape(-1), kedges)
+
+    # Count wavenumber in bins
+    kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)[1:-1]
+    return kcount
+
+def pow_error_bars(kcount, pow, confidence=0.95, gaussian_approx=False):
+    from scipy.stats import chi2, norm
+    if not gaussian_approx:
+        low, high = chi2(df=kcount).interval(confidence)
+        low, high = pow * kcount / high, pow * kcount / low
+        low, high = pow - low, high - pow
+        yerr = jnp.stack((low, high))
+    else:
+        low = pow * (2 / kcount)**.5 * norm.interval(confidence)[1]
+        yerr = jnp.stack((low, low))
+    return yerr
+
 
 
 

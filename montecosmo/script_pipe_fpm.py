@@ -54,7 +54,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     fNL_true = 0
 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir = main_dir / (f"tracer_fpmreal_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
+    save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" 
 
@@ -116,8 +116,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
                             'cell_length': (1 if overselect is None else 1+overselect) * box_size[0] / mesh_length, # in Mpc/h
-                            'box_center': (0.,0.,0.), # in Mpc/h
-                            # 'box_center': (0.,0.,1.), # in Mpc/h
+                            # 'box_center': (0.,0.,0.), # in Mpc/h
+                            'box_center': (0.,0.,1.), # in Mpc/h
                             # 'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
                             'box_rotvec': (0.,0.,0.,), # rotation vector in radians
                             'evolution': 'lpt',
@@ -150,12 +150,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        'b1': 1.2,
+        'b1': 1.15,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
         'bnpar': 0.,
-        'fNL': fNL_true,
+        'fNL': 0.,
         'fNL_bp':0.,
         'fNL_bpd':0.,
         'alpha_iso': 1.,
@@ -246,7 +246,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # Warmup #
     ##########
     # n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 16, 4
-    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 12, 4
+    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 8, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
@@ -326,7 +326,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     obs = ['obs',
         #    'fNL',
         # 'fNL_bp','fNL_bpd',
-           'bnpar',
+        #    'bnpar',
             # 'b1',
             # 'b2','bs2','bn2', 
             # 'ngbars', 
@@ -480,7 +480,7 @@ def compare_chains_dir(main_dir, labels, names=None):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [32]
+    mesh_lengths = [64]
     eh_approxs = [False]
     oversamps = [2]
     s8s = [False]
@@ -488,25 +488,25 @@ if __name__ == '__main__':
     png_types = ['fNL_bias']  # 'fNL', 'fNL_bias', None
     # infer_model = tm.python_app(infer_model)
     
-    for mesh_length in mesh_lengths:
-        for eh_approx in eh_approxs:
-            for oversamp in oversamps:
-                for s8 in s8s:
-                    for overselect in overselects:
-                        for png_type in png_types:
-                            print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type} ===")
-                            infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
-                                        overselect=overselect, png_type=png_type)
+    # for mesh_length in mesh_lengths:
+    #     for eh_approx in eh_approxs:
+    #         for oversamp in oversamps:
+    #             for s8 in s8s:
+    #                 for overselect in overselects:
+    #                     for png_type in png_types:
+    #                         print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type} ===")
+    #                         infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
+    #                                     overselect=overselect, png_type=png_type)
 
     # # # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp1_s80_fNLb/lpt_64"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb/lpt_64_fNL-100"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/comp_fNL_fNLb"
-    # compare_chains_dir(save_dir,
-    #                    labels=["32 fNL","32 fNLb"],
-    #                    names=["lpt_32_fNL_png_in_bias", "lpt_32_fNLb"])
+    save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb"
+    compare_chains_dir(save_dir,
+                       labels=["$f_\\mathrm{NL}=-100$","$f_\\mathrm{NL}=0$", "$f_\\mathrm{NL}=100$"],
+                       names=["lpt_64_fNL-100", "lpt_64_fNL0", "lpt_64_fNL100"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

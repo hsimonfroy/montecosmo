@@ -206,7 +206,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
     model.substitute(truth, from_base=True)
 
     transforms = [
-                #   lambda x: x[1:],
+                #   lambda x: x[np.array([0,1,2])],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 model.reparam_chains,                                 # reparametrize sample variables into base variables
                 model.reparam_bias if reparb else lambda x: x,        # reparametrize bias parameters
@@ -263,7 +263,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
 
 
     transforms = [
-                #   lambda x: x[1:],
+                #   lambda x: x[np.array([0,1,2])],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
@@ -274,6 +274,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
     plt.figure(figsize=(12,12))
     chains.print_summary()
     chains.prune().flatten().plot(list(model.groups_))
+    # chains.prune().flatten().plot(['fNL_','fNL_bp_', 'fNL_bpd_'])
     plt.savefig(save_dir / f"{prefix}chains_.png", dpi=300)
 
 
@@ -309,6 +310,7 @@ def compare_chains(load_dirs, labels, save_dir="./"):
         gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].to_getdist(label)
         # gdsamp = chains.prune()[['bias','png']+['~init_mesh']].to_getdist(label)
         # gdsamp = chains.prune()[['b1','png']+['~init_mesh']].to_getdist(label)
+        # gdsamp = chains.prune()[['b1','fNL_bp']+['~init_mesh']].to_getdist(label)
         chainss.append(chains)
         gdsamps.append(gdsamp)
 
