@@ -51,9 +51,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     load_dir = main_dir / "load"
 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir = main_dir / f"tracer_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNLb"
+    save_dir = main_dir / f"tracer_red_eh{eh_approx:d}_s8{s8:d}_fNLb"
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "")
+    suffix = f"lpt_{mesh_length:d}"
+    suffix += (f"_ovsamp{oversamp:d}" if oversamp!=2 else "")
+    suffix += (f"_osel{overselect}" if overselect is not None else "")
+    save_dir /= suffix
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -232,7 +235,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # Warmup #
     ##########
     # n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 16, 4
-    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 10, 4
+    n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 8, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
 
@@ -464,9 +467,9 @@ def compare_chains_dir(main_dir, labels, names=None):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [64]
+    mesh_lengths = [48]
     eh_approxs = [False]
-    oversamps = [2]
+    oversamps = [1]
     s8s = [False]
     overselects = [None]
     # infer_model = tm.python_app(infer_model)
@@ -485,10 +488,14 @@ if __name__ == '__main__':
     # save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s80_fNLb/lpt_64"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_ovsamp2_s80_fNLb"
+    save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_s80_fNLb"
     compare_chains_dir(save_dir,
-                       labels=["$k_\\mathrm{nyq} = 0.05$", "$k_\\mathrm{nyq} = 0.1$"],
-                       names=["lpt_32"])
+                       labels=[
+                           "$k_\\mathrm{final} = 0.05 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
+                           "$k_\\mathrm{final} = 0.75 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
+                           "$k_\\mathrm{final} = 0.1 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
+                               ],
+                       names=["lpt_32_iosamp1","lpt_32", "lpt_48_iosamp1", "lpt_48", "lpt_64_iosamp1", "lpt_64"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

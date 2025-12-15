@@ -741,6 +741,10 @@ class FieldLevelModel(Model):
                     delta = mesh - 1
                     var = posit_fn(1 + syst['sigma_delta'] * delta) * syst['sigma_0']
                     # var = posit_fn((1 + syst['sigma_delta'] * delta) * syst['sigma_0'])
+                elif self.lik_type == 'gaussian_delta_power':
+                    delta = mesh - 1
+                    var = (1 + delta)**2 * syst['sigma_delta'] + syst['sigma_0']
+                    # var = posit_fn((1 + syst['sigma_delta'] * delta) * syst['sigma_0'])
 
                 var *= mean_count
                 obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var)**.5))

@@ -326,7 +326,7 @@ def compare_chains(load_dirs, labels, save_dir="./"):
                     # markers=truth,
                     markers={k:v for k,v in truth.items() if k in ['fNL', 'fNL_bp', 'fNL_bpd']},
                     contour_colors=[SetDark2(i) for i in range(len(gdsamps))],)
-    plt.savefig(save_dir / f"triangle_{'_'.join(labels)}.png", dpi=300)
+    plt.savefig(save_dir / f"triangle_{'_'.join(labels)[:200]}.png", dpi=300)
 
 
 
@@ -351,4 +351,4 @@ def compare_chains(load_dirs, labels, save_dir="./"):
         plot_kptcs(kptcs, label=label, i_color=i)
     plt.subplot(131)
     plt.legend()
-    plt.savefig(save_dir / f"kptc_{'_'.join(labels)}.png", dpi=300)
+    plt.savefig(save_dir / f"kptc_{'_'.join(labels)[:200]}.png", dpi=300)
