@@ -44,19 +44,19 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     from datetime import datetime
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     
-    # save_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z08_lrg")) # FMN
+    # save_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z0.8_lrg")) # FMN
     # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
-    # main_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg") # Perlmutter
-    main_dir = Path("/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL") # Perlmutter
+    # main_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z0.8_lrg") # Perlmutter
+    main_dir = Path("/pscratch/sd/h/hsimfroy/png/fpm_b2760_z1_lrg_fNL") # Perlmutter
     load_dir = main_dir / "load"
 
-    fNL_true = 0
+    fNL_true = 100
 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" 
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" + "_likfourier_order1"
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -80,7 +80,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     jconfig.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
     from montecosmo.model import FieldLevelModel, default_config
-    from montecosmo.utils import pdump, pload, chreshape, r2chshape, boxreshape
+    from montecosmo.utils import pdump, pload, chreshape, r2chshape, boxreshape, cgh2rg
     from montecosmo.bricks import top_hat_selection, gen_gauss_selection
     
 
@@ -139,7 +139,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             'k_cut': np.inf,
                             'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
                             # 'init_power': None,
-                            'lik_type': 'gaussian_delta',
+                            # 'lik_type': 'gaussian_delta',
+                            'lik_type': 'gaussian_fourier',
                             'png_type': png_type,
                             # 'precond': 'kaiser_dyn'
                             } | oversamp_config)
@@ -150,13 +151,13 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        'b1': 1.15,
+        'b1': 0.7,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
         'bnpar': 0.,
         'fNL': 0.,
-        'fNL_bp':0.,
+        'fNL_bp':25.,
         'fNL_bpd':0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
@@ -164,8 +165,33 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
         'sigma_0': 0.3,
+        'sigma_2': 1e-3,
+        'sigma_mu2': 1e-3,
         'sigma_delta': 0.7,
         }
+    
+    # truth = {
+    #     'Omega_m': 0.3137721, 
+    #     'sigma8': 0.8076353990239834,
+    #     'b1': 1.0,
+    #     'b2': 0.32,
+    #     'bs2': -0.71,
+    #     'bn2': -41.,
+    #     'bnpar': -22.,
+    #     'fNL': 0.,
+    #     'fNL_bp': 0.,
+    #     'fNL_bpd': 0.,
+    #     'alpha_iso': 1.,
+    #     'alpha_ap': 1.,
+    #     # 'ngbars': 8.43318125e-4,
+    #     # 'ngbars': 1e-4,
+    #     'ngbars': 1e-5,
+    #     # 'ngbars': 10000., # neglect lik noise
+    #     'sigma_0': 0.23,
+    #     'sigma_2': 1e-3,
+    #     'sigma_mu2': 1e-3,
+    #     'sigma_delta': 0.35,
+    # }
 
     latents = model.new_latents_from_loc(truth, update_prior=True)
     model = FieldLevelModel(**model.asdict() | {'latents': latents})
@@ -194,6 +220,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     elif fNL_true == -100:
         obs_mesh = jnp.load(load_dir / f'tracer_2099359_fNL-100_paint2_deconv1_{mesh_length}.npy')
     obs_mesh *= truth['ngbars'] * model.cell_length**3
+    
 
     # # Abacus initial
     init_mesh = jnp.fft.rfftn(jnp.load(load_dir / f"init_mesh_fake_2760_{256}.npy"))
@@ -238,6 +265,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
 
     model.save(save_dir / "model.yaml")    
     jnp.savez(save_dir / "truth.npz", **truth)
+    sys.stdout.flush()
 
 
 
@@ -251,8 +279,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     tune_mass = True
 
     model.reset()
-    model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
-    print(model.data.keys()) ########
+    # model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
+    model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True) ###XXX
+
+    print('data params:', model.data.keys())
     model.block()
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
     print('start params:', params_start.keys())
@@ -306,8 +336,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', alpha=0.5, label='fiducial')
     plt.subplot(133)
     plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
-    plt.savefig(save_dir / 'init_warm.png')   
-
+    plt.savefig(save_dir / 'init_warm.png')
+    sys.stdout.flush()
 
 
 
@@ -328,10 +358,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'fNL_bp','fNL_bpd',
         #    'bnpar',
             # 'b1',
-            # 'b2','bs2','bn2', 
+            'b2','bs2','bn2', 
             # 'ngbars', 
             # 'sigma_0',
-            # 'sigma_delta', 
+            'sigma_2',
+            'sigma_mu2',
+            'sigma_delta',
             # 'Omega_m',
             # 'sigma8',
             # 'init_mesh',
@@ -340,7 +372,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     obs += ['sigma8'] if not s8 else []
     obs += ['fNL_bp','fNL_bpd'] if not png_type=='fNL_bias' else []
     obs += ['fNL'] if not ('fNL'==png_type or 'fNL_bias'==png_type) else []
+    
+    # obs += ['fNL']
     obs = {k: truth[k] for k in obs}
+    obs |= {'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} ###XXX
 
     model.reset()
     model.substitute(obs, from_base=True)
@@ -402,6 +437,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         while os.path.exists(chains_dir / f"run_{start}.npz") and start <= n_runs:
             start += 1
         print(f"Resuming at run {start}...")
+    sys.stdout.flush()
 
     print("\nRunning...")
     run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=64, progress_bar=False)))
@@ -488,25 +524,26 @@ if __name__ == '__main__':
     png_types = ['fNL_bias']  # 'fNL', 'fNL_bias', None
     # infer_model = tm.python_app(infer_model)
     
-    # for mesh_length in mesh_lengths:
-    #     for eh_approx in eh_approxs:
-    #         for oversamp in oversamps:
-    #             for s8 in s8s:
-    #                 for overselect in overselects:
-    #                     for png_type in png_types:
-    #                         print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type} ===")
-    #                         infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
-    #                                     overselect=overselect, png_type=png_type)
+    for mesh_length in mesh_lengths:
+        for eh_approx in eh_approxs:
+            for oversamp in oversamps:
+                for s8 in s8s:
+                    for overselect in overselects:
+                        for png_type in png_types:
+                            print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type} ===")
+                            infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
+                                        overselect=overselect, png_type=png_type)
 
     # # # overwrite = False
     # overwrite = True
     # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb/lpt_64_fNL-100"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb"
-    compare_chains_dir(save_dir,
-                       labels=["$f_\\mathrm{NL}=-100$","$f_\\mathrm{NL}=0$", "$f_\\mathrm{NL}=100$"],
-                       names=["lpt_64_fNL-100", "lpt_64_fNL0", "lpt_64_fNL100"])
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb"
+    # compare_chains_dir(save_dir,
+    #                    labels=["$f_\\mathrm{NL}=100$","$f_\\mathrm{NL}=0$", "$f_\\mathrm{NL}=-100$"],
+    #                    names=["lpt_64_fNL-100", "lpt_64_fNL0", "lpt_64_fNL100"])
+    #                 #    names=["lpt_32_fNL-100", "lpt_32_fNL0", "lpt_32_fNL100"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

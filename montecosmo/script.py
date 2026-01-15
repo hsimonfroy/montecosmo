@@ -309,12 +309,13 @@ def compare_chains(load_dirs, labels, save_dir="./"):
         print('\n', chains.shape)
         gdsamp = chains.prune()[list(model.groups)+['~init_mesh']].to_getdist(label)
         # gdsamp = chains.prune()[['bias','png']+['~init_mesh']].to_getdist(label)
+        # gdsamp = chains.prune()[['bias','fNL_bp']+['~init_mesh']].to_getdist(label)
         # gdsamp = chains.prune()[['b1','png']+['~init_mesh']].to_getdist(label)
         # gdsamp = chains.prune()[['b1','fNL_bp']+['~init_mesh']].to_getdist(label)
         chainss.append(chains)
         gdsamps.append(gdsamp)
 
-        
+
     # chains['fNL_bp'] = chains['fNL'] * b_phi( chains['b1'], p=1.)
     # chains['fNL_bpd'] = chains['fNL'] * b_phi_delta( chains['b1'], chains['b2'])
 
@@ -324,31 +325,31 @@ def compare_chains(load_dirs, labels, save_dir="./"):
                     title_limit=1,
                     filled=True, 
                     # markers=truth,
-                    markers={k:v for k,v in truth.items() if k in ['fNL', 'fNL_bp', 'fNL_bpd']},
+                    # markers={k:v for k,v in truth.items() if k in ['fNL', 'fNL_bp', 'fNL_bpd']},
                     contour_colors=[SetDark2(i) for i in range(len(gdsamps))],)
     plt.savefig(save_dir / f"triangle_{'_'.join(labels)[:200]}.png", dpi=300)
 
 
 
-    mesh_ref = truth['init_mesh']
-    kpow_ref = model.spectrum(mesh_ref)
-    plt.figure(figsize=(12, 4), layout='constrained')
-    def plot_kptcs(kptcs, label=None, i_color=0):
-        color = SetDark2(i_color)
-        plot_powtranscoh(*kptcs, fill=0.68, color=color)
-        plot_powtranscoh(*kptcs, fill=0.95, color=color)
-        plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=color, label=label)
+    # mesh_ref = truth['init_mesh']
+    # kpow_ref = model.spectrum(mesh_ref)
+    # plt.figure(figsize=(12, 4), layout='constrained')
+    # def plot_kptcs(kptcs, label=None, i_color=0):
+    #     color = SetDark2(i_color)
+    #     plot_powtranscoh(*kptcs, fill=0.68, color=color)
+    #     plot_powtranscoh(*kptcs, fill=0.95, color=color)
+    #     plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=color, label=label)
 
-    plt.subplot(131)
-    plot_pow(*kpow_ref, 'k:', label='true')
-    plt.subplot(132)
-    plt.axhline(1., linestyle=':', color='k', alpha=0.5)
-    plt.subplot(133)
-    plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+    # plt.subplot(131)
+    # plot_pow(*kpow_ref, 'k:', label='true')
+    # plt.subplot(132)
+    # plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    # plt.subplot(133)
+    # plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
 
-    for i, (chains, label) in enumerate(zip(chainss, labels)):
-        kptcs = tree.map(jnp.concatenate, chains['kptc'])
-        plot_kptcs(kptcs, label=label, i_color=i)
-    plt.subplot(131)
-    plt.legend()
-    plt.savefig(save_dir / f"kptc_{'_'.join(labels)[:200]}.png", dpi=300)
+    # for i, (chains, label) in enumerate(zip(chainss, labels)):
+    #     kptcs = tree.map(jnp.concatenate, chains['kptc'])
+    #     plot_kptcs(kptcs, label=label, i_color=i)
+    # plt.subplot(131)
+    # plt.legend()
+    # plt.savefig(save_dir / f"kptc_{'_'.join(labels)[:200]}.png", dpi=300)

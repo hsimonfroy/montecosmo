@@ -135,12 +135,12 @@ default_config={
                             'label':'{f}_\\mathrm{NL}',
                             'loc':0.,
                             'scale':1e3,
-                            'scale_fid':1e1,
+                            'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
                             'label':'{f}_\\mathrm{NL} b_\\phi',
                             'loc':0.,
-                            'scale':1e3,
+                            'scale':3e3,
                             'scale_fid':1e1,
                             },
                 'fNL_bpd': {'group':'png',
@@ -174,8 +174,8 @@ default_config={
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                'sigma_0': {'group':'syst',
-                                'label':'{\\sigma}_{0}',
+                's_0': {'group':'syst',
+                                'label':'{s}_{0}',
                                 'loc':1.,
                                 'scale':1.,
                                 # 'scale_fid':1e-1,
@@ -183,8 +183,24 @@ default_config={
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                'sigma_delta': {'group':'syst',
-                                'label':'{\\sigma}_{\\delta}',
+                's_2': {'group':'syst',
+                                'label':'{s}_{2}',
+                                'loc':0.1,
+                                'scale':3e1,
+                                'scale_fid':1e0,
+                                # 'low':0.,
+                                # 'high':jnp.inf,
+                                },
+                's_mu2': {'group':'syst',
+                                'label':'{s}_{\\mu,2}',
+                                'loc':0.1,
+                                'scale':3e1,
+                                'scale_fid':1e0,
+                                # 'low':0.,
+                                # 'high':jnp.inf,
+                                },
+                's_delta': {'group':'syst',
+                                'label':'{s}_{\\delta}',
                                 'loc':1.,
                                 'scale':1.,
                                 'scale_fid':1e-1,
@@ -632,18 +648,21 @@ class FieldLevelModel(Model):
             _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
 
+
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
             lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, **png, 
                                                 png_type=self.png_type, read_order=1)
-
+            
             if self.png_type is not None:
                 init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
+            # init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
+            # init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
                 cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
                 dpos, vel = lpt(cosmology, **init, pos=pos, a=a, lpt_order=self.lpt_order, 
-                                read_order=1, grad_fd=False, lap_fd=False)
+                                read_order=1, grad_fd=np.inf, lap_fd=np.inf)
                 pos += dpos
                 pos, vel = deterministic('lpt_ptcl', jnp.array((pos, vel)))
 
@@ -652,7 +671,7 @@ class FieldLevelModel(Model):
                 assert jnp.ndim(a) == 0, "N-body light-cone not implemented yet"
                 pos, vel = nbody_bf(cosmology, **init, pos=pos, a0=self.nbody_a_start, a1=a, n_steps=self.nbody_n_steps, 
                                     paint_order=self.paint_order, lpt_order=self.lpt_order,
-                                    grad_fd=False, lap_fd=False, snapshots=self.nbody_snapshots)
+                                    grad_fd=np.inf, lap_fd=np.inf, snapshots=self.nbody_snapshots)
                 pos, vel = deterministic('nbody_ptcl', jnp.array((pos, vel)))
                 pos, vel = tree.map(lambda x: x[-1], (pos, vel))
 
@@ -695,27 +714,6 @@ class FieldLevelModel(Model):
         """
         mesh, syst = params
 
-        # if self.observable == 'field':
-        #     mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
-        #     mesh /= mesh.mean()
-
-        #     mesh -= 1
-        #     # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-        #     rcounts = syst['ngbars'] * self.cell_length**3
-        #     mean_count = rcounts.mean()
-
-        #     # if self.lik_type == 'gaussian':
-        #     #     # obs = sample('obs', dist.Normal((1 + mesh) * mean_count, mean_count**.5))
-        #     #     obs = sample('obs', dist.Normal(mesh, mean_count**-.5))
-
-        #     # else:
-        #     #     # posit_fn = lambda x: jnp.maximum(x, 1e-9)
-        #     #     # posit_fn = jnp.abs
-        #     #     posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
-        #     #     obs = sample('obs', dist.Normal(mesh, (posit_fn(1 + syst['sigma_delta'] * mesh) / mean_count)**.5))
-        #     # return obs
-
-
         if self.observable == 'field':
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
@@ -736,15 +734,25 @@ class FieldLevelModel(Model):
                 obs = sample('obs', dist.Poisson(intens**(1 / temp)))
             else:
                 if self.lik_type == 'gaussian':
-                    var = syst['sigma_0']
+                    var = syst['s_0']
                 elif self.lik_type == 'gaussian_delta':
                     delta = mesh - 1
-                    var = posit_fn(1 + syst['sigma_delta'] * delta) * syst['sigma_0']
-                    # var = posit_fn((1 + syst['sigma_delta'] * delta) * syst['sigma_0'])
+                    var = posit_fn(1 + syst['s_delta'] * delta) * syst['s_0']
+                    # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
                 elif self.lik_type == 'gaussian_delta_power':
                     delta = mesh - 1
-                    var = (1 + delta)**2 * syst['sigma_delta'] + syst['sigma_0']
-                    # var = posit_fn((1 + syst['sigma_delta'] * delta) * syst['sigma_0'])
+                    var = jnp.abs(1 + delta)**1.7 * syst['s_delta'] + syst['s_0']
+                    # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
+                elif self.lik_type == 'gaussian_fourier':
+                    kvec = rfftk(self.final_shape)
+                    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, self.final_shape, self.box_size))**.5 # in h/Mpc
+                    mumesh = sum(ki * losi * (m / b) for ki, losi, m, b in zip(kvec, self.los_fid, self.final_shape, self.box_size))
+                    mumesh = safe_div(mumesh, kmesh)
+
+                    # var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)
+                    var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)**2
+                    var = cgh2rg(var**.5, norm="amp")**2
+                    mesh = cgh2rg(jnp.fft.rfftn(mesh))
 
                 var *= mean_count
                 obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var)**.5))

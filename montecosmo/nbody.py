@@ -40,7 +40,7 @@ def fftk(shape):
     return kx, ky, kz
 
 
-def invlaplace_hat(kvec, fd=False):
+def invlaplace_hat(kvec, fd_order=np.inf):
     """
     Fourier transform of inverse Laplace kernel.
 
@@ -48,22 +48,24 @@ def invlaplace_hat(kvec, fd=False):
     -----------
     kvec: list
         List of wavevectors
-    fd: bool
-        Finite difference kernel
+    fd_order: int
+        Finite difference order
 
     Returns
     --------
     weights: array
         Complex kernel values
     """
-    if fd:
-        kk = sum((ki * np.sinc(ki / (2 * np.pi)))**2 for ki in kvec)
-    else:
+    if fd_order == 2:
+        kk = sum((np.cos(ki) - 1) * 2 for ki in kvec)
+    elif fd_order == 4:
+        kk = sum((np.cos(2 * ki) - 16 * np.cos(ki) + 15) / 6 for ki in kvec)
+    elif fd_order == np.inf:
         kk = sum(ki**2 for ki in kvec)
     return - safe_div(1, kk)
 
 
-def gradient_hat(kvec, direction:int, fd=False):
+def gradient_hat(kvec, direction:int, fd_order=np.inf):
     """
     Fourier transform of gradient kernel along given direction.
     
@@ -73,8 +75,8 @@ def gradient_hat(kvec, direction:int, fd=False):
         List of wavevectors
     direction: int
         Index of the direction in which to take the gradient
-    fd: bool
-        Finite difference kernel
+    fd_order: int
+        Finite difference order
 
     Returns
     --------
@@ -82,8 +84,12 @@ def gradient_hat(kvec, direction:int, fd=False):
         Complex kernel values
     """
     ki = kvec[direction]
-    if fd:
-        ki = (8. * np.sin(ki) - np.sin(2. * ki)) / 6.
+    if fd_order == 2:
+        ki = np.sin(ki)
+    elif fd_order == 4:
+        ki = (8 * np.sin(ki) - np.sin(2 * ki)) / 6
+    elif fd_order == np.inf:
+        pass
     return 1j * ki
 
 
@@ -455,7 +461,7 @@ def interlace(pos, shape:tuple, weights=1., paint_order:int=2, interlace_order:i
 # Forces #
 ##########
 def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2, 
-              paint_deconv:bool=False, grad_fd=False, lap_fd=False, kcut=np.inf):
+              paint_deconv:bool=False, grad_fd=np.inf, lap_fd=np.inf, kcut=np.inf):
     """
     Compute gravitational forces on particles using a PM scheme
     """
@@ -476,7 +482,7 @@ def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2,
                       for i in range(3)], axis=-1)
 
 
-def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, lap_fd=False, grad_fd=False):
+def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, lap_fd=np.inf, grad_fd=np.inf):
     """
     Return 2LPT source term.
     """
@@ -508,8 +514,8 @@ def lpt(
     a: float| jnp.ndarray,
     lpt_order: int = 2,
     read_order: int = 2,
-    grad_fd: bool = False,
-    lap_fd: bool = False,
+    grad_fd: int = np.inf,
+    lap_fd: int = np.inf,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute first or second order LPT displacement, at given scale factor(s).
@@ -759,7 +765,7 @@ def chi2a(cosmo, chi, log10_amin=dist_log10_amin, steps=dist_steps):
 # Solvers #
 ###########
 def bullfrog_vf(cosmo:Cosmology, dg, mesh_shape:tuple, paint_order:int=2, 
-                paint_deconv=False, grad_fd=False, lap_fd=False):
+                paint_deconv=False, grad_fd=np.inf, lap_fd=np.inf):
     """
     BullFrog vector field.
     """
@@ -824,7 +830,7 @@ def save_y(t, y, args):
     return y
 
 def nbody_bf(cosmo:Cosmology, init_mesh, pos, a0=0., a1=1., n_steps=5, 
-             paint_order:int=2, lpt_order:int=2, grad_fd=False, lap_fd=False, 
+             paint_order:int=2, lpt_order:int=2, grad_fd=np.inf, lap_fd=np.inf, 
              snapshots:int|list=None, fn=save_y):
     """
     N-body simulation with BullFrog solver.
@@ -862,7 +868,7 @@ def nbody_bf(cosmo:Cosmology, init_mesh, pos, a0=0., a1=1., n_steps=5,
 
 
 def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int=2,
-              grad_fd=False, lap_fd=False, snapshots:int|list=None):
+              grad_fd=np.inf, lap_fd=np.inf, snapshots:int|list=None):
     """
     No-diffrax version of N-body simulation with BullFrog solver. 
     Simpler but does not optimize for memory usage with binomial checkpointing.
@@ -905,7 +911,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int
 
 
 
-# def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int=2, grad_fd=True, lap_fd=False):
+# def lpt_fpm(cosmo:Cosmology, init_mesh, pos, a, lpt_order:int=1, paint_order:int=2, grad_fd=True, lap_fd=np.inf):
 #     """
 #     Computes first and second order LPT displacement, e.g. Eq. 2 and 3 [Jenkins2010](https://arxiv.org/pdf/0910.0258)
 #     """
@@ -950,7 +956,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int
 #     return dq, p
 
 
-# def diffrax_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=False):
+# def diffrax_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=np.inf):
 #     """
 #     N-body ODE vector field for diffrax, e.g. Tsit5 or Dopri5
 
@@ -968,7 +974,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int
 #     return vector_field
 
 
-# def jax_ode_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=False):
+# def jax_ode_vf(cosmo:Cosmology, mesh_shape, paint_order, grad_fd=True, lap_fd=np.inf):
 #     """
 #     Return N-body ODE vector field for jax.experimental.ode.odeint
 
@@ -983,7 +989,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int
 
 # from diffrax import diffeqsolve, ODETerm, SaveAt, Euler, Heun, Dopri5, Tsit5, PIDController, ConstantStepSize
 # def nbody_tsit5(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, tol=1e-2, 
-#                 paint_order:int=2, grad_fd=True, lap_fd=False, snapshots:int|list=None):
+#                 paint_order:int=2, grad_fd=True, lap_fd=np.inf, snapshots:int|list=None):
 #     if a_lpt == a_obs:
 #         return tree.map(lambda x: x[None], particles)
 #     else:
@@ -1008,7 +1014,7 @@ def nbody_bf_scan(cosmo:Cosmology, init_mesh, pos, a, n_steps=5, paint_order:int
 
 # from montecosmo.fpm import EfficientLeapFrog, LeapFrogODETerm, symplectic_ode
 # def nbody_fpm(cosmo:Cosmology, mesh_shape, particles, a_lpt, a_obs, n_steps=5, 
-#               paint_order:int=2, grad_fd=True, lap_fd=False, snapshots=None):
+#               paint_order:int=2, grad_fd=True, lap_fd=np.inf, snapshots=None):
 #     if a_lpt == a_obs:
 #         return tree.map(lambda x: x[None], particles)
 #     else:

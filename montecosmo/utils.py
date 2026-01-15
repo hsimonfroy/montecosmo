@@ -500,13 +500,15 @@ def id_cgh(shape, part="real", norm="backward"):
     hx, hy, hz = shape//2
     chshape = (sx, sy, hz+1)
     
-    weights = np.ones(chshape) / 2**.5
+    weights = np.ones(chshape)
     if norm == "backward":
-        weights *= shape.prod()**.5 
+        weights /= (2 / shape.prod())**.5
+    elif norm == "ortho":
+        weights /= 2**.5
     elif norm == "forward":
-        weights /= shape.prod()**.5
+        weights /= (2 * shape.prod())**.5
     else:
-        assert norm=="ortho", "norm must be either 'backward', 'forward', or 'ortho'."
+        assert norm == "amp", "norm must be either 'backward', 'forward', 'ortho', or 'amp'."
 
     dtype = 'int16' # int16 -> +/- 32_767, trkl
     id = np.zeros((3, *chshape), dtype=dtype)
@@ -543,7 +545,7 @@ def id_cgh(shape, part="real", norm="backward"):
 
 
 
-def rg2cgh2(mesh, amp:bool=False, norm="backward"):
+def rg2cgh2(mesh, norm="backward"):
     """
     Permute a real Gaussian tensor (3D) into a complex Gaussian Hermitian tensor.
     particular `rg2cgh(N(0,I), norm)` is distributed as `rfftn(N(0,I), norm)`
@@ -551,14 +553,15 @@ def rg2cgh2(mesh, amp:bool=False, norm="backward"):
     shape = mesh.shape
     id_real, w_real = id_cgh(shape, part="real", norm=norm)
     id_imag, w_imag = id_cgh(shape, part="imag", norm=norm)
-    if not amp:
-        return mesh[id_real] * w_real + 1j * mesh[id_imag] * w_imag
-    else:
+    
+    if norm == "amp":
         # Average wavevector real and imaginary power and return amplitude
         return ((mesh[id_real]**2 + mesh[id_imag]**2) / 2)**.5
+    else:
+        return mesh[id_real] * w_real + 1j * mesh[id_imag] * w_imag
 
 
-def cgh2rg2(meshk, amp:bool=False, norm="backward"):
+def cgh2rg2(meshk, norm="backward"):
     """
     Permute a complex Gaussian Hermitian tensor into a real Gaussian tensor (3D).
     In particular `rg2cgh(N(0,I), norm)` is distributed as `rfftn(N(0,I), norm)`
@@ -568,15 +571,15 @@ def cgh2rg2(meshk, amp:bool=False, norm="backward"):
     id_imag, w_imag = id_cgh(shape, part="imag", norm=norm)
     
     mesh = jnp.zeros(shape)
-    if not amp:
+    if norm == "amp":
+        # Give same amplitude to wavevector real and imaginary part
+        mesh = mesh.at[id_imag].set(meshk.real)
+        mesh = mesh.at[id_real].set(meshk.real)
+    else:
         # NOTE: w_imag can be zero, which is not safe for gradients
         mesh = mesh.at[id_imag].set(safe_div(meshk.imag, w_imag)) 
         mesh = mesh.at[id_real].set(meshk.real / w_real)
         # NOTE: real after imag to overwrite the 2^3=8 points
-    else:
-        # Give same amplitude to wavevector real and imaginary part
-        mesh = mesh.at[id_imag].set(meshk.real)
-        mesh = mesh.at[id_real].set(meshk.real)
     return mesh
 
 

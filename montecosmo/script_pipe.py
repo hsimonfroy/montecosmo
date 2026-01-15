@@ -44,16 +44,17 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     from datetime import datetime
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
     
-    # save_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z08_lrg")) # FMN
+    # save_dir = Path(os.path.expanduser("~/scratch/png/abacus_c0_i0_z0.8_lrg")) # FMN
     # save_dir = Path("/lustre/fsn1/projects/rech/fvg/uvs19wt/png/") # JZ
     # save_dir = Path("/lustre/fswork/projects/rech/fvg/uvs19wt/workspace/png/") # JZ
-    main_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg") # Perlmutter
+    main_dir = Path("/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z0.8_lrg") # Perlmutter
     load_dir = main_dir / "load"
 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / f"tracer_red_eh{eh_approx:d}_s8{s8:d}_fNLb"
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     suffix = f"lpt_{mesh_length:d}"
+    suffix += "_s00"
     suffix += (f"_ovsamp{oversamp:d}" if oversamp!=2 else "")
     suffix += (f"_osel{overselect}" if overselect is not None else "")
     save_dir /= suffix
@@ -140,6 +141,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
                             # 'init_power': None,
                             'lik_type': 'gaussian_delta',
+                            # 'lik_type': 'gaussian_delta_power',
                             'png_type': 'fNL_bias',
                             # 'precond': 'kaiser_dyn'
                             } | oversamp_config)
@@ -162,7 +164,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         'alpha_ap': 1.,
         'ngbars': 8.43318125e-4,
         # 'ngbars': 10000., # neglect lik noise
-        'sigma_0': 0.3,
+        'sigma_0': 0.7,
         'sigma_delta': 0.7,
         }
 
@@ -319,7 +321,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
             # 'b1',
             # 'b2','bs2','bn2', 
             # 'ngbars', 
-            # 'sigma_0',
+            'sigma_0',
             # 'sigma_delta', 
             'Omega_m',
             # 'sigma8',
@@ -469,7 +471,7 @@ if __name__ == '__main__':
     # mesh_lengths = [32, 64, 96]
     mesh_lengths = [48]
     eh_approxs = [False]
-    oversamps = [1]
+    oversamps = [2]
     s8s = [False]
     overselects = [None]
     # infer_model = tm.python_app(infer_model)
@@ -491,11 +493,10 @@ if __name__ == '__main__':
     save_dir = "/pscratch/sd/h/hsimfroy/png/abacus_c0_i0_z08_lrg/tracer_red_eh0_s80_fNLb"
     compare_chains_dir(save_dir,
                        labels=[
-                           "$k_\\mathrm{final} = 0.05 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
-                           "$k_\\mathrm{final} = 0.75 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
-                           "$k_\\mathrm{final} = 0.1 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
+                        #    "$k_\\mathrm{final} = 0.05 = k_\\mathrm{init}$", "$k_\\mathrm{final} = 0.05 = 0.66 k_\\mathrm{init}$", 
+                           "$\\sigma_0 (1+\\sigma_\\delta \\delta)$", "$0.7 (1+\\sigma_\\delta \\delta)$", "$\\sigma_0 + |1+\\delta|^{1.7} \\sigma_\\delta$", "$0.7 + |1+\\delta|^{1.7} \\sigma_\\delta$"
                                ],
-                       names=["lpt_32_iosamp1","lpt_32", "lpt_48_iosamp1", "lpt_48", "lpt_64_iosamp1", "lpt_64"])
+                       names=["lpt_48","lpt_48_s00", "lpt_48_gpow", "lpt_48_gpow_s00"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")

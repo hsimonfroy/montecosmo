@@ -121,7 +121,7 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     z_norm = 10. # in matter-dominated era
     a_norm = 1. / (1. + z_norm)
     normalized_growth_factor = a2g(cosmo, a) / a2g(cosmo, a_norm) * a_norm
-    trans = - 2. * constants.rh**2 * ks**2 * trans_lin * normalized_growth_factor / (3. * cosmo.Omega)
+    trans = 2. * constants.rh**2 * ks**2 * trans_lin * normalized_growth_factor / (3. * cosmo.Omega)
     trans_fn = lambda x: jnp.interp(x.reshape(-1), ks, trans, left=0., right=0.).reshape(x.shape)
     return trans_fn
 
@@ -306,7 +306,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
 
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape)
-    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_size))**.5 # in h/Mpc 
+    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, mesh_shape, box_size))**.5 # in h/Mpc
 
     # Init weights
     weights = 1.
@@ -345,6 +345,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     # # Apply b3, punctual term
     # delta3_pos = delta_pos**3
     # weights += b3 * delta3_pos
+    # print("delta3_pos.mean()", delta3_pos.mean())
 
     if png_type is not None:
         if png_type == "fNL":
@@ -397,7 +398,8 @@ def b_phi(b1, p=1., delta_c=1.686):
     """
     # bp = 2 dc (b1 + 1 - p)
     # bE1 = 1 + b1
-    # bEp = bp = 2 dc (bE1 - p) 
+    # bEp = bp = 2 dc (bE1 - p)
+    # p=1 for halos, p=1+1/dc~1.6 for recent mergers, maybe p=0.55 for stellar mass selected samples.
     return 2 * delta_c * (b1 + 1 - p)
 
 def b_phi_delta(b1, b2, delta_c=1.686):
