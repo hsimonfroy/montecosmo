@@ -164,10 +164,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'ngbars': 8.43318125e-4,
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
-        'sigma_0': 0.3,
-        'sigma_2': 1e-3,
-        'sigma_mu2': 1e-3,
-        'sigma_delta': 0.7,
+        's_0': 0.3,
+        's_2': 1e-3,
+        's_mu2': 1e-3,
+        's_delta': 0.7,
         }
     
     # truth = {
@@ -187,10 +187,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     #     # 'ngbars': 1e-4,
     #     'ngbars': 1e-5,
     #     # 'ngbars': 10000., # neglect lik noise
-    #     'sigma_0': 0.23,
-    #     'sigma_2': 1e-3,
-    #     'sigma_mu2': 1e-3,
-    #     'sigma_delta': 0.35,
+    #     's_0': 0.23,
+    #     's_2': 1e-3,
+    #     's_mu2': 1e-3,
+    #     's_delta': 0.35,
     # }
 
     latents = model.new_latents_from_loc(truth, update_prior=True)
@@ -205,7 +205,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl2_deconv1_{mesh_length}.npy')
     # # obs_mesh = (1 + truth['b1']) * (obs_mesh - 1) + 1
     # obs_mesh *= truth['ngbars'] * model.cell_length**3
-    # var = truth['sigma_0'] * model.cell_length**3
+    # var = truth['s_0'] * model.cell_length**3
     # obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) * var**.5
     # # obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count)
 
@@ -360,10 +360,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
             # 'b1',
             'b2','bs2','bn2', 
             # 'ngbars', 
-            # 'sigma_0',
-            'sigma_2',
-            'sigma_mu2',
-            'sigma_delta',
+            # 's_0',
+            's_2',
+            's_mu2',
+            's_delta',
             # 'Omega_m',
             # 'sigma8',
             # 'init_mesh',

@@ -102,7 +102,7 @@ default_config={
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
                             'label':'{b}_1',
-                            # 'label':'{b}_1 \\frac{\\sigma_8}{\\sigma_8^\\mathrm{fid}}',
+                            # 'label':'{b}_1 \\frac{\\s_8}{\\s_8^\\mathrm{fid}}',
                             'loc':1.,
                             'scale':1.,
                             'scale_fid':1e-2,
@@ -655,8 +655,8 @@ class FieldLevelModel(Model):
             
             if self.png_type is not None:
                 init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-            # init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
-            # init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
+                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
@@ -718,7 +718,7 @@ class FieldLevelModel(Model):
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            # mesh /= mesh.mean()
+            mesh /= mesh.mean()
 
             rcounts = syst['ngbars'] * self.cell_length**3
             mean_count = rcounts.mean()            
@@ -751,7 +751,7 @@ class FieldLevelModel(Model):
 
                     # var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)
                     var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)**2
-                    var = cgh2rg(var**.5, norm="amp")**2
+                    var = cgh2rg(var, norm="amp")
                     mesh = cgh2rg(jnp.fft.rfftn(mesh))
 
                 var *= mean_count
@@ -966,7 +966,7 @@ class FieldLevelModel(Model):
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.init_shape, self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
             selec = (self.selec_mesh**2).mean()**.5
-            noise = self.loc_fid['sigma_0'] / self.count_fid
+            noise = self.loc_fid['s_0'] / self.count_fid
 
             scale = (1 + selec / noise * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
@@ -977,7 +977,7 @@ class FieldLevelModel(Model):
             count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, bE, self.init_shape, self.los_fid)
             selec = (self.selec_mesh**2).mean()**.5
-            noise = syst['sigma_0'] / count
+            noise = syst['s_0'] / count
 
             scale = (1 + selec / noise * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
@@ -1152,7 +1152,7 @@ class FieldLevelModel(Model):
         delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
 
         bE_fid = b1_L2E(self.loc_fid['b1'])
-        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.loc_fid['sigma_0'] / self.count_fid, 
+        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.loc_fid['s_0'] / self.count_fid, 
                                        self.selec_mesh, self.a_fid, self.box_size, self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.

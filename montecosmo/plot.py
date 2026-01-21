@@ -8,6 +8,8 @@ from matplotlib import animation, rc
 from matplotlib.colors import to_rgba_array
 from matplotlib.colors import ListedColormap
 
+from scipy.stats import norm
+from jax import random as jr
 from montecosmo.bdec import credint
 
 
@@ -305,6 +307,30 @@ def plot_powtranscoh(ks, pow1, trans, coh, *args,
     out = plot_coh(ks, coh, *args, log=log, fill=fill, **kwargs)
     outs.append(out)
     return outs
+
+
+def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]=1e-4, gauss_fit=False, **kwargs):
+    mesh = mesh.ravel()
+    n_hist = min(n_max, len(mesh))
+
+    if isinstance(seed, int):
+        seed = jr.key(seed)
+
+    if vlim is None:
+        vlim = mesh.min(), mesh.max()
+    elif isinstance(vlim, float):
+        vlim = np.quantile(mesh, [vlim/2, 1-vlim/2])
+
+    color = plt.gca()._get_lines.get_next_color()
+    if gauss_fit:
+        xs = np.linspace(*vlim, 200)
+        pdfs = norm.pdf(xs, loc=mesh.mean(), scale=mesh.std())
+        plt.plot(xs, pdfs, color=color)
+
+    out = plt.hist(jr.choice(seed, mesh, (n_hist,), replace=False), *args,
+             **{'range': vlim, 'bins': 100, 'density': True, 'color':color, 'alpha': 0.5} | kwargs)
+    plt.xlim(vlim)
+    return out
 
 
 

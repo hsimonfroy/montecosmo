@@ -31,6 +31,7 @@ dependencies:
     # - tensorflow-datasets
     # Editable package
     - -e git+https://github.com/hsimonfroy/montecosmo.git#egg=montecosmo
+    # - -e git+https://github.com/adematti/desi-fnl-field-level.git#egg=fnlfl
     # JAX
     # pip install -U "jax[cuda12_pip]" --find-links=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     # or
