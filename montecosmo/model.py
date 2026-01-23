@@ -185,7 +185,7 @@ default_config={
                                 },
                 's_2': {'group':'syst',
                                 'label':'{s}_{2}',
-                                'loc':0.1,
+                                'loc':0.,
                                 'scale':3e1,
                                 'scale_fid':1e0,
                                 # 'low':0.,
@@ -193,7 +193,7 @@ default_config={
                                 },
                 's_mu2': {'group':'syst',
                                 'label':'{s}_{\\mu,2}',
-                                'loc':0.1,
+                                'loc':0.,
                                 'scale':3e1,
                                 'scale_fid':1e0,
                                 # 'low':0.,
@@ -458,13 +458,14 @@ class FieldLevelModel(Model):
         self.box_rotvec = np.asarray(self.box_rotvec)
         self.box_rot = Rotation.from_rotvec(self.box_rotvec)
 
+        # Shapes
         self.final_shape = np.asarray(self.final_shape)
-        # NOTE: if x32, cast final_shape into float to avoid overflow when computing products
         self.box_size = self.final_shape * self.cell_length
         self.init_shape = get_scaled_shape(self.final_shape, self.init_oversamp)
         self.evol_shape = get_scaled_shape(self.final_shape, self.evol_oversamp)
         self.ptcl_shape = get_scaled_shape(self.final_shape, self.ptcl_oversamp)
         self.paint_shape = get_scaled_shape(self.final_shape, self.paint_oversamp)
+        # NOTE: if x32, cast shapes into float to avoid overflow when computing products
 
         # Scale cut
         self.k_funda = 2*np.pi / np.min(self.box_size) 
@@ -474,8 +475,8 @@ class FieldLevelModel(Model):
         else:
             if self.k_cut is None:
                 self.k_cut = float(self.k_nyquist)
-            kvec = rfftk(self.init_shape)
-            mask = top_hat(kvec, self.k_cut * self.cell_length) # k_cut in cell units
+            kvec = rfftk(self.init_shape, self.box_size) # in h/Mpc
+            mask = top_hat(kvec, self.k_cut)
             self.cut_mask = np.array(cgh2rg(mask, norm="amp"), dtype=bool)
 
         # Initial power spectrum
@@ -598,13 +599,13 @@ class FieldLevelModel(Model):
         cosmology, bias, png, ap, syst, init = params
         
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
-        fNL_bp, fNL_bpd = fNL_bias(**png, b1=bias['b1'], b2=bias['b2'])
+        fNL_bp, fNL_bpd = fNL_bias(**png, b1=bias['b1'], b2=bias['b2'], p=1., png_type=self.png_type)
 
         if self.evolution=='kaiser':
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
-            gxy_mesh = kaiser_model(cosmology, a, **init, b1E=b1_L2E(bias['b1']), 
+            gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
                                     fNL_bp=fNL_bp, png_type=self.png_type, los=cell_los)
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
@@ -746,9 +747,9 @@ class FieldLevelModel(Model):
                     var = jnp.abs(1 + delta)**1.7 * syst['s_delta'] + syst['s_0']
                     # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
                 elif self.lik_type == 'gaussian_fourier':
-                    kvec = rfftk(self.final_shape)
-                    kmesh = sum((ki  * (m / b))**2 for ki, m, b in zip(kvec, self.final_shape, self.box_size))**.5 # in h/Mpc
-                    mumesh = sum(ki * losi * (m / b) for ki, losi, m, b in zip(kvec, self.los_fid, self.final_shape, self.box_size))
+                    kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
+                    kmesh = sum(ki**2 for ki in kvec)**.5
+                    mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
                     mumesh = safe_div(mumesh, kmesh)
 
                     # var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)
@@ -965,7 +966,7 @@ class FieldLevelModel(Model):
 
         elif self.precond=='kaiser':
             b1E_fid = b1_L2E(self.loc_fid['b1'])
-            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, b1E_fid, los=self.los_fid)
+            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
             selec = (self.selec_mesh**2).mean()**.5
             noise_fid = self.loc_fid['s_0'] / self.count_fid
@@ -977,7 +978,7 @@ class FieldLevelModel(Model):
         elif self.precond=='kaiser_dyn':
             b1E = b1_L2E(bias['b1'])
             count = syst['ngbars'].mean() * self.cell_length**3
-            boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, b1E, los=self.los_fid)
+            boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
             selec = (self.selec_mesh**2).mean()**.5
             noise = syst['s_0'] / count
 
@@ -1155,6 +1156,9 @@ class FieldLevelModel(Model):
 
         b1E_fid = b1_L2E(self.loc_fid['b1'])
         noise_fid = self.loc_fid['s_0'] / self.count_fid
+        fNL_bp, fNL_bpd = fNL_bias(self.loc_fid['fNL_bp'], self.loc_fid['fNL_bpd'], self.loc_fid['fNL'], 
+                             b1=self.loc_fid['b1'], b2=self.loc_fid['b2'], p=1., png_type=self.png_type)
+        
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, noise=noise_fid, b1E=b1E_fid, 
                                        fNL_bp=fNL_bp, png_type=self.png_type, selec_mesh=self.selec_mesh, los=self.los_fid)
         

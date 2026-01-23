@@ -11,33 +11,99 @@ from montecosmo.utils import ch2rshape, r2chshape, safe_div
 ###########
 # Kernels #
 ###########
-def rfftk(shape):
-    """
-    Return wavevectors in cell units for rfftn.
-    """
-    kx = np.fft.fftfreq(shape[0]) * 2 * np.pi
-    ky = np.fft.fftfreq(shape[1]) * 2 * np.pi
-    kz = np.fft.rfftfreq(shape[2]) * 2 * np.pi
+# def rfftk(shape, cell_length=None):
+#     """
+#     Return wavevectors for rfftn.
+#     If `cell_length` is provided, return wavevectors in physical units, else in cell units.
+#     """
+#     if cell_length is None:
+#         scale = 2 * np.pi
+#     else:
+#         scale = 2 * np.pi / cell_length
+#     kx = np.fft.fftfreq(shape[0]) * scale
+#     ky = np.fft.fftfreq(shape[1]) * scale
+#     kz = np.fft.rfftfreq(shape[2]) * scale
 
-    kx = kx.reshape([-1, 1, 1])
-    ky = ky.reshape([1, -1, 1])
-    kz = kz.reshape([1, 1, -1])
-    return kx, ky, kz
+#     kx = kx.reshape([-1, 1, 1])
+#     ky = ky.reshape([1, -1, 1])
+#     kz = kz.reshape([1, 1, -1])
+#     return kx, ky, kz
 
+# def rfftk(shape, box_size=None):
+#     """
+#     Return wavevectors for rfftn.
+#     If `box_size` is provided, return wavevectors in physical units, else in cell units.
+#     """
+#     if box_size is None:
+#         scale = 3 * [2 * np.pi]
+#     else:
+#         scale = [2 * np.pi / b for b in box_size]
+#     kx = np.fft.fftfreq(shape[0]) * scale[0]
+#     ky = np.fft.fftfreq(shape[1]) * scale[1]
+#     kz = np.fft.rfftfreq(shape[2]) * scale[2]
 
-def fftk(shape):
+#     kx = kx.reshape([-1, 1, 1])
+#     ky = ky.reshape([1, -1, 1])
+#     kz = kz.reshape([1, 1, -1])
+#     return kx, ky, kz
+
+def rfftk(shape, box_size=None):
     """
-    Return wavevectors in cell units for fftn.
-    (You shouldn't need it)
-    """
-    kx = np.fft.fftfreq(shape[0]) * 2 * np.pi
-    ky = np.fft.fftfreq(shape[1]) * 2 * np.pi
-    kz = np.fft.fftfreq(shape[2]) * 2 * np.pi
+    Return wavevectors for rfftn.
+    If `box_size` is provided, return wavevectors in physical units, else in cell units.
 
-    kx = kx.reshape([-1, 1, 1])
-    ky = ky.reshape([1, -1, 1])
-    kz = kz.reshape([1, 1, -1])
-    return kx, ky, kz
+    Examples
+    --------
+    kx, ky, kz = rfftk((64, 64, 64))
+    assert kx.shape == (64, 1, 1)
+    assert ky.shape == (1, 64, 1)
+    assert kz.shape == (1, 1, 33)
+    kmesh = kx**2 + ky**2 + kz**2
+    """
+    dim = len(shape)
+    if box_size is None:
+        scales = dim * (2 * np.pi,)
+    else:
+        scales = (2 * np.pi * s / b for s, b in zip(shape, box_size))
+        # scale = dim * [2 * np.pi / cell_length]
+
+    kvec = ()
+    shapes = np.eye(dim, dtype=int) * -2 + 1 # NOTE: i-th shape has length -1 on i-th axis, else length 1
+    for ax, (s, sc, ss) in enumerate(zip(shape, scales, shapes)):
+        if ax < dim - 1:
+            kvec += ((np.fft.fftfreq(s) * sc).reshape(ss),)
+        else:
+            kvec += ((np.fft.rfftfreq(s) * sc).reshape(ss),)
+    return kvec
+
+
+def fftk(shape, box_size=None):
+    """
+    Return wavevectors for fftn (you shouldn't need it).
+    If `box_size` is provided, return wavevectors in physical units, else in cell units.
+
+    Examples
+    --------
+    kx, ky, kz = fftk((64, 64, 64))
+    assert kx.shape == (64, 1, 1)
+    assert ky.shape == (1, 64, 1)
+    assert kz.shape == (1, 1, 64)
+    kmesh = kx**2 + ky**2 + kz**2
+    """
+    dim = len(shape)
+    if box_size is None:
+        scales = dim * (2 * np.pi,)
+    else:
+        scales = (2 * np.pi * s / b for s, b in zip(shape, box_size))
+
+    kvec = ()
+    shapes = np.eye(dim, dtype=int) * -2 + 1 # NOTE: i-th shape has length -1 on i-th axis, else length 1
+    for ax, (s, sc, ss) in enumerate(zip(shape, scales, shapes)):
+        kvec += ((np.fft.fftfreq(s) * sc).reshape(ss),)
+    return kvec
+
+
+
 
 
 def invlaplace_hat(kvec, fd_order=np.inf):

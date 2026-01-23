@@ -295,15 +295,13 @@ def ch2rshape(shape):
     Assume last real shape is even to lift the ambiguity.
     (same convention as `fft.rfftn`)
     """
-    last_axis = len(shape) - 1
-    return (*shape[:last_axis], 2*(shape[last_axis]-1))
+    return (*shape[:-1], 2*(shape[-1]-1))
 
 def r2chshape(shape):
     """
     Real shape to complex Hermitian shape.
     """
-    last_axis = len(shape) - 1
-    return (*shape[:last_axis], shape[last_axis]//2+1)
+    return (*shape[:-1], shape[-1]//2+1)
 
 
 def _rg2cgh(mesh, part="real", norm="backward"):
@@ -473,7 +471,7 @@ def chreshape(mesh, shape):
             pad //= 2
             pad_width += ((pad, pad),)
         else:
-            pad_width += ((0,pad),)
+            pad_width += ((0, pad),)
     mesh = jnp.pad(mesh, pad_width=pad_width)
 
     # Decenter wavevectors in mesh after truncate or pad
