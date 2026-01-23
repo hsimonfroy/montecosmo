@@ -88,8 +88,8 @@ def gradient_hat(kvec, direction:int, fd_order=np.inf):
         ki = np.sin(ki)
     elif fd_order == 4:
         ki = (8 * np.sin(ki) - np.sin(2 * ki)) / 6
-    elif fd_order == np.inf:
-        pass
+    else:
+        assert fd_order == np.inf
     return 1j * ki
 
 

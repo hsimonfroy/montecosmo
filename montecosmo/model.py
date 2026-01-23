@@ -16,7 +16,7 @@ from jax.scipy.spatial.transform import Rotation
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
-                               lagrangian_bias, b1_L2E, b2_L2E,
+                               lagrangian_bias, b1_L2E, b2_L2E, fNL_bias,
                                top_hat_selection, gen_gauss_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
@@ -598,12 +598,14 @@ class FieldLevelModel(Model):
         cosmology, bias, png, ap, syst, init = params
         
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+        fNL_bp, fNL_bpd = fNL_bias(**png, b1=bias['b1'], b2=bias['b2'])
 
         if self.evolution=='kaiser':
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
-            gxy_mesh = kaiser_model(cosmology, a, bE=b1_L2E(bias['b1']), **init, los=cell_los)
+            gxy_mesh = kaiser_model(cosmology, a, **init, b1E=b1_L2E(bias['b1']), 
+                                    fNL_bp=fNL_bp, png_type=self.png_type, los=cell_los)
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
             # gxy_mesh = jnp.abs(gxy_mesh)
@@ -650,8 +652,8 @@ class FieldLevelModel(Model):
 
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, **png, 
-                                                png_type=self.png_type, read_order=1)
+            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
+                                                fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, read_order=1)
             
             if self.png_type is not None:
                 init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
@@ -962,20 +964,20 @@ class FieldLevelModel(Model):
             transfer = pmesh**.5
 
         elif self.precond=='kaiser':
-            bE_fid = b1_L2E(self.loc_fid['b1'])
-            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, bE_fid, self.init_shape, self.los_fid)
+            b1E_fid = b1_L2E(self.loc_fid['b1'])
+            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
             selec = (self.selec_mesh**2).mean()**.5
-            noise = self.loc_fid['s_0'] / self.count_fid
+            noise_fid = self.loc_fid['s_0'] / self.count_fid
 
-            scale = (1 + selec / noise * boost_fid**2 * pmesh_fid)**.5
+            scale = (1 + selec / noise_fid * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
         elif self.precond=='kaiser_dyn':
-            bE = b1_L2E(bias['b1'])
+            b1E = b1_L2E(bias['b1'])
             count = syst['ngbars'].mean() * self.cell_length**3
-            boost = kaiser_boost(cosmo, self.a_fid, bE, self.init_shape, self.los_fid)
+            boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, b1E, los=self.los_fid)
             selec = (self.selec_mesh**2).mean()**.5
             noise = syst['s_0'] / count
 
@@ -1151,9 +1153,10 @@ class FieldLevelModel(Model):
         # Reshape in Fourier domain in case observed field shape != initial field shape
         delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
 
-        bE_fid = b1_L2E(self.loc_fid['b1'])
-        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, bE_fid, self.loc_fid['s_0'] / self.count_fid, 
-                                       self.selec_mesh, self.a_fid, self.box_size, self.los_fid)
+        b1E_fid = b1_L2E(self.loc_fid['b1'])
+        noise_fid = self.loc_fid['s_0'] / self.count_fid
+        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, noise=noise_fid, b1E=b1E_fid, 
+                                       fNL_bp=fNL_bp, png_type=self.png_type, selec_mesh=self.selec_mesh, los=self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
         # post_mesh = rg2cgh2(jr.normal(seed, ch2rshape(means.shape)))

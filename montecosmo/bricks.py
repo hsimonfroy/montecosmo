@@ -147,29 +147,34 @@ def add_png(cosmo:Cosmology, fNL, init_mesh, box_size):
 ##########
 # Kaiser #
 ##########
-def kaiser_boost(cosmo:Cosmology, a, bE, mesh_shape, los=(0.,0.,0.)):
+def kaiser_boost(cosmo:Cosmology, a, mesh_shape, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.)):
     """
-    Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, and RSD.
+    Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, RSD, and PNG.
     """
     kvec = rfftk(mesh_shape)
     kmesh = sum(kk**2 for kk in kvec)**.5 # in cell units
     mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
     mumesh = safe_div(mumesh, kmesh)
 
-    return a2g(cosmo, a) * (bE + a2f(cosmo, a) * mumesh**2)
+    boost = b1E + a2f(cosmo, a) * mumesh**2
+    if png_type is not None:
+        trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+        boost += safe_div(fNL_bp, trans_phi2delta)
 
+    return a2g(cosmo, a) * boost
+    
 
-def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,0.)):
+def kaiser_model(cosmo:Cosmology, a, init_mesh, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.)):
     """
-    Kaiser model, i.e. growth, Eulerian bias, and RSD, are linear.
+    Kaiser model, i.e. growth, Eulerian bias, RSD, and PNG are linear.
     For flat-sky with no light-cone, this linear model is moreover diagonal in Fourier space.
     """
     mesh_shape = ch2rshape(init_mesh.shape)
     los = jnp.asarray(los)
 
     if los.shape == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
-        init_mesh *= kaiser_boost(cosmo, a, bE, mesh_shape, los)
-        return 1 + jnp.fft.irfftn(init_mesh) # 1 + delta
+        init_mesh *= kaiser_boost(cosmo, a, mesh_shape, b1E, fNL_bp, png_type, los)
+        delta = jnp.fft.irfftn(init_mesh)
     
     elif los.shape == (3,): # flat-sky, light-cone
         kvec = rfftk(mesh_shape)
@@ -177,8 +182,8 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,0.)):
         mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
         mumesh = safe_div(mumesh, kmesh)
 
-        delta = bE * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh)
-        return 1 + a2g(cosmo, a) * delta # 1 + delta
+        delta = b1E * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh)
+        delta = a2g(cosmo, a) * delta
     
     else: # curved-sky
         # # 8 FFTs
@@ -188,11 +193,17 @@ def kaiser_model(cosmo:Cosmology, a, bE, init_mesh, los=(0.,0.,0.)):
         # 6 FFTs
         delta, mu2_delta = optim_mu2_delta(init_mesh, los)
 
-        delta = bE * delta + a2f(cosmo, a) * mu2_delta
-        return 1 + a2g(cosmo, a) * delta # 1 + delta
+        delta = b1E * delta + a2f(cosmo, a) * mu2_delta
+        delta = a2g(cosmo, a) * delta
+    
+        trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+        phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+        delta += fNL_bp * phi
+    return 1 + delta
 
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, noise, selec_mesh, a, box_size, los=(0.,0.,0.)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, a, box_size, noise, b1E, 
+                     fNL_bp=0., png_type=None, selec_mesh=np.array(1.), los=(0.,0.,0.)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -200,7 +211,7 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, bE, noise, selec_mesh, a, box_s
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
     pmesh = lin_power_mesh(cosmo, mesh_shape, box_size)
-    boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
+    boost = kaiser_boost(cosmo, a, mesh_shape, b1E, fNL_bp, png_type, los=los)
     selec = (selec_mesh**2).mean()**.5
 
     stds = (pmesh / (1 + selec / noise * boost**2 * pmesh))**.5
@@ -287,7 +298,7 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 ########
 def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh, 
                        b1, b2, bs2, bn2, bnpar, 
-                       fNL, fNL_bp, fNL_bpd,
+                       fNL_bp, fNL_bpd,
                        png_type=None, read_order:int=2):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -412,7 +423,12 @@ def b_phi_delta(b1, b2, delta_c=1.686):
     # bEpd = bp + bpd / 2 = bEp + dc (b2 + 8/21 (bE1 - 1)) - (bE1 - 1)
     return 2 * (delta_c * b2 - b1)
 
-
+def fNL_bias(fNL_bp, fNL_bpd, fNL, 
+             b1, b2, p=1., png_type=None):
+    if png_type == "fNL":
+        fNL_bp = fNL * b_phi(b1, p)
+        fNL_bpd = fNL * b_phi_delta(b1, b2)
+    return fNL_bp, fNL_bpd
 
 
 ##############################
