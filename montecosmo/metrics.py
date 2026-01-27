@@ -57,7 +57,7 @@ from jax_cosmo import Cosmology
 #         return pk    
 
 
-def _waves(mesh_shape, box_size, kedges, los):
+def _waves(mesh_shape, box_size, kedges, include_corners, los):
     """
     Parameters
     ----------
@@ -88,7 +88,9 @@ def _waves(mesh_shape, box_size, kedges, los):
     if isinstance(kedges, (type(None), int, float)):
         kmin = 0.
         kmax = np.pi * (mesh_shape / box_size).min() # = knyquist
-        kmax *= 3**.5 * 0.9 ######
+        if include_corners:
+            kmax *= len(mesh_shape)**.5 * 0.95
+            
         if kedges is None:
             dk = len(mesh_shape)**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
             n_kedges = max(int((kmax - kmin) / dk), 1)
@@ -100,10 +102,8 @@ def _waves(mesh_shape, box_size, kedges, los):
         kedges = np.linspace(kmin, kmax, n_kedges, endpoint=False)
         kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
 
-    kvec = rfftk(mesh_shape) # cell units
-    kvec = [ki * (m / b) for ki, m, b in zip(kvec, mesh_shape, box_size)] # h/Mpc physical units
+    kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
-
     mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
     mumesh = safe_div(mumesh, kmesh)
 
@@ -115,7 +115,7 @@ def _waves(mesh_shape, box_size, kedges, los):
     return kedges, kmesh, mumesh, rfftw
 
 
-def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, 
+def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, include_corners=True,
              deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
@@ -135,7 +135,7 @@ def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None,
     else:
         mesh_shape = np.array(ch2rshape(mesh.shape))
 
-    kvec = rfftk(mesh_shape) # cell units
+    kvec = rfftk(mesh_shape) # in cell units
     mesh /= rectangular_hat(kvec, order=deconv[0])
 
     if mesh2 is None:
@@ -148,7 +148,7 @@ def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None,
 
     # Binning
     box_size = mesh_shape if box_size is None else np.asarray(box_size)
-    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, los)
+    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, include_corners, los)
     n_bins = len(kedges) + 1
     dig = np.digitize(kmesh.reshape(-1), kedges)
 

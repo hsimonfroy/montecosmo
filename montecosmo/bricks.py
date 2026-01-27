@@ -112,16 +112,16 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     # https://github.com/cosmodesi/desilike/blob/52f52698f7d901881724cd10f3bdd446e79a19f3/desilike/theories/galaxy_clustering/primordial_non_gaussianity.py#L84
     # but jax_cosmo has no A_s, so fallback on https://arxiv.org/pdf/1904.08859
 
-    pow_fn = lin_power_interp(cosmo, a=a)
+    pow_fn = lin_power_interp(cosmo, a, n_interp=n_interp)
     ks = jnp.logspace(-4, 1, n_interp)
-    pow_prim = ks**cosmo.n_s
+    pow_large = ks**cosmo.n_s # primordial power spectrum on large scales
     pow_lin = pow_fn(ks)
-    trans_lin = (pow_lin / pow_prim / (pow_lin[0] / pow_prim[0]))**.5
+    trans_lin = (pow_lin / pow_large / (pow_lin[0] / pow_large[0]))**.5
 
     z_norm = 10. # in matter-dominated era
     a_norm = 1. / (1. + z_norm)
     normalized_growth_factor = a2g(cosmo, a) / a2g(cosmo, a_norm) * a_norm
-    trans = 2. * constants.rh**2 * ks**2 * trans_lin * normalized_growth_factor / (3. * cosmo.Omega)
+    trans = 2. * constants.rh**2 * ks**2 * trans_lin * normalized_growth_factor / (3. * cosmo.Omega_m)
     trans_fn = lambda x: jnp.interp(x.reshape(-1), ks, trans, left=0., right=0.).reshape(x.shape)
     return trans_fn
 
@@ -157,12 +157,11 @@ def kaiser_boost(cosmo:Cosmology, a, mesh_shape, box_size, b1E, fNL_bp=0., png_t
     mumesh = safe_div(mumesh, kmesh)
 
     boost = b1E + a2f(cosmo, a) * mumesh**2
+    boost = a2g(cosmo, a) * boost
     if png_type is not None:
         trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
         boost += safe_div(fNL_bp, trans_phi2delta)
-
-    return a2g(cosmo, a) * boost
-    
+    return boost
 
 def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.)):
     """
@@ -183,13 +182,12 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
         mumesh = safe_div(mumesh, kmesh)
 
         delta = b1E * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh)
+        delta = a2g(cosmo, a) * delta
         if png_type is not None:
             trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
             phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
             delta += fNL_bp * phi # TODO: fNL_bp(a)
 
-        delta = a2g(cosmo, a) * delta
-    
     else: # curved-sky
         # # 8 FFTs
         # mu2_delta = naive_mu2_delta(init_mesh, los)
@@ -199,6 +197,7 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
         delta, mu2_delta = optim_mu2_delta(init_mesh, los)
 
         delta = b1E * delta + a2f(cosmo, a) * mu2_delta
+        delta = a2g(cosmo, a) * delta
         if png_type is not None:
             kvec = rfftk(mesh_shape, box_size) # in h/Mpc
             kmesh = sum(ki**2 for ki in kvec)**.5
@@ -207,7 +206,6 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
             phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
             delta += fNL_bp * phi # TODO: fNL_bp(a)
 
-        delta = a2g(cosmo, a) * delta
     return 1 + delta
 
 
@@ -362,6 +360,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
 
     # # Apply b3, punctual term
     # delta3_pos = delta_pos**3
+    # delta3_pos = delta_pos**3 - 3 * delta2_pos.mean() * delta_pos
     # weights += b3 * delta3_pos
     # print("delta3_pos.mean()", delta3_pos.mean())
 
@@ -370,7 +369,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
         phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
 
         # Apply bphi, primordial term
-        phi_pos = read(pos, phi, read_order) * growths.squeeze()
+        phi_pos = read(pos, phi, read_order)
         weights += fNL_bp * phi_pos
         
         # Apply bphidelta, primordial term
@@ -383,7 +382,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
                 for i in range(len(kvec))], axis=-1) # in h/Mpc 
     dvel = bnpar * delta_nabpar_pos * growths
 
-    return weights, dvel
+    return weights, dvel, phi_pos
 
 
 def b1_L2E(b1, inv=False):
@@ -418,7 +417,7 @@ def b_phi_delta(b1, b2, delta_c=1.686):
     """
     # bpd = 2 (dc b2 - b1)
     # bE2 = b2 + 8/21 * b1
-    # bEpd = bp + bpd / 2 = bEp + dc (b2 + 8/21 (bE1 - 1)) - (bE1 - 1)
+    # bEpd = bp + bpd / 2 = bEp + dc (bE2 - 8/21 (bE1 - 1)) - (bE1 - 1)
     return 2 * (delta_c * b2 - b1)
 
 def fNL_bias(fNL_bp, fNL_bpd, fNL, 

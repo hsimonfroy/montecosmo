@@ -56,7 +56,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" + "_likfourier_order1"
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" + "_kaiser"
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -120,7 +120,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             'box_center': (0.,0.,1.), # in Mpc/h
                             # 'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
                             'box_rotvec': (0.,0.,0.,), # rotation vector in radians
-                            'evolution': 'lpt',
+                            # 'evolution': 'lpt',
+                            'evolution': 'kaiser',
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
                             'curved_sky': False, # curved vs. flat sky
                             'ap_auto': None, # parametrized AP vs. auto AP
@@ -139,8 +140,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             'k_cut': np.inf,
                             'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
                             # 'init_power': None,
-                            # 'lik_type': 'gaussian_delta',
-                            'lik_type': 'gaussian_fourier',
+                            'lik_type': 'gaussian_delta_power',
+                            # 'lik_type': 'gaussian_fourier',
                             'png_type': png_type,
                             # 'precond': 'kaiser_dyn'
                             } | oversamp_config)
@@ -151,13 +152,13 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        'b1': 0.7,
+        'b1': 1.,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
         'bnpar': 0.,
         'fNL': 0.,
-        'fNL_bp':25.,
+        'fNL_bp':fNL_true,
         'fNL_bpd':0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
@@ -165,8 +166,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
         's_0': 0.3,
-        's_2': 1e-3,
-        's_mu2': 1e-3,
+        's_2': 0.,
+        's_2mu': 0.,
         's_delta': 0.7,
         }
     
@@ -181,15 +182,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     #     'fNL': 0.,
     #     'fNL_bp': 0.,
     #     'fNL_bpd': 0.,
-    #     'alpha_iso': 1.,
-    #     'alpha_ap': 1.,
-    #     # 'ngbars': 8.43318125e-4,
-    #     # 'ngbars': 1e-4,
-    #     'ngbars': 1e-5,
-    #     # 'ngbars': 10000., # neglect lik noise
+    #     'ngbars': 1e-4,
     #     's_0': 0.23,
-    #     's_2': 1e-3,
-    #     's_mu2': 1e-3,
+    #     's_2': 0.,
+    #     's_2mu': 0.,
     #     's_delta': 0.35,
     # }
 
@@ -279,8 +275,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     tune_mass = True
 
     model.reset()
-    # model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
-    model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True) ###XXX
+    model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
+    # model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True) ###XXX
 
     print('data params:', model.data.keys())
     model.block()
@@ -355,15 +351,16 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
 
     obs = ['obs',
         #    'fNL',
-        # 'fNL_bp','fNL_bpd',
-        #    'bnpar',
+        # 'fNL_bp',
+        'fNL_bpd',
             # 'b1',
             'b2','bs2','bn2', 
+           'bnpar',
             # 'ngbars', 
             # 's_0',
             's_2',
-            's_mu2',
-            's_delta',
+            's_2mu',
+            # 's_delta',
             # 'Omega_m',
             # 'sigma8',
             # 'init_mesh',
@@ -375,7 +372,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     
     # obs += ['fNL']
     obs = {k: truth[k] for k in obs}
-    obs |= {'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} ###XXX
+    # obs |= {'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} ###XXX
 
     model.reset()
     model.substitute(obs, from_base=True)
@@ -516,7 +513,7 @@ def compare_chains_dir(main_dir, labels, names=None):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [64]
+    mesh_lengths = [32]
     eh_approxs = [False]
     oversamps = [2]
     s8s = [False]
@@ -539,10 +536,10 @@ if __name__ == '__main__':
     # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb/lpt_64_fNL-100"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z1_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb"
     # compare_chains_dir(save_dir,
-    #                    labels=["$f_\\mathrm{NL}=100$","$f_\\mathrm{NL}=0$", "$f_\\mathrm{NL}=-100$"],
-    #                    names=["lpt_64_fNL-100", "lpt_64_fNL0", "lpt_64_fNL100"])
+    #                    labels=["$f_\\mathrm{NL}=-100$","$f_\\mathrm{NL}=0$", "$f_\\mathrm{NL}=100$"],
+    #                    names=["lpt_64_fNL-100_fix", "lpt_64_fNL0_fix", "lpt_64_fNL100_fix"])
     #                 #    names=["lpt_32_fNL-100", "lpt_32_fNL0", "lpt_32_fNL100"])
 
     # spawn(queue, spawn=True)

@@ -331,25 +331,25 @@ def compare_chains(load_dirs, labels, save_dir="./"):
 
 
 
-    # mesh_ref = truth['init_mesh']
-    # kpow_ref = model.spectrum(mesh_ref)
-    # plt.figure(figsize=(12, 4), layout='constrained')
-    # def plot_kptcs(kptcs, label=None, i_color=0):
-    #     color = SetDark2(i_color)
-    #     plot_powtranscoh(*kptcs, fill=0.68, color=color)
-    #     plot_powtranscoh(*kptcs, fill=0.95, color=color)
-    #     plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=color, label=label)
+    mesh_ref = truth['init_mesh']
+    kpow_ref = model.spectrum(mesh_ref)
+    plt.figure(figsize=(12, 4), layout='constrained')
+    def plot_kptcs(kptcs, label=None, i_color=0):
+        color = SetDark2(i_color)
+        plot_powtranscoh(*kptcs, fill=0.68, color=color)
+        plot_powtranscoh(*kptcs, fill=0.95, color=color)
+        plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=color, label=label)
 
-    # plt.subplot(131)
-    # plot_pow(*kpow_ref, 'k:', label='true')
-    # plt.subplot(132)
-    # plt.axhline(1., linestyle=':', color='k', alpha=0.5)
-    # plt.subplot(133)
-    # plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+    plt.subplot(131)
+    plot_pow(*kpow_ref, 'k:', label='true')
+    plt.subplot(132)
+    plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plt.subplot(133)
+    plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
 
-    # for i, (chains, label) in enumerate(zip(chainss, labels)):
-    #     kptcs = tree.map(jnp.concatenate, chains['kptc'])
-    #     plot_kptcs(kptcs, label=label, i_color=i)
-    # plt.subplot(131)
-    # plt.legend()
-    # plt.savefig(save_dir / f"kptc_{'_'.join(labels)[:200]}.png", dpi=300)
+    for i, (chains, label) in enumerate(zip(chainss, labels)):
+        kptcs = tree.map(jnp.concatenate, chains['kptc'])
+        plot_kptcs(kptcs, label=label, i_color=i)
+    plt.subplot(131)
+    plt.legend()
+    plt.savefig(save_dir / f"kptc_{'_'.join(labels)[:200]}.png", dpi=300)

@@ -318,12 +318,12 @@ def deconv_paint(mesh, order:int=2, kernel_type='rectangular', oversamp=1.):
         kernel = lambda kvec: kaiser_bessel_hat(kvec, order, optim_kcut(oversamp))
     
     if jnp.isrealobj(mesh):
-        kvec = rfftk(mesh.shape)
+        kvec = rfftk(mesh.shape) # in cell units
         mesh = jnp.fft.rfftn(mesh)
         mesh /= kernel(kvec)
         mesh = jnp.fft.irfftn(mesh)
     else:
-        kvec = rfftk(ch2rshape(mesh.shape))
+        kvec = rfftk(ch2rshape(mesh.shape)) # in cell units
         mesh /= kernel(kvec)
     return mesh
 
@@ -507,7 +507,7 @@ def interlace(pos, shape:tuple, weights=1., paint_order:int=2, interlace_order:i
     Equal-spacing interlacing. Carefull `interlace_order>=3` is not isotropic.
     See [Wang&Yu2024](https://arxiv.org/abs/2403.13561)
     """
-    kvec = rfftk(shape)
+    kvec = rfftk(shape) # in cell units
     mesh = jnp.zeros(r2chshape(shape), dtype=complex)
     shifts = jnp.arange(interlace_order) / interlace_order
 
@@ -535,36 +535,36 @@ def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2,
         mesh = jnp.fft.rfftn(paint(pos, mesh, order=read_order))
         # If painted field, double deconv to account for both painting and reading
         if paint_deconv:
-            kvec = rfftk(ch2rshape(mesh.shape))
+            kvec = rfftk(ch2rshape(mesh.shape)) # in cell units
             mesh /= rectangular_hat(kvec, order=read_order)**2
 
     # Compute gravitational potential
-    kvec = rfftk(ch2rshape(mesh.shape))
+    kvec = rfftk(ch2rshape(mesh.shape)) # in cell units
     pot = mesh * invlaplace_hat(kvec, lap_fd) * gaussian_hat(kvec, kcut)
 
     # Compute gravitational forces
     # NOTE: for regularly spaced positions, reading with paint_order=2 <=> paint_order=1
     return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_hat(kvec, i, grad_fd) * pot), read_order) 
-                      for i in range(3)], axis=-1)
+                      for i in range(len(kvec))], axis=-1)
 
 
 def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, lap_fd=np.inf, grad_fd=np.inf):
     """
     Return 2LPT source term.
     """
-    kvec = rfftk(ch2rshape(mesh.shape))
+    kvec = rfftk(ch2rshape(mesh.shape)) # in cell units
     pot = mesh * invlaplace_hat(kvec, lap_fd)
 
     delta2 = 0.
     hesses = 0.
-    for i in range(3):
+    for i in range(len(kvec)):
         # Add products of diagonal terms = 0 + h11*h00 + h22*(h11+h00)...
         hess_ii = gradient_hat(kvec, i, grad_fd)**2
         hess_ii = jnp.fft.irfftn(hess_ii * pot)
         delta2 += hess_ii * hesses 
         hesses += hess_ii
 
-        for j in range(i+1, 3):
+        for j in range(i+1, len(kvec)):
             # Substract squared strict-up-triangle terms
             hess_ij = gradient_hat(kvec, i, grad_fd) * gradient_hat(kvec, j, grad_fd)
             delta2 -= jnp.fft.irfftn(hess_ij * pot)**2

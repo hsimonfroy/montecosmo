@@ -134,20 +134,20 @@ default_config={
                 'fNL': {'group':'png',
                             'label':'{f}_\\mathrm{NL}',
                             'loc':0.,
-                            'scale':1e3,
+                            'scale':3e3,
                             'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
                             'label':'{f}_\\mathrm{NL} b_\\phi',
                             'loc':0.,
                             'scale':3e3,
-                            'scale_fid':1e1,
+                            'scale_fid':3e1,
                             },
                 'fNL_bpd': {'group':'png',
                             'label':'{f}_\\mathrm{NL} b_{\\phi\\delta}',
                             'loc':0.,
-                            'scale':1e3,
-                            'scale_fid':1e2,
+                            'scale':3e3,
+                            'scale_fid':3e2,
                             },
                 'alpha_iso': {'group':'ap',
                                 'label':'{\\alpha}_\\mathrm{iso}',
@@ -170,7 +170,7 @@ default_config={
                                 # 'loc':1e-3, # in galaxy / (Mpc/h)^3
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
                                 'scale':1e-2,
-                                'scale_fid':3e-7,
+                                'scale_fid':1e-7,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -178,7 +178,6 @@ default_config={
                                 'label':'{s}_{0}',
                                 'loc':1.,
                                 'scale':1.,
-                                # 'scale_fid':1e-1,
                                 'scale_fid':3e-2,
                                 'low':0.,
                                 'high':jnp.inf,
@@ -186,16 +185,16 @@ default_config={
                 's_2': {'group':'syst',
                                 'label':'{s}_{2}',
                                 'loc':0.,
-                                'scale':3e1,
-                                'scale_fid':1e0,
+                                'scale':3e2,
+                                'scale_fid':1e1,
                                 # 'low':0.,
                                 # 'high':jnp.inf,
                                 },
-                's_mu2': {'group':'syst',
-                                'label':'{s}_{\\mu,2}',
+                's_2mu': {'group':'syst',
+                                'label':'{s}_{2,\\mu}',
                                 'loc':0.,
-                                'scale':3e1,
-                                'scale_fid':1e0,
+                                'scale':3e2,
+                                'scale_fid':1e1,
                                 # 'low':0.,
                                 # 'high':jnp.inf,
                                 },
@@ -203,7 +202,8 @@ default_config={
                                 'label':'{s}_{\\delta}',
                                 'loc':1.,
                                 'scale':1.,
-                                'scale_fid':1e-1,
+                                # 'scale_fid':1e-1, # delta
+                                'scale_fid':1e-2, # delta_power
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -601,6 +601,12 @@ class FieldLevelModel(Model):
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
         fNL_bp, fNL_bpd = fNL_bias(**png, b1=bias['b1'], b2=bias['b2'], p=1., png_type=self.png_type)
 
+        if self.png_type is not None:
+            init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
+            init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
+            init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+
+
         if self.evolution=='kaiser':
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
@@ -656,10 +662,10 @@ class FieldLevelModel(Model):
             lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
                                                 fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, read_order=1)
             
-            if self.png_type is not None:
-                init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
-                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+            # if self.png_type is not None:
+            #     init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
+            #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
+            #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
@@ -752,8 +758,8 @@ class FieldLevelModel(Model):
                     mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
                     mumesh = safe_div(mumesh, kmesh)
 
-                    # var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)
-                    var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_mu2'] * (kmesh * mumesh)**2)**2
+                    # var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2)
+                    var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2)**2
                     var = cgh2rg(var, norm="amp")
                     mesh = cgh2rg(jnp.fft.rfftn(mesh))
 
