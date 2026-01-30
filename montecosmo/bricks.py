@@ -304,8 +304,8 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
 # Bias #
 ########
 def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh, 
-                       b1, b2, bs2, bn2, bnpar, 
-                       fNL_bp, fNL_bpd,
+                       b1, b2, bs2, bn2, b3, bnpar, 
+                       fNL, fNL_bp, fNL_bpd,
                        png_type=None, read_order:int=2):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -331,9 +331,25 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     delta_pos = read(pos, delta, read_order) * growths.squeeze()
     weights += b1 * delta_pos
 
+    if png_type is not None:
+        trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+        phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+
+        # Apply bphi, primordial term
+        phi_pos = read(pos, phi, read_order)
+        weights += fNL_bp * phi_pos
+        
+        # Apply bphidelta, primordial term
+        phi_delta_pos = phi_pos * delta_pos
+        weights += fNL_bpd * (phi_delta_pos - phi_delta_pos.mean())
+
+
     # Apply b2, punctual term
     delta2_pos = delta_pos**2
-    weights += b2 * (delta2_pos - delta2_pos.mean())
+    # delta2_pos -= delta2_pos.mean() * (1 + fNL * phi_pos) * (1 + 68 / 21 * delta_pos)
+    delta2_pos -= delta2_pos.mean()
+    print("delta2_pos.std()", delta2_pos.std())
+    weights += b2 * delta2_pos
 
     # Apply bshear2, non-punctual term
     pot = init_mesh * invlaplace_hat(kvec)
@@ -359,22 +375,11 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     weights += bn2 * delta_nab2_pos
 
     # # Apply b3, punctual term
-    # delta3_pos = delta_pos**3
-    # delta3_pos = delta_pos**3 - 3 * delta2_pos.mean() * delta_pos
-    # weights += b3 * delta3_pos
-    # print("delta3_pos.mean()", delta3_pos.mean())
+    delta3_pos = delta_pos**3
+    delta3_pos -= 3 * delta2_pos.mean() * delta_pos
+    weights += b3 * delta3_pos
+    print("delta3_pos.std()", delta3_pos.std())
 
-    if png_type is not None:
-        trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
-        phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
-
-        # Apply bphi, primordial term
-        phi_pos = read(pos, phi, read_order)
-        weights += fNL_bp * phi_pos
-        
-        # Apply bphidelta, primordial term
-        phi_delta_pos = phi_pos * delta_pos
-        weights += fNL_bpd * (phi_delta_pos - phi_delta_pos.mean())
 
     # Compute separately bnablapar, velocity bias term
     delta_nabpar_pos = jnp.stack([
@@ -425,6 +430,8 @@ def fNL_bias(fNL_bp, fNL_bpd, fNL,
     if png_type == "fNL":
         fNL_bp = fNL * b_phi(b1, p)
         fNL_bpd = fNL * b_phi_delta(b1, b2)
+
+    # fNL_bpd = fNL_bpd - 2 * fNL ##### XXX
     return fNL_bp, fNL_bpd
 
 

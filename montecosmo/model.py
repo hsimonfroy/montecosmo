@@ -104,33 +104,40 @@ default_config={
                             'label':'{b}_1',
                             # 'label':'{b}_1 \\frac{\\s_8}{\\s_8^\\mathrm{fid}}',
                             'loc':1.,
-                            'scale':1.,
+                            'scale':1e2,
                             'scale_fid':1e-2,
                             },
                 'b2': {'group':'bias',
                             'label':'{b}_2',
                             'loc':0.,
-                            'scale':5.,
+                            'scale':1e2,
                             'scale_fid':3e-2,
                             },
                 'bs2': {'group':'bias',
                             'label':'{b}_{s^2}',
                             'loc':0.,
-                            'scale':5.,
+                            'scale':1e2,
                             'scale_fid':1e-1,
                             },
                 'bn2': {'group':'bias',
                             'label':'{b}_{\\nabla^2}',
                             'loc':0.,
-                            'scale':5.,
+                            # 'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':1e0,
                             },
                 'bnpar': {'group':'bias',
                             'label':'{b}_{\\nabla_\\parallel}',
                             'loc':0.,
-                            'scale':5.,
+                            'scale':1e2,
                             'scale_fid':1e0,
                             },
+                'b3': {'group':'bias',
+                            'label':'{b}_{3}',
+                            'loc':0.,
+                            'scale':1e2,
+                            'scale_fid':1e-2,
+                            },                            
                 'fNL': {'group':'png',
                             'label':'{f}_\\mathrm{NL}',
                             'loc':0.,
@@ -170,7 +177,7 @@ default_config={
                                 # 'loc':1e-3, # in galaxy / (Mpc/h)^3
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
                                 'scale':1e-2,
-                                'scale_fid':1e-7,
+                                'scale_fid':3e-8,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -179,6 +186,7 @@ default_config={
                                 'loc':1.,
                                 'scale':1.,
                                 'scale_fid':3e-2,
+                                # 'scale_fid':1e-2,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -187,16 +195,12 @@ default_config={
                                 'loc':0.,
                                 'scale':3e2,
                                 'scale_fid':1e1,
-                                # 'low':0.,
-                                # 'high':jnp.inf,
                                 },
                 's_2mu': {'group':'syst',
                                 'label':'{s}_{2,\\mu}',
                                 'loc':0.,
                                 'scale':3e2,
                                 'scale_fid':1e1,
-                                # 'low':0.,
-                                # 'high':jnp.inf,
                                 },
                 's_delta': {'group':'syst',
                                 'label':'{s}_{\\delta}',
@@ -206,6 +210,12 @@ default_config={
                                 'scale_fid':1e-2, # delta_power
                                 'low':0.,
                                 'high':jnp.inf,
+                                },
+                's_phi': {'group':'syst',
+                                'label':'{s}_{\\phi}',
+                                'loc':0.,
+                                'scale':1e3,
+                                'scale_fid':1e2,
                                 },
                 'init_mesh': {'group':'init',
                                 'label':'{\\delta}_\\mathrm{L}',},
@@ -601,10 +611,10 @@ class FieldLevelModel(Model):
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
         fNL_bp, fNL_bpd = fNL_bias(**png, b1=bias['b1'], b2=bias['b2'], p=1., png_type=self.png_type)
 
-        if self.png_type is not None:
-            init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-            init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
-            init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+        # if self.png_type is not None:
+        #     init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
+        #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
+        #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
 
 
         if self.evolution=='kaiser':
@@ -613,6 +623,7 @@ class FieldLevelModel(Model):
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
             gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
                                     fNL_bp=fNL_bp, png_type=self.png_type, los=cell_los)
+            phi_mesh = 0.
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
             # gxy_mesh = jnp.abs(gxy_mesh)
@@ -659,13 +670,14 @@ class FieldLevelModel(Model):
 
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
-            lbe_weights, dvel = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
+            lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
+                                                fNL=png['fNL'], 
                                                 fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, read_order=1)
             
-            # if self.png_type is not None:
-            #     init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-            #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
-            #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+            if self.png_type is not None:
+                init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
+                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
+                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
@@ -703,16 +715,23 @@ class FieldLevelModel(Model):
             pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.paint_shape)
             gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, 
                                  kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
+            
             # NOTE: final deconvolution can amplify AP-induced high-frequencies.
             gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
 
+            phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
+                        kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
+            phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+            phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
+            phi_mesh = jnp.fft.irfftn(phi_mesh)
+
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
-        return gxy_mesh, syst # NOTE: mesh is 1+delta_obs
+        return gxy_mesh, syst, phi_mesh # NOTE: mesh is 1+delta_obs
 
 
     def likelihood(self, params:tuple, temp=1.):
@@ -721,7 +740,7 @@ class FieldLevelModel(Model):
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-        mesh, syst = params
+        mesh, syst, phi_mesh = params
 
         if self.observable == 'field':
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
@@ -734,8 +753,9 @@ class FieldLevelModel(Model):
             # nmesh = set_radial_count(mesh, self.rmasked, self.redges, rcounts)
 
             # posit_fn = lambda x: jnp.maximum(x, 1e-9)
-            # posit_fn = jnp.abs
-            posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
+            # posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
+            posit_fn = lambda x: jnp.abs(x)
+            # posit_fn = lambda x: jnp.abs(x)**2
 
             if self.lik_type == 'poisson':
                 # intens = posit_fn(mesh * mean_count)
@@ -746,20 +766,20 @@ class FieldLevelModel(Model):
                     var = syst['s_0']
                 elif self.lik_type == 'gaussian_delta':
                     delta = mesh - 1
-                    var = posit_fn(1 + syst['s_delta'] * delta) * syst['s_0']
+                    var = syst['s_0'] * posit_fn(1 + syst['s_delta'] * delta + syst['s_phi'] * phi_mesh)
                     # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
                 elif self.lik_type == 'gaussian_delta_power':
                     delta = mesh - 1
                     var = jnp.abs(1 + delta)**1.7 * syst['s_delta'] + syst['s_0']
-                    # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
                 elif self.lik_type == 'gaussian_fourier':
                     kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
                     kmesh = sum(ki**2 for ki in kvec)**.5
                     mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
                     mumesh = safe_div(mumesh, kmesh)
+                    
+                    phi_mesh = jnp.fft.rfftn(phi_mesh)
 
-                    # var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2)
-                    var = syst['s_0'] * (1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2)**2
+                    var = syst['s_0'] * posit_fn(1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2 + syst['s_phi'] * phi_mesh)
                     var = cgh2rg(var, norm="amp")
                     mesh = cgh2rg(jnp.fft.rfftn(mesh))
 

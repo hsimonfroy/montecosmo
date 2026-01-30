@@ -8,7 +8,7 @@ from matplotlib import animation, rc
 from matplotlib.colors import to_rgba_array
 from matplotlib.colors import ListedColormap
 
-from scipy.stats import norm
+from scipy.stats import norm, gaussian_kde
 from jax import random as jr
 from montecosmo.bdec import credint
 
@@ -44,7 +44,8 @@ def plot_bivar(fn, box=((-1,1),(-1,1)), n=50, type='mesh', **kwargs):
         out = plt.pcolormesh(xx, yy, zz, **kwargs)
     elif type=='contour':
         out = plt.contour(xx, yy, zz, **kwargs)
-    elif type=='contourf':
+    else:
+        assert type=='contourf', "type must be 'mesh', 'contour', 'contourf' or 'surf'"
         out = plt.contourf(xx, yy, zz, **kwargs)
     return out
 
@@ -309,9 +310,34 @@ def plot_powtranscoh(ks, pow1, trans, coh, *args,
     return outs
 
 
-def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]=1e-4, gauss_fit=False, **kwargs):
+def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]=1e-4, type='kde', **kwargs):
+    """
+    Plot the probability density function of a mesh.
+
+    Parameters
+    ----------
+    mesh : ndarray
+        The input mesh.
+    args : tuple
+        Additional positional arguments passed to plotting function.
+    seed : int or jr.key, optional
+        Random seed for subsampling.
+    n_max : int, optional
+        Maximum subsample size.
+    vlim : float or tuple of float, optional
+        The limit values for colormap. 
+        * If float, specifies the proportion of values discarded bilateraly. 
+        * If tuple, specifies (vmin, vmax).
+    type : str, optional
+        The type of plot to create.
+        * 'kde' : plot kernel density estimate.
+        * 'hist' : plot histogram.
+        * 'gauss' : plot Gaussian fit.
+    kwargs : dict
+        Additional keyword arguments passed to plotting function.
+    """
     mesh = mesh.ravel()
-    n_hist = min(n_max, len(mesh))
+    n_samples = min(n_max, len(mesh))
 
     if isinstance(seed, int):
         seed = jr.key(seed)
@@ -321,15 +347,18 @@ def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]
     elif isinstance(vlim, float):
         vlim = np.quantile(mesh, [vlim/2, 1-vlim/2])
 
-    color = plt.gca()._get_lines.get_next_color()
-    if gauss_fit:
+    if type == 'kde':
+        kde = gaussian_kde(jr.choice(seed, mesh, (n_samples,), replace=False))
+        xs = np.linspace(*vlim, 200)
+        out = plt.plot(xs, kde(xs), *args, **kwargs)
+    elif type == 'hist':
+        out = plt.hist(jr.choice(seed, mesh, (n_samples,), replace=False), *args,
+             **{'range': vlim, 'bins': 100, 'density': True, 'histtype':'step'} | kwargs)
+    else:
+        assert type == 'gauss', "type must be 'kde', 'hist' or 'gauss'"
         xs = np.linspace(*vlim, 200)
         pdfs = norm.pdf(xs, loc=mesh.mean(), scale=mesh.std())
-        plt.plot(xs, pdfs, color=color)
-
-    out = plt.hist(jr.choice(seed, mesh, (n_hist,), replace=False), *args,
-             **{'range': vlim, 'bins': 100, 'density': True, 'color':color, 'alpha': 0.5} | kwargs)
-    plt.xlim(vlim)
+        out = plt.plot(xs, pdfs, *args, **kwargs)
     return out
 
 

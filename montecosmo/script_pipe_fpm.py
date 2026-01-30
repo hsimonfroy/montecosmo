@@ -39,7 +39,7 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 # @tm.python_app
-def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=None, png_type=None):
+def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=None, png_type=None, fourier=False):
     from pathlib import Path
     from datetime import datetime
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -56,7 +56,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" + "_kaiser"
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_trick"
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -120,8 +120,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             'box_center': (0.,0.,1.), # in Mpc/h
                             # 'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
                             'box_rotvec': (0.,0.,0.,), # rotation vector in radians
-                            # 'evolution': 'lpt',
-                            'evolution': 'kaiser',
+                            'evolution': 'lpt',
+                            # 'evolution': 'kaiser',
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
                             'curved_sky': False, # curved vs. flat sky
                             'ap_auto': None, # parametrized AP vs. auto AP
@@ -140,8 +140,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
                             'k_cut': np.inf,
                             'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
                             # 'init_power': None,
-                            'lik_type': 'gaussian_delta_power',
-                            # 'lik_type': 'gaussian_fourier',
+                            'lik_type': 'gaussian_fourier' if fourier else 'gaussian_delta',
                             'png_type': png_type,
                             # 'precond': 'kaiser_dyn'
                             } | oversamp_config)
@@ -157,6 +156,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         'bs2': 0.,
         'bn2': 0.,
         'bnpar': 0.,
+        'b3': 0.,
         'fNL': 0.,
         'fNL_bp':fNL_true,
         'fNL_bpd':0.,
@@ -165,10 +165,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'ngbars': 8.43318125e-4,
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
-        's_0': 0.3,
+        # 's_0': 0.3,
+        's_0': 0.2,
         's_2': 0.,
         's_2mu': 0.,
         's_delta': 0.7,
+        's_phi': 0.,
         }
     
     # truth = {
@@ -275,8 +277,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     tune_mass = True
 
     model.reset()
-    model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
-    # model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True) ###XXX
+    if fourier:
+        model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True)
+    else:
+        model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
 
     print('data params:', model.data.keys())
     model.block()
@@ -352,15 +356,17 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     obs = ['obs',
         #    'fNL',
         # 'fNL_bp',
-        'fNL_bpd',
+        # 'fNL_bpd',
             # 'b1',
-            'b2','bs2','bn2', 
-           'bnpar',
+        #     'b2','bs2','bn2', 
+        #    'bnpar',
+        #       'b3',
             # 'ngbars', 
             # 's_0',
-            's_2',
-            's_2mu',
+            # 's_2',
+            # 's_2mu',
             # 's_delta',
+            's_phi',
             # 'Omega_m',
             # 'sigma8',
             # 'init_mesh',
@@ -369,10 +375,11 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     obs += ['sigma8'] if not s8 else []
     obs += ['fNL_bp','fNL_bpd'] if not png_type=='fNL_bias' else []
     obs += ['fNL'] if not ('fNL'==png_type or 'fNL_bias'==png_type) else []
+    obs += ['s_delta'] if fourier else ['s_2', 's_2mu']
     
     # obs += ['fNL']
     obs = {k: truth[k] for k in obs}
-    # obs |= {'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} ###XXX
+    obs |= {'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} if fourier else {}
 
     model.reset()
     model.substitute(obs, from_base=True)
@@ -513,12 +520,13 @@ def compare_chains_dir(main_dir, labels, names=None):
 if __name__ == '__main__':
     print("Demat")
     # mesh_lengths = [32, 64, 96]
-    mesh_lengths = [32]
+    mesh_lengths = [64]
     eh_approxs = [False]
     oversamps = [2]
     s8s = [False]
     overselects = [None]
     png_types = ['fNL_bias']  # 'fNL', 'fNL_bias', None
+    fouriers = [False]
     # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
@@ -527,9 +535,10 @@ if __name__ == '__main__':
                 for s8 in s8s:
                     for overselect in overselects:
                         for png_type in png_types:
-                            print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type} ===")
-                            infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
-                                        overselect=overselect, png_type=png_type)
+                            for fourier in fouriers:
+                                print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type}, fourier: {fourier} ===")
+                                infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
+                                            overselect=overselect, png_type=png_type, fourier=fourier)
 
     # # # overwrite = False
     # overwrite = True
