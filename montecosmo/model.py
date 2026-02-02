@@ -22,6 +22,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
                                catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
                                set_radial_count)
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
+                              nbody_tsit5, 
                               paint, read, deconv_paint, interlace, rfftk, top_hat)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial
 from montecosmo.utils import (ysafe_dump, ysafe_load,
@@ -44,8 +45,8 @@ default_config={
         'png_type': None, # None, 'fNL', 'fNL_bias'
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
-        'nbody_a_start':0., # starting scale factor for N-body, following 1LPT displacement
-        'nbody_n_steps':5, # number of N-body steps
+        'nbody_a_start':0., # starting scale factor for N-body, following LPT displacement
+        'nbody_n_steps':10, # number of N-body steps
         'nbody_snapshots':None, # N-body snapshots to save, if int, number of snapshots, if None, only save last state
         'lpt_order':2, # order of LPT displacement
         'paint_order':2, # order of interpolation kernel
@@ -657,7 +658,7 @@ class FieldLevelModel(Model):
                 # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution can amplify AP-induced high-frequencies.
                 gxy_mesh *= (self.evol_shape / self.ptcl_shape).prod()
                 
-            if tuple(self.init_shape) != tuple(self.final_shape):
+            if tuple(gxy_mesh.shape) != tuple(self.final_shape):
                 gxy_mesh = jnp.fft.rfftn(gxy_mesh)
                 gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
                 gxy_mesh = jnp.fft.irfftn(gxy_mesh)
@@ -691,8 +692,11 @@ class FieldLevelModel(Model):
                 cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
                 assert jnp.ndim(a) == 0, "N-body light-cone not implemented yet"
                 pos, vel = nbody_bf(cosmology, **init, pos=pos, a0=self.nbody_a_start, a1=a, n_steps=self.nbody_n_steps, 
-                                    paint_order=self.paint_order, lpt_order=self.lpt_order,
+                                    paint_order=self.paint_order, lpt_order=self.lpt_order, paint_deconv=False,
                                     grad_fd=np.inf, lap_fd=np.inf, snapshots=self.nbody_snapshots)
+                # pos, vel = nbody_tsit5(cosmology, **init, pos=pos, a0=self.nbody_a_start, a1=a,
+                #                        grad_fd=np.inf, lap_fd=np.inf)
+
                 pos, vel = deterministic('nbody_ptcl', jnp.array((pos, vel)))
                 pos, vel = tree.map(lambda x: x[-1], (pos, vel))
 
