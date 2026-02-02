@@ -721,11 +721,12 @@ class FieldLevelModel(Model):
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
 
-            phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
-                        kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
-            phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-            phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
-            phi_mesh = jnp.fft.irfftn(phi_mesh)
+            # phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
+            #             kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
+            # phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+            # phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
+            # phi_mesh = jnp.fft.irfftn(phi_mesh)
+            phi_mesh = 0.
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))

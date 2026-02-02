@@ -348,7 +348,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     delta2_pos = delta_pos**2
     # delta2_pos -= delta2_pos.mean() * (1 + fNL * phi_pos) * (1 + 68 / 21 * delta_pos)
     delta2_pos -= delta2_pos.mean()
-    print("delta2_pos.std()", delta2_pos.std())
+    # print("delta2_pos.std()", delta2_pos.std())
     weights += b2 * delta2_pos
 
     # Apply bshear2, non-punctual term
@@ -376,9 +376,9 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
 
     # # Apply b3, punctual term
     delta3_pos = delta_pos**3
-    delta3_pos -= 3 * delta2_pos.mean() * delta_pos
+    # delta3_pos -= 3 * delta2_pos.mean() * delta_pos
     weights += b3 * delta3_pos
-    print("delta3_pos.std()", delta3_pos.std())
+    # print("delta3_pos.std()", delta3_pos.std())
 
 
     # Compute separately bnablapar, velocity bias term
