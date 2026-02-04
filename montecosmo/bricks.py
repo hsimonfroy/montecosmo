@@ -410,8 +410,8 @@ def b_phi(b1, p=1., delta_c=1.686):
     See [Giannantonio&Porciani](http://arxiv.org/abs/0911.0017), [Barreira2022](https://arxiv.org/pdf/2107.06887).
     """
     # bp = 2 dc (b1 + 1 - p)
-    # bE1 = 1 + b1
-    # bEp = bp = 2 dc (bE1 - p)
+    # b1E = 1 + b1
+    # bpE = bp = 2 dc (b1E - p)
     # p=1 for halos, p=1+1/dc~1.6 for recent mergers, maybe p=0.55 for stellar mass selected samples.
     return 2 * delta_c * (b1 + 1 - p)
 
@@ -421,8 +421,8 @@ def b_phi_delta(b1, b2, delta_c=1.686):
     See [Giannantonio&Porciani](http://arxiv.org/abs/0911.0017), [Barreira2022](https://arxiv.org/pdf/2107.06887).
     """
     # bpd = 2 (dc b2 - b1)
-    # bE2 = b2 + 8/21 * b1
-    # bEpd = bp + bpd / 2 = bEp + dc (bE2 - 8/21 (bE1 - 1)) - (bE1 - 1)
+    # b2E = b2 + 8/21 * b1
+    # bpdE = bp + bpd / 2 = bpE + dc (b2E - 8/21 (b1E - 1)) - (b1E - 1)
     return 2 * (delta_c * b2 - b1)
 
 def fNL_bias(fNL_bp, fNL_bpd, fNL, 
@@ -613,9 +613,9 @@ def tophysical_mesh(box_center, box_rot:Rotation, box_size, mesh_shape,
     Return scale factor mesh for the different configurations of light-cone and sky.
     """
     if curved_sky:
-        pomesh = pos_mesh(box_center, box_rot, box_size, mesh_shape)
-        los = safe_div(pomesh, jnp.linalg.norm(pomesh, axis=-1, keepdims=True))
-        rmesh = jnp.linalg.norm(pomesh, axis=-1)
+        pos = pos_mesh(box_center, box_rot, box_size, mesh_shape)
+        los = safe_div(pos, jnp.linalg.norm(pos, axis=-1, keepdims=True))
+        rmesh = jnp.linalg.norm(pos, axis=-1)
     else:
         los = safe_div(box_center, np.linalg.norm(box_center))
         rmesh = radius_mesh(box_center, box_rot, box_size, mesh_shape, curved_sky)

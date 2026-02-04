@@ -8,8 +8,9 @@ from functools import partial, wraps
 import numpy as np
 from jax import jit, numpy as jnp, vmap, grad, tree, lax
 
-from jax.scipy.special import logsumexp
+from jax.scipy.special import logsumexp, gammaln
 from jax.scipy.stats import norm
+
 
 from numpyro.distributions import Distribution, constraints, TruncatedNormal, Uniform, util
 
@@ -670,6 +671,15 @@ def cart2radecrad(cart:jnp.ndarray):
 
 
 
+def surface_hypersphere(d, R=1):
+    """d is the embedding dimension"""
+    log_surf = np.log(2) + d/2 * np.log(np.pi) + (d-1) * np.log(R) - gammaln(d/2)
+    return np.exp(log_surf)
+
+def volume_hypersphere(d, R=1):
+    """d is the embedding dimension"""
+    log_vol = d/2 * np.log(np.pi) + d * np.log(R) - gammaln(d/2 + 1)
+    return np.exp(log_vol)
 
 
 # def get_noise_fn(t0, t1, noises, steps=False):

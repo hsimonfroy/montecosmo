@@ -86,15 +86,16 @@ def _waves(mesh_shape, box_size, kedges, include_corners, los):
         RFFT weights accounting for Hermitian symmetry.
     """
     if isinstance(kedges, (type(None), int, float)):
+        dim = len(mesh_shape)
         kmin = 0.
-        kmax = np.pi * (mesh_shape / box_size).min() # = knyquist
+        kmax = np.pi * (mesh_shape / box_size).min() # = k_nyquist
         if include_corners:
-            kmax *= len(mesh_shape)**.5 * 0.95
+            kmax *= dim**.5 * 0.95
             
         if kedges is None:
-            dk = len(mesh_shape)**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
+            dk = dim**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
             n_kedges = max(int((kmax - kmin) / dk), 1)
-        if isinstance(kedges, int):
+        elif isinstance(kedges, int):
             n_kedges = kedges # final number of bins will be nedges-1
         elif isinstance(kedges, float):
             n_kedges = max(int((kmax - kmin) / kedges), 1)
@@ -115,7 +116,7 @@ def _waves(mesh_shape, box_size, kedges, include_corners, los):
     return kedges, kmesh, mumesh, rfftw
 
 
-def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, include_corners=True,
+def _spectrum(mesh0, mesh1=None, box_size=None, kedges:int|float|list=None, include_corners=True,
              deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
@@ -129,22 +130,22 @@ def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, includ
         deconv = (deconv, deconv)
 
     # FFTs and deconvolution
-    if jnp.isrealobj(mesh):
-        mesh_shape = np.array(mesh.shape)
-        mesh = jnp.fft.rfftn(mesh)
+    if jnp.isrealobj(mesh0):
+        mesh_shape = np.array(mesh0.shape)
+        mesh0 = jnp.fft.rfftn(mesh0)
     else:
-        mesh_shape = np.array(ch2rshape(mesh.shape))
+        mesh_shape = np.array(ch2rshape(mesh0.shape))
 
     kvec = rfftk(mesh_shape) # in cell units
-    mesh /= rectangular_hat(kvec, order=deconv[0])
+    mesh0 /= rectangular_hat(kvec, order=deconv[0])
 
-    if mesh2 is None:
-        mmk = mesh.real**2 + mesh.imag**2
+    if mesh1 is None:
+        mmk = mesh0.real**2 + mesh0.imag**2
     else:
-        if jnp.isrealobj(mesh2):
-            mesh2 = jnp.fft.rfftn(mesh2)
-        mesh2 /= rectangular_hat(kvec, order=deconv[1])
-        mmk = mesh * mesh2.conj()
+        if jnp.isrealobj(mesh1):
+            mesh1 = jnp.fft.rfftn(mesh1)
+        mesh1 /= rectangular_hat(kvec, order=deconv[1])
+        mmk = mesh0 * mesh1.conj()
 
     # Binning
     box_size = mesh_shape if box_size is None else np.asarray(box_size)
@@ -156,15 +157,15 @@ def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, includ
     kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)[1:-1]
 
     # Average wavenumber values in bins
-    # kavg = (kedges[1:] + kedges[:-1]) / 2
-    kavg = np.bincount(dig, weights=(kmesh * rfftw).reshape(-1), minlength=n_bins)[1:-1]
-    kavg /= kcount
+    # kmean = (kedges[1:] + kedges[:-1]) / 2
+    kmean = np.bincount(dig, weights=(kmesh * rfftw).reshape(-1), minlength=n_bins)[1:-1]
+    kmean /= kcount
 
     # Average wavenumber power in bins
     pow = jnp.empty((len(ells), n_bins-2))
     for i_ell, ell in enumerate(ells):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
-        if mesh2 is None:
+        if mesh1 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)[1:-1]
         else: 
             # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
@@ -176,10 +177,15 @@ def spectrum(mesh, mesh2=None, box_size=None, kedges:int|float|list=None, includ
 
     # kpow = jnp.concatenate([kavg[None], pk])
     if poles==0:
-        return kavg, pow[0]
+        return kcount, kmean, pow[0]
     else:
-        return kavg, pow
+        return kcount, kmean, pow
 
+def spectrum(mesh0, mesh1=None, box_size=None, kedges:int|float|list=None, include_corners=True,
+             deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
+    kcount, kmean, pow = _spectrum(mesh0, mesh1, box_size, kedges, include_corners,
+             deconv, poles, box_center)
+    return kmean, pow
 
 
 def transfer(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
@@ -212,43 +218,61 @@ def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0
     
 
 
-def spectrum_kcount(mesh_shape, box_size, kedges:int|float|list=None, box_center:tuple=(0.,0.,0.)):
-    # Initialize
-    box_center = np.asarray(box_center)
-    los = safe_div(box_center, np.linalg.norm(box_center))
-    kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, los)
-    n_bins = len(kedges) + 1
-    dig = np.digitize(kmesh.reshape(-1), kedges)
+# def spectrum_kcount(mesh_shape, box_size, kedges:int|float|list=None, box_center:tuple=(0.,0.,0.)):
+#     # Initialize
+#     box_center = np.asarray(box_center)
+#     los = safe_div(box_center, np.linalg.norm(box_center))
+#     kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, los)
+#     n_bins = len(kedges) + 1
+#     dig = np.digitize(kmesh.reshape(-1), kedges)
 
-    # Count wavenumber in bins
-    kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)[1:-1]
-    return kcount
+#     # Count wavenumber in bins
+#     kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)[1:-1]
+#     return kcount
 
-def pow_error_bars(kcount, pow, confidence=0.95, gaussian_approx=False):
+def mean_errorbar(count, std, confidence=0.95, gaussian_approx=False):
+    """
+    Error bar on mean assuming Gaussian variables.
+    """
+    from scipy.stats import norm, t
+    if not gaussian_approx:
+        df = count - 1
+        low, high = t(df=df).interval(confidence)
+        low, high = std / df**.5 * low, std / df**.5 * high
+        yerr = jnp.stack((-low, high))
+    else:
+        high = norm.interval(confidence)[1] * std / count**.5
+        yerr = jnp.stack((high, high))
+    return yerr
+
+def var_errorbar(count, var, confidence=0.95, gaussian_approx=False):
+    """
+    Error bar on variance assuming Gaussian variables.
+    """
     from scipy.stats import chi2, norm
     if not gaussian_approx:
-        low, high = chi2(df=kcount).interval(confidence)
-        low, high = pow * kcount / high, pow * kcount / low
-        low, high = pow - low, high - pow
+        low, high = chi2(df=count).interval(confidence)
+        low, high = var * count / high, var * count / low
+        low, high = var - low, high - var
         yerr = jnp.stack((low, high))
     else:
-        low = pow * (2 / kcount)**.5 * norm.interval(confidence)[1]
-        yerr = jnp.stack((low, low))
+        high = var * (2 / count)**.5 * norm.interval(confidence)[1]
+        yerr = jnp.stack((high, high))
     return yerr
 
 
 
 
-def kaiser_formula(cosmo:Cosmology, a, lin_kpow, bE, poles=0):
+def kaiser_formula(cosmo:Cosmology, a, lin_kpow, b1E, poles=0):
     """
-    bE is the Eulerien linear bias
+    b1E is the Eulerien linear bias
     """
     poles = jnp.atleast_1d(poles)
-    beta = a2f(cosmo, a) / bE
+    beta = a2f(cosmo, a) / b1E
     k, pow = lin_kpow
     pow *= a2g(cosmo, a)**2
 
-    weights = np.ones(len(poles)) * bE**2
+    weights = np.ones(len(poles)) * b1E**2
     for i_ell, ell in enumerate(poles):
         if ell==0:
             weights[i_ell] *= (1 + beta * 2/3 + beta**2 /5)

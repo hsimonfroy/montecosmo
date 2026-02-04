@@ -39,7 +39,7 @@ tm = TaskManager(queue=queue, environ=environ,
 
 
 # @tm.python_app
-def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=None, png_type=None, fourier=False):
+def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, png_type=None, fourier=False):
     from pathlib import Path
     from datetime import datetime
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION']='1.' # NOTE: jax preallocates GPU (default 75%)
@@ -56,7 +56,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_osel{overselect}" if overselect is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_trick"
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + ""
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -89,10 +89,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
     # Load #
     ########
     box_size = 3*(2760,)
-    # overselect = 0.5
-    selection = None if overselect is None else overselect + 0.05
-    # selection = None
-    # selection = 0.5
+    selection = None
     # mesh_length = 96
     z_obs = 1.
 
@@ -115,7 +112,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
 
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
-                            'cell_length': (1 if overselect is None else 1+overselect) * box_size[0] / mesh_length, # in Mpc/h
+                            'cell_length': box_size[0] / mesh_length, # in Mpc/h
                             # 'box_center': (0.,0.,0.), # in Mpc/h
                             'box_center': (0.,0.,1.), # in Mpc/h
                             # 'box_center': (0.,0.,1938.), # in Mpc/h # a2chi(model.cosmo_fid, a=1/(1+z_obs))
@@ -151,7 +148,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        'b1': 1.,
+        'b1': .8,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
@@ -165,7 +162,6 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         # 'ngbars': 8.43318125e-4,
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
-        # 's_0': 0.3,
         's_0': 0.2,
         's_2': 0.,
         's_2mu': 0.,
@@ -360,12 +356,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
             # 'b1',
         #     'b2','bs2','bn2', 
         #    'bnpar',
-        #       'b3',
+            #   'b3',
             # 'ngbars', 
             # 's_0',
             # 's_2',
             # 's_2mu',
-            # 's_delta',
+            's_delta',
             's_phi',
             # 'Omega_m',
             # 'sigma8',
@@ -412,7 +408,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, overselect=No
         warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             # desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
                                             desired_energy_var=1e-7, diagonal_preconditioning=tune_mass)))
-                                            # desired_energy_var=3e-8, diagonal_preconditioning=tune_mass)))
+                                            # desired_energy_var=1e-8, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
         
         print_mclmc_config(config, state)
@@ -519,26 +515,25 @@ def compare_chains_dir(main_dir, labels, names=None):
 
 if __name__ == '__main__':
     print("Demat")
-    # mesh_lengths = [32, 64, 96]
     mesh_lengths = [64]
     eh_approxs = [False]
     oversamps = [2]
     s8s = [False]
-    overselects = [None]
+    selects = [None]
     png_types = ['fNL_bias']  # 'fNL', 'fNL_bias', None
-    fouriers = [False]
+    fouriers = [True]
     # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
         for eh_approx in eh_approxs:
             for oversamp in oversamps:
                 for s8 in s8s:
-                    for overselect in overselects:
+                    for select in selects:
                         for png_type in png_types:
                             for fourier in fouriers:
-                                print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, oversel: {overselect}, png_type: {png_type}, fourier: {fourier} ===")
+                                print(f"\n=== mesh_length: {mesh_length}, eh_approx: {eh_approx}, oversamp: {oversamp}, s8: {s8}, sel: {select}, png_type: {png_type}, fourier: {fourier} ===")
                                 infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
-                                            overselect=overselect, png_type=png_type, fourier=fourier)
+                                            select=select, png_type=png_type, fourier=fourier)
 
     # # # overwrite = False
     # overwrite = True

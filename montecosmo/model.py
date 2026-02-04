@@ -123,7 +123,6 @@ default_config={
                 'bn2': {'group':'bias',
                             'label':'{b}_{\\nabla^2}',
                             'loc':0.,
-                            # 'scale':1e2,
                             'scale':1e3,
                             'scale_fid':1e0,
                             },
@@ -187,7 +186,6 @@ default_config={
                                 'loc':1.,
                                 'scale':1.,
                                 'scale_fid':3e-2,
-                                # 'scale_fid':1e-2,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -500,6 +498,7 @@ class FieldLevelModel(Model):
             raise ValueError("init_power should be None, str, or Path.")
         
         # Selection function
+        # TODO: might implement selection in Lagrangian
         if self.selection is None:
             self.selec_mesh = np.array(1.)
             self.mask = None
@@ -725,12 +724,12 @@ class FieldLevelModel(Model):
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
 
-            # phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
-            #             kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
-            # phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-            # phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
-            # phi_mesh = jnp.fft.irfftn(phi_mesh)
-            phi_mesh = 0.
+            phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
+                        kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
+            phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+            phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
+            phi_mesh = jnp.fft.irfftn(phi_mesh)
+            # phi_mesh = 0.
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
@@ -759,8 +758,8 @@ class FieldLevelModel(Model):
 
             # posit_fn = lambda x: jnp.maximum(x, 1e-9)
             # posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
-            posit_fn = lambda x: jnp.abs(x)
-            # posit_fn = lambda x: jnp.abs(x)**2
+            # posit_fn = lambda x: jnp.abs(x)
+            posit_fn = lambda x: jnp.abs(x)**2
 
             if self.lik_type == 'poisson':
                 # intens = posit_fn(mesh * mean_count)
@@ -945,7 +944,7 @@ class FieldLevelModel(Model):
         """
         Validate radial density and setup radial bins quantities. 
         """
-        rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape, self.curved_sky))
+        rmesh = np.array(self.radius_mesh())
         rmasked = mesh2masked(rmesh, self.mask)
         rmin, rmax = rmasked.min(), rmasked.max()
         dr = 3**.5 * self.cell_length # minimum dr to guarantee connected shell bins
@@ -1076,6 +1075,11 @@ class FieldLevelModel(Model):
         if shape is None:
             shape = self.final_shape
         return pos_mesh(self.box_center, self.box_rot, self.box_size, shape)
+
+    def radius_mesh(self, shape=None):
+        if shape is None:
+            shape = self.final_shape
+        return radius_mesh(self.box_center, self.box_rot, self.box_size, shape, self.curved_sky)
     
     def mesh2masked(self, mesh):
         return mesh2masked(mesh, self.mask)
@@ -1125,8 +1129,8 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh, mesh2=None, kedges:int|float|list=None, deconv:int|tuple=(0, 0), poles:int|tuple=0):
-        return spectrum(mesh, mesh2=mesh2, box_size=self.box_size, 
+    def spectrum(self, mesh0, mesh1=None, kedges:int|float|list=None, deconv:int|tuple=(0, 0), poles:int|tuple=0):
+        return spectrum(mesh0, mesh1=mesh1, box_size=self.box_size, 
                             kedges=kedges, deconv=deconv, poles=poles, box_center=self.box_center)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
@@ -1141,9 +1145,9 @@ class FieldLevelModel(Model):
             mesh = mesh2masked(mesh, self.mask)
 
         if redges is None:
-            dr = 3**.5 * self.cell_length # NOTE: minimum dr to guarantee connected shell bins.
+            redges = 3**.5 * self.cell_length # NOTE: minimum dr to guarantee connected shell bins.
 
-        return distr_radial(mesh, self.rmasked, redges=dr, aggr_fn=aggr_fn)
+        return distr_radial(mesh, self.rmasked, redges=redges, aggr_fn=aggr_fn)
 
 
     ##################
