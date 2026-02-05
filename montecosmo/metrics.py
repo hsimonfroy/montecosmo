@@ -116,15 +116,14 @@ def _waves(mesh_shape, box_size, kedges, include_corners, los):
     return kedges, kmesh, mumesh, rfftw
 
 
-def _spectrum(mesh0, mesh1=None, box_size=None, kedges:int|float|list=None, include_corners=True,
-             deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
+def _spectrum(mesh0, mesh1=None, box_size=None, box_center:tuple=(0.,0.,0.), ells:int|list=0,
+              kedges:int|float|list=None, include_corners=True, deconv:int|tuple=(0, 0)):
     """
     Compute the auto and cross spectrum of 3D fields, with multipole.
     """
     # Initialize
     box_center = np.asarray(box_center)
     los = safe_div(box_center, np.linalg.norm(box_center))
-    ells = np.atleast_1d(poles)
 
     if isinstance(deconv, int):
         deconv = (deconv, deconv)
@@ -162,29 +161,26 @@ def _spectrum(mesh0, mesh1=None, box_size=None, kedges:int|float|list=None, incl
     kmean /= kcount
 
     # Average wavenumber power in bins
-    pow = jnp.empty((len(ells), n_bins-2))
-    for i_ell, ell in enumerate(ells):
+    for ell in np.atleast_1d(ells):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
         if mesh1 is None:
-            psum = jnp.bincount(dig, weights=weights, length=n_bins)[1:-1]
+            pmean = jnp.bincount(dig, weights=weights, length=n_bins)[1:-1]
         else: 
             # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
-            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)[1:-1]
-            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)[1:-1]
-            psum = (psum_real**2 + psum_imag**2)**.5
-        pow = pow.at[i_ell].set(psum)
-    pow *= (box_size / mesh_shape**2).prod() / kcount # from cell units to [Mpc/h]^3
+            pmean_real = jnp.bincount(dig, weights=weights.real, length=n_bins)[1:-1]
+            pmean_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)[1:-1]
+            pmean = (pmean_real**2 + pmean_imag**2)**.5
+        pmean *= (box_size / mesh_shape**2).prod() / kcount # from cell units to [Mpc/h]^3
+        pow |= {ell: pmean}
 
-    # kpow = jnp.concatenate([kavg[None], pk])
-    if poles==0:
-        return kcount, kmean, pow[0]
+    if isinstance(ells, int):
+        return kcount, kmean, pow[ells]
     else:
         return kcount, kmean, pow
 
-def spectrum(mesh0, mesh1=None, box_size=None, kedges:int|float|list=None, include_corners=True,
-             deconv:int|tuple=(0, 0), poles:int|tuple=0, box_center:tuple=(0.,0.,0.)):
-    kcount, kmean, pow = _spectrum(mesh0, mesh1, box_size, kedges, include_corners,
-             deconv, poles, box_center)
+def spectrum(mesh0, mesh1=None, box_size=None, box_center:tuple=(0.,0.,0.), ells:int|list=0, 
+             kedges:int|float|list=None, include_corners=True):
+    kcount, kmean, pow = _spectrum(mesh0, mesh1, box_size, box_center, ells, kedges, include_corners)
     return kmean, pow
 
 
@@ -218,17 +214,109 @@ def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0
     
 
 
-# def spectrum_kcount(mesh_shape, box_size, kedges:int|float|list=None, box_center:tuple=(0.,0.,0.)):
-#     # Initialize
-#     box_center = np.asarray(box_center)
-#     los = safe_div(box_center, np.linalg.norm(box_center))
-#     kedges, kmesh, mumesh, rfftw = _waves(mesh_shape, box_size, kedges, los)
-#     n_bins = len(kedges) + 1
-#     dig = np.digitize(kmesh.reshape(-1), kedges)
+def bin_and_aggregate(targets, values, vedges:int|float|list, min_count=1, aggr_fn=None):
+    """
+    bin and aggregate target based on value.
+    If min_count is None, vedges is interpreted in quantile space.
+    If aggr_fn is None, aggregate by averaging.
+    """
+    targets, values = targets.reshape(-1), values.reshape(-1)
+    assert len(targets) == len(values), "targets and values must have same length."
 
-#     # Count wavenumber in bins
-#     kcount = np.bincount(dig, weights=rfftw.reshape(-1), minlength=n_bins)[1:-1]
-#     return kcount
+    if isinstance(vedges, (int, float)):
+        vmin, vmax = (0., 1.) if min_count is None else (values.min(), values.max())
+        if isinstance(vedges, int):
+            n_vedges = vedges # final number of bins will be n_edges-1
+        elif isinstance(vedges, float):
+            n_vedges = max(int((vmax - vmin) / vedges), 1)
+        dv = (vmax - vmin) / n_vedges
+        vedges = np.linspace(vmin, vmax, n_vedges, endpoint=False)
+        vedges += dv / 2 # from vmin+dv/2 to vmax-dv/2
+
+    if min_count is None: # use quantile spacing
+        vedges = np.quantile(values, q=vedges) # ~ len(mesh) / n_edges values per bin
+        min_count = 1
+
+    n_bins = len(vedges) + 1
+    dig = np.digitize(values, vedges)
+    vcount = np.bincount(dig, minlength=n_bins)[1:-1]
+    count_mask = vcount >= min_count
+    vcount = vcount[count_mask]
+
+    vmean = np.bincount(dig, weights=values, minlength=n_bins)[1:-1]
+    vmean = vmean[count_mask] / vcount
+
+    if aggr_fn is None: # aggregate by averaging
+        taggr = np.bincount(dig, weights=targets, minlength=n_bins)[1:-1]
+        taggr = taggr[count_mask] / vcount
+    else:
+        taggr = []
+        for i_bin in range(1, n_bins-1):
+            bin_mask = dig == i_bin
+            taggr.append(aggr_fn(targets[bin_mask]))
+        taggr = np.array(taggr)[count_mask]
+
+    return vcount, vmean, taggr
+
+
+def mse_radius(mesh0, mesh1, rmesh, box_size, redges:int|float|list=None, aggr_fn=None):
+    """
+    Compute mean squared error between mesh0 and mesh1, binned by radius, in (Mpc/h)^3.
+    """
+    cell_vol = (np.array(box_size) / np.array(mesh0.shape)).prod()
+    if redges is None:
+        redges = 3**.5 * cell_vol**(1/3) # NOTE: minimum dr to guarantee connected shell bins.
+    se = (mesh0 - mesh1)**2 * cell_vol
+
+    rcount, rmean, mse = bin_and_aggregate(se, rmesh, redges, aggr_fn=aggr_fn)
+    return rcount, rmean, mse
+
+def mse_value(mesh0, mesh1, box_size, vedges:int|float|list, min_count=None, aggr_fn=None):
+    """
+    Compute mean squared error between mesh0 and mesh1, binned by value of mesh0, in (Mpc/h)^3.
+    """
+    cell_vol = (np.array(box_size) / np.array(mesh0.shape)).prod()
+    se = (mesh0 - mesh1)**2 * cell_vol
+
+    vcount, vmean, mse = bin_and_aggregate(se, mesh0, vedges, min_count=min_count, aggr_fn=aggr_fn)
+    return vcount, vmean, mse
+
+def mse_wave(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners=True):
+    """
+    Compute mean squared error between mesh0 and mesh1, binned by wave number, in (Mpc/h)^3.
+    """
+    # if min_count is None: # use linear spacing in quantile space
+    #     from montecosmo.utils import volume_hypersphere, surface_hypersphere
+    #     from montecosmo.nbody import rfftk
+    #     mesh_shape = np.array(mesh0.shape)
+    #     if isinstance(kedges, (type(None), int, float)):
+    #         dim = len(mesh_shape)
+    #         kmin = 0.
+    #         if include_corners:
+    #             kmax = 1.
+    #         else:
+    #             kmax = volume_hypersphere(dim) / 2**dim
+    #             kmax *= (mesh_shape.min(keepdims=True) / mesh_shape).prod() # = k_nyquist quantile
+
+    #         if kedges is None:
+    #             min_count = surface_hypersphere(dim, R=mesh_shape.min() / 2)* dim**.5 # ~ count in a shell of thickness sqrt(d) at k_nyquist
+    #             n_kedges = max(int(mesh0.size / min_count), 1)
+    #         if isinstance(kedges, int):
+    #             n_kedges = kedges # final number of bins will be n_edges-1
+    #         elif isinstance(kedges, float):
+    #             n_kedges = max(int((kmax - kmin) / kedges), 1)
+    #         dk = (kmax - kmin) / n_kedges
+    #         kedges = np.linspace(kmin, kmax, n_kedges, endpoint=False)
+    #         kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
+        
+    #     kvec = rfftk(mesh_shape, box_size)
+    #     kmesh = sum(ki**2 for ki in kvec)**.5
+    #     kedges = np.quantile(kmesh.reshape(-1), q=kedges) # ~ len(mesh) / n_edges values per bin
+    #     min_count = 1
+
+    kcount, kmean, pow = _spectrum(mesh1 - mesh0, box_size=box_size, kedges=kedges, include_corners=include_corners)
+    return kcount, kmean, pow
+
 
 def mean_errorbar(count, std, confidence=0.95, gaussian_approx=False):
     """
@@ -263,17 +351,17 @@ def var_errorbar(count, var, confidence=0.95, gaussian_approx=False):
 
 
 
-def kaiser_formula(cosmo:Cosmology, a, lin_kpow, b1E, poles=0):
+def kaiser_formula(cosmo:Cosmology, a, lin_kpow, b1E, ells=0):
     """
     b1E is the Eulerien linear bias
     """
-    poles = jnp.atleast_1d(poles)
+    ells = jnp.atleast_1d(ells)
     beta = a2f(cosmo, a) / b1E
     k, pow = lin_kpow
     pow *= a2g(cosmo, a)**2
 
-    weights = np.ones(len(poles)) * b1E**2
-    for i_ell, ell in enumerate(poles):
+    weights = np.ones(len(ells)) * b1E**2
+    for i_ell, ell in enumerate(ells):
         if ell==0:
             weights[i_ell] *= (1 + beta * 2/3 + beta**2 /5)
         elif ell==2:
@@ -282,7 +370,7 @@ def kaiser_formula(cosmo:Cosmology, a, lin_kpow, b1E, poles=0):
             weights[i_ell] *= beta**2 * 8/35
         else: 
             raise NotImplementedError(
-                "Handle only poles of order ell=0, 2 ,4. ell={ell} not implemented.")
+                f"Handle only poles of degree ell=0, 2 ,4. ell={ell} not implemented.")
         
     pow = jnp.moveaxis(pow[...,None] * weights, -1, -2)
     return k, pow
@@ -459,40 +547,21 @@ def wigner3j_square(ellout, ellin, prefactor=True):
 #################
 # Distributions #
 #################
-def distr_radial(mesh, rmesh, redges:int|float|list, aggr_fn=None):
-    assert np.shape(mesh) == np.shape(rmesh), "value mesh and radius mesh must have same shape."
+def distr_radial(mesh, rmesh, box_size, redges:int|float|list=None, aggr_fn=None):
+    """
+    Compute the radial distribution of the given mesh in (h/Mpc)^3.
+    """
+    cell_vol = (np.array(box_size) / np.array(mesh.shape)).prod()
+    if redges is None:
+        redges = 3**.5 * cell_vol**(1/3) # NOTE: minimum dr to guarantee connected shell bins.
 
-    if isinstance(redges, (int, float)):
-        rmin, rmax = rmesh.min(), rmesh.max()
-        if isinstance(redges, int):
-            n_redges = redges # final number of bins will be n_edges-1
-        elif isinstance(redges, float):
-            n_redges = max(int((rmax - rmin) / redges), 1)
-        dr = (rmax - rmin) / n_redges
-        redges = np.linspace(rmin, rmax, n_redges, endpoint=False)
-        redges += dr / 2 # from rmin+dr/2 to rmax-dr/2
-
-    dig = np.digitize(rmesh.reshape(-1), redges)
-    rcount = np.bincount(dig)
-    rcount = rcount[1:-1]
-
-    ravg = np.bincount(dig, weights=rmesh.reshape(-1))
-    ravg = ravg[1:-1] / rcount
-
-    if aggr_fn is None: # aggregate by averaging 
-        naggr = np.bincount(dig, weights=mesh.reshape(-1))
-        naggr = naggr[1:-1] / rcount
-    else:
-        naggr = []
-        for low, high in zip(redges[:-1], redges[1:]):
-            rmask = (low < rmesh) & (rmesh <= high)
-            vals = mesh[rmask]
-            naggr.append(aggr_fn(vals))
-        naggr = np.array(naggr)
-    return ravg, naggr
-
+    rcount, rmean, maggr = bin_and_aggregate(mesh, rmesh, redges, aggr_fn=aggr_fn)
+    return rcount, rmean, maggr / cell_vol
 
 def distr_angular():
+    """
+    Compute the angular distribution of the given mesh in (h/Mpc)^3.
+    """
     pass
 
 

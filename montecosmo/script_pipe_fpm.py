@@ -56,7 +56,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + ""
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_s2_100"
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -163,7 +163,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
         's_0': 0.2,
-        's_2': 0.,
+        's_2': 100.,
         's_2mu': 0.,
         's_delta': 0.7,
         's_phi': 0.,
@@ -177,13 +177,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     #     'bs2': -0.71,
     #     'bn2': -41.,
     #     'bnpar': -22.,
-    #     'fNL': 0.,
-    #     'fNL_bp': 0.,
-    #     'fNL_bpd': 0.,
     #     'ngbars': 1e-4,
     #     's_0': 0.23,
-    #     's_2': 0.,
-    #     's_2mu': 0.,
     #     's_delta': 0.35,
     # }
 
@@ -267,27 +262,25 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     ##########
     # Warmup #
     ##########
-    # n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 16, 4
     n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 8, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
-
-    model.reset()
-    if fourier:
-        model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True)
-    else:
-        model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
-
-    print('data params:', model.data.keys())
-    model.block()
-    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
-    print('start params:', params_start.keys())
-    # model.logpdf = jit(model.logpdf) # TODO: test if pre-jitting helps
 
     # overwrite = True
     overwrite = False
     if not os.path.exists(chains_dir / "warm1_state.p") or overwrite:
         print("\nWarming up...")
+        model.reset()
+        if fourier:
+            model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True)
+        else:
+            model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
+
+        print('data params:', model.data.keys())
+        model.block()
+        params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=2/3)))(jr.split(jr.key(45), n_chains))
+        print('start params:', params_start.keys())
+        # model.logpdf = jit(model.logpdf) # TODO: test if pre-jitting helps
 
         from montecosmo.samplers import get_mclmc_warmup
         # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
@@ -296,45 +289,46 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, chains_dir / "warm1_state.p")
         pdump(config, chains_dir / "warm1_conf.p")
+
+
+        ###############
+        # Plot Warmup #
+        ###############
+        from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh
+        from montecosmo.bricks import lin_power_interp
+
+        init_mesh = truth.pop('init_mesh')
+        kpow_true = model.spectrum(init_mesh)
+        kptcs_init = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(params_start)
+        kptcs_warm = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(state.position)
+        del init_mesh # We won't need it anymore
+        kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid)(kptcs_warm[0][0])
+        prob = (0.68, 0.95)
+
+        plt.figure(figsize=(12, 4), layout='constrained')
+        def plot_kptcs(kptcs, label=None):
+            plot_powtranscoh(*kptcs, fill=prob)
+            plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), label=label)
+
+        plot_kptcs(kptcs_init, label='init')
+        # plot_kptcs(kptcs_init2, label='init2')
+        plot_kptcs(kptcs_warm, label='warm')
+
+        plt.subplot(131)
+        plot_pow(*kpow_true, 'k:', label='true')
+        plot_pow(*kpow_fid, 'k--', alpha=0.5, label='fiducial')
+        plt.legend()
+        plt.subplot(132)
+        plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+        plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', alpha=0.5, label='fiducial')
+        plt.subplot(133)
+        plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
+        plt.savefig(save_dir / 'init_warm.png')
+
     else:
         state = pload(chains_dir / "warm1_state.p")
         config = pload(chains_dir / "warm1_conf.p")
-
-    ###############
-    # Plot Warmup #
-    ###############
-    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh
-    from montecosmo.bricks import lin_power_interp
-
-    init_mesh = truth.pop('init_mesh')
-    kpow_true = model.spectrum(init_mesh)
-    kptcs_init = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(params_start)
-    kptcs_warm = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(state.position)
-    del init_mesh # We won't need it anymore
-    kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid)(kptcs_warm[0][0])
-    prob = (0.68, 0.95)
-
-    plt.figure(figsize=(12, 4), layout='constrained')
-    def plot_kptcs(kptcs, label=None):
-        plot_powtranscoh(*kptcs, fill=prob)
-        plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), label=label)
-
-    plot_kptcs(kptcs_init, label='init')
-    # plot_kptcs(kptcs_init2, label='init2')
-    plot_kptcs(kptcs_warm, label='warm')
-
-    plt.subplot(131)
-    plot_pow(*kpow_true, 'k:', label='true')
-    plot_pow(*kpow_fid, 'k--', alpha=0.5, label='fiducial')
-    plt.legend()
-    plt.subplot(132)
-    plt.axhline(1., linestyle=':', color='k', alpha=0.5)
-    plot_trans(kpow_true[0], (kpow_fid[1] / kpow_true[1])**.5, 'k--', alpha=0.5, label='fiducial')
-    plt.subplot(133)
-    plt.axhline(model.selec_mesh.mean(), linestyle=':', color='k', alpha=0.5)
-    plt.savefig(save_dir / 'init_warm.png')
     sys.stdout.flush()
-
 
 
 
@@ -348,6 +342,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     from tqdm import tqdm
     from montecosmo.samplers import get_mclmc_warmup, get_mclmc_run
     from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
+    from montecosmo.script import load_model, warmup1, warmup2run, make_chains, print_mclmc_config
 
     obs = ['obs',
         #    'fNL',
@@ -359,8 +354,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
             #   'b3',
             # 'ngbars', 
             # 's_0',
-            # 's_2',
-            # 's_2mu',
+            's_2',
+            's_2mu',
             's_delta',
             's_phi',
             # 'Omega_m',
@@ -381,29 +376,17 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     model.substitute(obs, from_base=True)
     # model.render()
     model.block()
-    params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
-    params_warm = params_start | state.position
-    print('warm params:', params_warm.keys())
 
-    print('warm params:', vmap(model.reparam)({k:v for k,v in params_warm.items() if k != 'init_mesh_'}))
-    
     # overwrite = True
     overwrite = False
     start = 1
-
-    def print_mclmc_config(config, state):
-        print("\nss: ", config.step_size)
-        print("L: ", config.L)
-
-        from jax.flatten_util import ravel_pytree
-        _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
-        invmm = vmap(unrav_fn)(config.inverse_mass_matrix)
-        print("invmm mean:", tree.map(lambda x: x.mean(range(1, x.ndim)), invmm))
-        print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
-        # print("invmm nan count:", tree.map(lambda x: jnp.isnan(x).sum(range(1, x.ndim)), invmm))
-
     if not os.path.exists(chains_dir / "warm2_state.p") or overwrite:
         print("\nWarming up 2...")
+        params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']))))(jr.split(jr.key(45), n_chains))
+        params_warm = params_start | state.position
+        print('warm params:', params_warm.keys())
+        print('warm params:', vmap(model.reparam)({k:v for k,v in params_warm.items() if k != 'init_mesh_'}))
+
         # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
         warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             # desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
@@ -456,9 +439,9 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         jnp.savez(chains_dir / f"run_{i_run}.npz", **samples)
         pdump(state, chains_dir / "last_state.p")
 
-    from montecosmo.script import load_model, warmup1, warmup2run, make_chains
     make_chains(save_dir, start=1, end=100, reparb=False)
     print(f"Finished running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
+    sys.stdout.flush()
 
 
 

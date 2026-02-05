@@ -230,9 +230,8 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
     if ell is None:
         sub = ""
     else:
-        i_ell = [0, None, 1, None, 2][ell]
         sub = f"_{ell}"
-        pow = pow[...,i_ell,:]
+        pow = pow[ell]
 
     if log:
         plt.xscale('log'), plt.yscale('log')

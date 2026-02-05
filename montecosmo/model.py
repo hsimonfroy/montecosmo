@@ -24,7 +24,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
                               nbody_tsit5, 
                               paint, read, deconv_paint, interlace, rfftk, top_hat)
-from montecosmo.metrics import spectrum, powtranscoh, distr_radial
+from montecosmo.metrics import spectrum, powtranscoh, distr_radial, mse_radius, mse_value, mse_wave
 from montecosmo.utils import (ysafe_dump, ysafe_load,
                               cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked,
                               nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
@@ -136,7 +136,7 @@ default_config={
                             'label':'{b}_{3}',
                             'loc':0.,
                             'scale':1e2,
-                            'scale_fid':1e-2,
+                            'scale_fid':3e-2,
                             },                            
                 'fNL': {'group':'png',
                             'label':'{f}_\\mathrm{NL}',
@@ -724,12 +724,12 @@ class FieldLevelModel(Model):
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
 
-            phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
-                        kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
-            phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-            phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
-            phi_mesh = jnp.fft.irfftn(phi_mesh)
-            # phi_mesh = 0.
+            # phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
+            #             kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
+            # phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+            # phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
+            # phi_mesh = jnp.fft.irfftn(phi_mesh)
+            phi_mesh = 0.
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
@@ -1129,9 +1129,9 @@ class FieldLevelModel(Model):
     ###########
     # Metrics #
     ###########
-    def spectrum(self, mesh0, mesh1=None, kedges:int|float|list=None, deconv:int|tuple=(0, 0), poles:int|tuple=0):
-        return spectrum(mesh0, mesh1=mesh1, box_size=self.box_size, 
-                            kedges=kedges, deconv=deconv, poles=poles, box_center=self.box_center)
+    def spectrum(self, mesh0, mesh1=None, ells:int|list=0, kedges:int|float|list=None, include_corners=True):
+        return spectrum(mesh0, mesh1=mesh1, box_size=self.box_size, box_center=self.box_center, 
+                        ells=ells, kedges=kedges, include_corners=include_corners)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
         """
@@ -1144,11 +1144,17 @@ class FieldLevelModel(Model):
         if not from_masked:
             mesh = mesh2masked(mesh, self.mask)
 
-        if redges is None:
-            redges = 3**.5 * self.cell_length # NOTE: minimum dr to guarantee connected shell bins.
+        return distr_radial(mesh, self.rmasked, self.box_size, redges=redges, aggr_fn=aggr_fn)
 
-        return distr_radial(mesh, self.rmasked, redges=redges, aggr_fn=aggr_fn)
+    def mse_radius(self, mesh0, mesh1, redges:int|float|list=None, aggr_fn=None, from_masked=True):
+        if not from_masked:
+            mesh0 = mesh2masked(mesh0, self.mask)
+            mesh1 = mesh2masked(mesh1, self.mask)
 
+        return mse_radius(mesh0, mesh1, self.rmasked, self.box_size, redges=redges, aggr_fn=aggr_fn)
+
+    def mse_value(self, mesh0, mesh1, vedges:int|float|list=None, aggr_fn=None):
+        return mse_value(mesh0, mesh1, self.box_size, vedges=vedges, aggr_fn=aggr_fn)
 
     ##################
     # Chains process #

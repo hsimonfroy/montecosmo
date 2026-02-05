@@ -353,3 +353,17 @@ def compare_chains(load_dirs, labels, save_dir="./"):
     plt.subplot(131)
     plt.legend()
     plt.savefig(save_dir / f"kptc_{'_'.join(labels)[:200]}.png", dpi=300)
+
+
+
+def print_mclmc_config(config, state):
+    
+    print("\nss: ", config.step_size)
+    print("L: ", config.L)
+
+    from jax.flatten_util import ravel_pytree
+    _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
+    invmm = vmap(unrav_fn)(config.inverse_mass_matrix)
+    print("invmm mean:", tree.map(lambda x: x.mean(range(1, x.ndim)), invmm))
+    print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
+    # print("invmm nan count:", tree.map(lambda x: jnp.isnan(x).sum(range(1, x.ndim)), invmm))
