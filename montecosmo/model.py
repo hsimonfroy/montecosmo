@@ -24,7 +24,7 @@ from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_pow
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
                               nbody_tsit5, 
                               paint, read, deconv_paint, interlace, rfftk, top_hat)
-from montecosmo.metrics import spectrum, powtranscoh, distr_radial, mse_radius, mse_value, mse_wave
+from montecosmo.metrics import spectrum, powtranscoh, distr_radial, distr_angular, mse_radius, mse_value, mse_wave
 from montecosmo.utils import (ysafe_dump, ysafe_load,
                               cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked,
                               nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
@@ -661,6 +661,32 @@ class FieldLevelModel(Model):
                 gxy_mesh = jnp.fft.rfftn(gxy_mesh)
                 gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
                 gxy_mesh = jnp.fft.irfftn(gxy_mesh)
+        elif self.evolution=="kaiser_lag":
+            los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
+                                cosmology, self.a_obs, self.curved_sky)
+            cell_los = self.box_rot.apply(los, inverse=True) # cell los
+
+            init_mesh = init['init_mesh'] * a2g(cosmology, a)
+            mesh_shape = ch2rshape(init_mesh.shape)
+            kvec = rfftk(mesh_shape, self.box_size) # in h/Mpc
+            kmesh = sum(ki**2 for ki in kvec)**.5
+            mumesh = sum(ki * losi for ki, losi in zip(kvec, cell_los))
+            mumesh = safe_div(mumesh, kmesh)
+
+            dummy1 = 1 + bias['b1'] * jnp.fft.irfftn(init_mesh)
+            dummy2 = 1 + jnp.fft.irfftn((1 + a2f(cosmology, a) * mumesh**2) * init_mesh)
+            # gxy_mesh = dummy1 + dummy2 - 1
+            gxy_mesh = dummy1 * dummy2
+
+            
+            print(gxy_mesh.shape, self.final_shape, gxy_mesh.mean(), gxy_mesh.std())
+            if tuple(gxy_mesh.shape) != tuple(self.final_shape):
+                gxy_mesh = jnp.fft.rfftn(gxy_mesh)
+                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
+                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
+            phi_mesh = 0.
+            
+
     
         else:
             # Create regular grid of particles, and get their scale factors
@@ -715,14 +741,17 @@ class FieldLevelModel(Model):
                     # lbe_weights *= ap['alpha_iso']**3 
 
             # Paint weighted by Lagrangian bias expansion weights
+            # lbe_weights = jnp.ones(len(pos)) ###XXX
             pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.paint_shape)
             gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, 
                                  kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
+            # gxy_mesh = jnp.fft.rfftn(jnp.fft.irfftn(gxy_mesh) * (1 + bias['b1'] * jnp.fft.irfftn(init['init_mesh']))) ###XXX
             
             # NOTE: final deconvolution can amplify AP-induced high-frequencies.
             gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
             gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
             gxy_mesh = jnp.fft.irfftn(gxy_mesh)
+            # gxy_mesh = 1 + (gxy_mesh - 1) * (1 + bias['b1']) ###XXX
 
             # phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
             #             kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
@@ -750,7 +779,7 @@ class FieldLevelModel(Model):
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            mesh /= mesh.mean()
+            # mesh /= mesh.mean()
 
             rcounts = syst['ngbars'] * self.cell_length**3
             mean_count = rcounts.mean()            
@@ -1133,28 +1162,44 @@ class FieldLevelModel(Model):
         return spectrum(mesh0, mesh1=mesh1, box_size=self.box_size, box_center=self.box_center, 
                         ells=ells, kedges=kedges, include_corners=include_corners)
 
-    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, deconv=(0, 0)):
+    def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, include_corners=True):
         """
         Return wavenumber, power spectrum, transfer function, and coherence of two meshes.\\
         Precisely return a tuple (k, pow1,  (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5).
         """
-        return powtranscoh(mesh0, mesh1, box_size=self.box_size, kedges=kedges, deconv=deconv)
+        return powtranscoh(mesh0, mesh1, box_size=self.box_size, kedges=kedges, include_corners=include_corners)
     
-    def distr_radial(self, mesh, redges:int|float|list=None, aggr_fn=None, from_masked=True):
-        if not from_masked:
-            mesh = mesh2masked(mesh, self.mask)
-
-        return distr_radial(mesh, self.rmasked, self.box_size, redges=redges, aggr_fn=aggr_fn)
-
-    def mse_radius(self, mesh0, mesh1, redges:int|float|list=None, aggr_fn=None, from_masked=True):
+    def mse_radius(self, mesh0, mesh1, cell_length=None, redges:int|float|list=None, aggr_fn=None, from_masked=True):
+        if cell_length is None:
+            cell_length = self.cell_length
         if not from_masked:
             mesh0 = mesh2masked(mesh0, self.mask)
             mesh1 = mesh2masked(mesh1, self.mask)
 
-        return mse_radius(mesh0, mesh1, self.rmasked, self.box_size, redges=redges, aggr_fn=aggr_fn)
+        return mse_radius(mesh0, mesh1, self.rmasked, cell_length, redges=redges, aggr_fn=aggr_fn)
 
-    def mse_value(self, mesh0, mesh1, vedges:int|float|list=None, aggr_fn=None):
-        return mse_value(mesh0, mesh1, self.box_size, vedges=vedges, aggr_fn=aggr_fn)
+    def mse_value(self, mesh0, mesh1, cell_length=None, vedges:int|float|list=None, min_count=None, aggr_fn=None):
+        if cell_length is None:
+            cell_length = self.cell_length
+            
+        return mse_value(mesh0, mesh1, cell_length, vedges=vedges, min_count=min_count, aggr_fn=aggr_fn)
+
+    def mse_wave(self, mesh0, mesh1, cell_length=None, kedges:int|float|list=None, include_corners=True):
+        if cell_length is None:
+            cell_length = self.cell_length
+            
+        return mse_wave(mesh0, mesh1, cell_length, kedges=kedges, include_corners=include_corners)
+
+    def distr_radial(self, mesh, cell_length=None, redges:int|float|list=None, aggr_fn=None, from_masked=True):
+        if cell_length is None:
+            cell_length = self.cell_length
+        if not from_masked:
+            mesh = mesh2masked(mesh, self.mask)
+
+        return distr_radial(mesh, self.rmasked, cell_length, redges=redges, aggr_fn=aggr_fn)
+
+    def distr_angular(self):
+        return distr_angular()
 
     ##################
     # Chains process #

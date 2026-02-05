@@ -161,6 +161,7 @@ def _spectrum(mesh0, mesh1=None, box_size=None, box_center:tuple=(0.,0.,0.), ell
     kmean /= kcount
 
     # Average wavenumber power in bins
+    pow = {}
     for ell in np.atleast_1d(ells):
         weights = (mmk * (2*ell+1) * legendre(ell)(mumesh) * rfftw).reshape(-1)
         if mesh1 is None:
@@ -184,30 +185,24 @@ def spectrum(mesh0, mesh1=None, box_size=None, box_center:tuple=(0.,0.,0.), ells
     return kmean, pow
 
 
-def transfer(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
-    if isinstance(deconv, int):
-        deconv = (deconv, deconv)
-    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges)
-    ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
-    ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
+def transfer(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners=True):
+    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges, include_corners=include_corners)
+    ks, pow0 = pow_fn(mesh0)
+    ks, pow1 = pow_fn(mesh1)
     return ks, (pow1 / pow0)**.5
 
-def coherence(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
-    if isinstance(deconv, int):
-        deconv = (deconv, deconv)
-    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges)
-    ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
-    ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
-    ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
+def coherence(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners=True):
+    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges, include_corners=include_corners)
+    ks, pow01 = pow_fn(mesh0, mesh1)  
+    ks, pow0 = pow_fn(mesh0)
+    ks, pow1 = pow_fn(mesh1)
     return ks, pow01 / (pow0 * pow1)**.5
 
-def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, deconv=(0, 0)):
-    if isinstance(deconv, int):
-        deconv = (deconv, deconv)
-    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges)
-    ks, pow01 = pow_fn(mesh0, mesh1, deconv=deconv)  
-    ks, pow0 = pow_fn(mesh0, deconv=deconv[0])
-    ks, pow1 = pow_fn(mesh1, deconv=deconv[1])
+def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners=True):
+    pow_fn = partial(spectrum, box_size=box_size, kedges=kedges, include_corners=include_corners)
+    ks, pow01 = pow_fn(mesh0, mesh1)  
+    ks, pow0 = pow_fn(mesh0)
+    ks, pow1 = pow_fn(mesh1)
     trans = (pow1 / pow0)**.5
     coh = pow01 / (pow0 * pow1)**.5
     return ks, pow1, trans, coh
@@ -259,29 +254,27 @@ def bin_and_aggregate(targets, values, vedges:int|float|list, min_count=1, aggr_
     return vcount, vmean, taggr
 
 
-def mse_radius(mesh0, mesh1, rmesh, box_size, redges:int|float|list=None, aggr_fn=None):
+def mse_radius(mesh0, mesh1, rmesh, cell_length, redges:int|float|list=None, aggr_fn=None):
     """
     Compute mean squared error between mesh0 and mesh1, binned by radius, in (Mpc/h)^3.
     """
-    cell_vol = (np.array(box_size) / np.array(mesh0.shape)).prod()
     if redges is None:
-        redges = 3**.5 * cell_vol**(1/3) # NOTE: minimum dr to guarantee connected shell bins.
-    se = (mesh0 - mesh1)**2 * cell_vol
+        redges = 3**.5 * cell_length # NOTE: minimum dr to guarantee connected shell bins.
+    se = (mesh0 - mesh1)**2 * cell_length**3
 
     rcount, rmean, mse = bin_and_aggregate(se, rmesh, redges, aggr_fn=aggr_fn)
     return rcount, rmean, mse
 
-def mse_value(mesh0, mesh1, box_size, vedges:int|float|list, min_count=None, aggr_fn=None):
+def mse_value(mesh0, mesh1, cell_length, vedges:int|float|list, min_count=None, aggr_fn=None):
     """
     Compute mean squared error between mesh0 and mesh1, binned by value of mesh0, in (Mpc/h)^3.
     """
-    cell_vol = (np.array(box_size) / np.array(mesh0.shape)).prod()
-    se = (mesh0 - mesh1)**2 * cell_vol
+    se = (mesh0 - mesh1)**2 * cell_length**3
 
     vcount, vmean, mse = bin_and_aggregate(se, mesh0, vedges, min_count=min_count, aggr_fn=aggr_fn)
     return vcount, vmean, mse
 
-def mse_wave(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners=True):
+def mse_wave(mesh0, mesh1, cell_length, kedges:int|float|list=None, include_corners=True):
     """
     Compute mean squared error between mesh0 and mesh1, binned by wave number, in (Mpc/h)^3.
     """
@@ -313,7 +306,8 @@ def mse_wave(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners
     #     kmesh = sum(ki**2 for ki in kvec)**.5
     #     kedges = np.quantile(kmesh.reshape(-1), q=kedges) # ~ len(mesh) / n_edges values per bin
     #     min_count = 1
-
+    
+    box_size = np.array(mesh0.shape) * cell_length
     kcount, kmean, pow = _spectrum(mesh1 - mesh0, box_size=box_size, kedges=kedges, include_corners=include_corners)
     return kcount, kmean, pow
 
@@ -547,16 +541,15 @@ def wigner3j_square(ellout, ellin, prefactor=True):
 #################
 # Distributions #
 #################
-def distr_radial(mesh, rmesh, box_size, redges:int|float|list=None, aggr_fn=None):
+def distr_radial(mesh, rmesh, cell_length, redges:int|float|list=None, aggr_fn=None):
     """
     Compute the radial distribution of the given mesh in (h/Mpc)^3.
     """
-    cell_vol = (np.array(box_size) / np.array(mesh.shape)).prod()
     if redges is None:
-        redges = 3**.5 * cell_vol**(1/3) # NOTE: minimum dr to guarantee connected shell bins.
+        redges = 3**.5 * cell_length # NOTE: minimum dr to guarantee connected shell bins.
 
     rcount, rmean, maggr = bin_and_aggregate(mesh, rmesh, redges, aggr_fn=aggr_fn)
-    return rcount, rmean, maggr / cell_vol
+    return rcount, rmean, maggr / cell_length**3
 
 def distr_angular():
     """
