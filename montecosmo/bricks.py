@@ -266,7 +266,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
     return out
 
 
-def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) -> dict:
+def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
     """
     Transform sample mesh into base mesh, i.e. initial wavevector coefficients at a=1.
     """
@@ -274,6 +274,9 @@ def samp2base_mesh(init:dict, precond=False, transfer=None, inv=False, temp=1.) 
     for in_name, mesh in init.items():
         out_name = in_name+'_' if inv else in_name[:-1]
         transfer *= temp**.5
+
+        transfer = jnp.ones_like(transfer)
+        print("hey")
 
         # Reparametrize
         if not inv:

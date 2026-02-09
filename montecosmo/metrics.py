@@ -90,7 +90,7 @@ def _waves(mesh_shape, box_size, kedges, include_corners, los):
         kmin = 0.
         kmax = np.pi * (mesh_shape / box_size).min() # = k_nyquist
         if include_corners:
-            kmax *= dim**.5 * 0.95
+            kmax *= dim**.5 * 0.99
             
         if kedges is None:
             dk = dim**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
@@ -274,7 +274,7 @@ def mse_value(mesh0, mesh1, cell_length, vedges:int|float|list, min_count=None, 
     vcount, vmean, mse = bin_and_aggregate(se, mesh0, vedges, min_count=min_count, aggr_fn=aggr_fn)
     return vcount, vmean, mse
 
-def mse_wave(mesh0, mesh1, cell_length, kedges:int|float|list=None, include_corners=True):
+def mse_wave(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corners=True):
     """
     Compute mean squared error between mesh0 and mesh1, binned by wave number, in (Mpc/h)^3.
     """
@@ -307,7 +307,6 @@ def mse_wave(mesh0, mesh1, cell_length, kedges:int|float|list=None, include_corn
     #     kedges = np.quantile(kmesh.reshape(-1), q=kedges) # ~ len(mesh) / n_edges values per bin
     #     min_count = 1
     
-    box_size = np.array(mesh0.shape) * cell_length
     kcount, kmean, pow = _spectrum(mesh1 - mesh0, box_size=box_size, kedges=kedges, include_corners=include_corners)
     return kcount, kmean, pow
 

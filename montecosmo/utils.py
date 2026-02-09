@@ -293,8 +293,8 @@ def ch2rshape(shape):
     """
     Complex Hermitian shape to real shape.
     
-    Assume last real shape is even to lift the ambiguity.
-    (same convention as `fft.rfftn`)
+    Assume last real shape is even to lift the ambiguity
+    (same convention as `fft.rfftn`).
     """
     return (*shape[:-1], 2*(shape[-1]-1))
 

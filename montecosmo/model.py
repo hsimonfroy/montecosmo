@@ -657,35 +657,10 @@ class FieldLevelModel(Model):
                 # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution can amplify AP-induced high-frequencies.
                 gxy_mesh *= (self.evol_shape / self.ptcl_shape).prod()
                 
-            if tuple(gxy_mesh.shape) != tuple(self.final_shape):
-                gxy_mesh = jnp.fft.rfftn(gxy_mesh)
-                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
-                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
-        elif self.evolution=="kaiser_lag":
-            los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
-                                cosmology, self.a_obs, self.curved_sky)
-            cell_los = self.box_rot.apply(los, inverse=True) # cell los
-
-            init_mesh = init['init_mesh'] * a2g(cosmology, a)
-            mesh_shape = ch2rshape(init_mesh.shape)
-            kvec = rfftk(mesh_shape, self.box_size) # in h/Mpc
-            kmesh = sum(ki**2 for ki in kvec)**.5
-            mumesh = sum(ki * losi for ki, losi in zip(kvec, cell_los))
-            mumesh = safe_div(mumesh, kmesh)
-
-            dummy1 = 1 + bias['b1'] * jnp.fft.irfftn(init_mesh)
-            dummy2 = 1 + jnp.fft.irfftn((1 + a2f(cosmology, a) * mumesh**2) * init_mesh)
-            # gxy_mesh = dummy1 + dummy2 - 1
-            gxy_mesh = dummy1 * dummy2
-
-            
-            print(gxy_mesh.shape, self.final_shape, gxy_mesh.mean(), gxy_mesh.std())
-            if tuple(gxy_mesh.shape) != tuple(self.final_shape):
-                gxy_mesh = jnp.fft.rfftn(gxy_mesh)
-                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
-                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
-            phi_mesh = 0.
-            
+            # if tuple(gxy_mesh.shape) != tuple(self.final_shape):
+            gxy_mesh = jnp.fft.rfftn(gxy_mesh)
+            gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
+            gxy_mesh = 1 + jnp.fft.irfftn(gxy_mesh)
 
     
         else:
@@ -1044,6 +1019,12 @@ class FieldLevelModel(Model):
             scale = (1 + selec / noise * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
+
+        elif self.precond=='x':
+            scale, transfer = jnp.ones(self.init_shape), jnp.ones(r2chshape(self.init_shape))
+        
+        else:
+            raise ValueError(f"Unknown preconditioning type: {self.precond}")
         
         return scale, transfer
     
@@ -1178,17 +1159,14 @@ class FieldLevelModel(Model):
 
         return mse_radius(mesh0, mesh1, self.rmasked, cell_length, redges=redges, aggr_fn=aggr_fn)
 
-    def mse_value(self, mesh0, mesh1, cell_length=None, vedges:int|float|list=None, min_count=None, aggr_fn=None):
+    def mse_value(self, mesh0, mesh1, cell_length=None, vedges:int|float|list=50, min_count=None, aggr_fn=None):
         if cell_length is None:
             cell_length = self.cell_length
             
         return mse_value(mesh0, mesh1, cell_length, vedges=vedges, min_count=min_count, aggr_fn=aggr_fn)
 
-    def mse_wave(self, mesh0, mesh1, cell_length=None, kedges:int|float|list=None, include_corners=True):
-        if cell_length is None:
-            cell_length = self.cell_length
-            
-        return mse_wave(mesh0, mesh1, cell_length, kedges=kedges, include_corners=include_corners)
+    def mse_wave(self, mesh0, mesh1, kedges:int|float|list=None, include_corners=True):            
+        return mse_wave(mesh0, mesh1, self.box_size, kedges=kedges, include_corners=include_corners)
 
     def distr_radial(self, mesh, cell_length=None, redges:int|float|list=None, aggr_fn=None, from_masked=True):
         if cell_length is None:
