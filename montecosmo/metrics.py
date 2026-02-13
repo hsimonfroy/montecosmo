@@ -83,17 +83,24 @@ def _waves(mesh_shape, box_size, kedges, include_corners, los):
     mumesh : ndarray
         Cosine mesh.
     rfftw : ndarray
-        RFFT weights accounting for Hermitian symmetry.
+        RFFT weights accounting for Hermitian symmetry, to obtain same result as with FFT.
     """
+    kvec = rfftk(mesh_shape, box_size) # in h/Mpc
+    kmesh = sum(ki**2 for ki in kvec)**.5
+    mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
+    mumesh = safe_div(mumesh, kmesh)
+
     if isinstance(kedges, (type(None), int, float)):
         dim = len(mesh_shape)
         kmin = 0.
         kmax = np.pi * (mesh_shape / box_size).min() # = k_nyquist
         if include_corners:
-            kmax *= dim**.5 * 0.99
+            # kmax *= dim**.5 * 0.99
+            kmax = kmesh.max()
             
         if kedges is None:
-            dk = dim**.5 * 2 * np.pi / box_size.min() # sqrt(d) times fundamental
+            dk = dim**.5 * 2 * np.pi / box_size.min() 
+            # NOTE: sqrt(d) times fundamental, minimum dk to guarantee connected shell bins
             n_kedges = max(int((kmax - kmin) / dk), 1)
         elif isinstance(kedges, int):
             n_kedges = kedges # final number of bins will be nedges-1
@@ -102,11 +109,6 @@ def _waves(mesh_shape, box_size, kedges, include_corners, los):
         dk = (kmax - kmin) / n_kedges
         kedges = np.linspace(kmin, kmax, n_kedges, endpoint=False)
         kedges += dk / 2 # from kmin+dk/2 to kmax-dk/2
-
-    kvec = rfftk(mesh_shape, box_size) # in h/Mpc
-    kmesh = sum(ki**2 for ki in kvec)**.5
-    mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
-    mumesh = safe_div(mumesh, kmesh)
 
     rfftw = np.full_like(kmesh, 2)
     rfftw[..., 0] = 1

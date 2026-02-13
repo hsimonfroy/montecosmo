@@ -834,18 +834,18 @@ def gen_gauss_selection(box_center, box_rot, box_size, mesh_shape, curved_sky,
 
 def minmax_box(pos):
     """
-    Return box configuration (center, rotvec, shape) for a given set of positions.
+    Return box configuration (center, rotvec, size) for a given set of positions.
     The box is simply computed from the min and max of the positions along each axis.
     """
     low_corner, high_corner = pos.min(0), pos.max(0)
     center = (low_corner + high_corner) / 2
-    shape = high_corner - low_corner
+    size = high_corner - low_corner
     rotvec = jnp.zeros(jnp.shape(pos)[-1])
-    return center, rotvec, shape
+    return center, rotvec, size
 
 def get_mesh_shape(box_size, cell_budget, padding=0.):
     """
-    Return mesh shape and cell length from a given box shape and cell budget, with optional padding.
+    Return mesh shape and cell length from a given box size and cell budget, with optional padding.
     Mesh shape is rounded to the nearest even integers.
     """
     box_size *= 1 + padding
