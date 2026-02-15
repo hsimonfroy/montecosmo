@@ -825,8 +825,17 @@ def chi2a(cosmo, chi, log10_amin=dist_log10_amin, steps=dist_steps):
     cache = cosmo._workspace["background.radial_comoving_distance"]
     return jnp.interp(chi, cache["chi"][::-1], cache["a"][::-1]) # NOTE: chi is decreasing with a
 
+def k2ell(cosmo, a, k):
+    """
+    Convert comoving wavenumber k to multipole ell, using Limber approximation.
+    """
+    return a2chi(cosmo, a) * k - 0.5
 
-
+def ell2k(cosmo, a, ell):
+    """
+    Convert multipole ell to comoving wavenumber k, using Limber approximation.
+    """
+    return (ell + 0.5) / a2chi(cosmo, a)
 
 
 ###########

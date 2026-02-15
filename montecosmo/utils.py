@@ -444,10 +444,10 @@ def cgh2rg(meshk, norm="backward"):
     return real + imag
 
 
-def chreshape(mesh, shape):
+def _chreshape(mesh, shape):
     """
-    Reshape a complex Hermitian tensor,
-    handling correctly zero-padding.
+    Naively reshape a complex Hermitian tensor.
+    /!\ Does not preserve Hermitian symmetry nor power.
     """
     scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
 
@@ -479,6 +479,61 @@ def chreshape(mesh, shape):
     for ax, s in enumerate(mesh.shape[:-1]):
         mesh = jnp.roll(mesh, -s//2, ax)
     return mesh * scale
+
+
+
+def hermitian_symmetric(arr):
+    """
+    Return the Hermitian symmetric of a tensor (of any dimension and shape).
+    A tensor has Hermitian symmetry if it is equal to its Hermitian symmetric.
+    """
+    dim = len(arr.shape)
+    ids = dim * (slice(None, None, -1),)
+    arr = arr[ids].conj()
+    for ax in range(dim):
+        arr = jnp.roll(arr, shift=1, axis=ax)
+    return arr
+
+
+def chreshape(mesh, shape):
+    """
+    Reshape a complex Hermitian tensor,
+    with truncating or padding that preserve the Hermitian symmetry and power.
+    """
+    mesh = jnp.asarray(mesh)
+    # NOTE: reverse axes order to start with last axis, 
+    # for the Hermitian symmetric of its only Nyquist hyperplane needs to be constructed first.
+    for ax, (ms, s) in reversed(list(enumerate(zip(mesh.shape, shape)))): 
+        if s < ms: # truncate axis
+            if ax < len(shape) - 1:
+                # Aggregate the 2 Nyquist hyperplanes
+                neg_ids = (slice(None),) * ax + (-s//2,)
+                pos_ids = (slice(None),) * ax + (s//2,)
+                mesh = mesh.at[neg_ids].set((mesh[pos_ids] + mesh[neg_ids]) / 2**.5)
+            else:
+                # Aggregate the Nyquist hyperplane with its constructed Hermitian symmetric
+                pos_ids = (slice(None),) * ax + (s - 1,)
+                nyq_plane = mesh[pos_ids]
+                nyq_plane_sym = hermitian_symmetric(nyq_plane)
+                mesh = mesh.at[pos_ids].set((nyq_plane + nyq_plane_sym) / 2**.5)
+
+    out = _chreshape(mesh, shape)
+
+    for ax, (ms, s) in enumerate(zip(mesh.shape, shape)):
+        if s > ms: # pad axis
+            if ax < len(shape) - 1:
+                # Reweight and duplicate the Nyquist hyperplane
+                neg_ids = (slice(None),) * ax + (-ms//2,)
+                pos_ids = (slice(None),) * ax + (ms//2,)
+                out = out.at[neg_ids].divide(2**.5)
+                out = out.at[pos_ids].set(out[neg_ids])
+            else:
+                # Reweight the Nyquist hyperplane
+                pos_ids = (slice(None),) * ax + (ms - 1,)
+                out = out.at[pos_ids].divide(2**.5)
+
+    return out
+
 
 
 
@@ -582,10 +637,10 @@ def cgh2rg2(meshk, norm="backward"):
     return mesh
 
 
-def chreshape2(mesh, shape):
+def _chreshape2(mesh, shape):
     """
-    Reshape a complex Hermitian tensor,
-    handling correctly zero-padding.
+    Naively reshape a complex Hermitian tensor.
+    /!\ Does not preserve Hermitian symmetry nor power.
     """
     ids_shape = tuple(np.minimum(mesh.shape, shape))
     scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()

@@ -259,7 +259,7 @@ def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, trans, *args, **kwargs)
     else:
-        out = [] 
+        out = []
         fill = np.atleast_1d(fill)
         color = plt.gca()._get_patches_for_fill.get_next_color()
         for f in fill:
