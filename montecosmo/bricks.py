@@ -275,9 +275,6 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
         out_name = in_name+'_' if inv else in_name[:-1]
         transfer *= temp**.5
 
-        transfer = jnp.ones_like(transfer)
-        print("hey")
-
         # Reparametrize
         if not inv:
             if precond=='real':

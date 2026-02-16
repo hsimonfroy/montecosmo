@@ -128,6 +128,8 @@ def invlaplace_hat(kvec, fd_order=np.inf):
         kk = sum((np.cos(2 * ki) - 16 * np.cos(ki) + 15) / 6 for ki in kvec)
     elif fd_order == np.inf:
         kk = sum(ki**2 for ki in kvec)
+    else:
+        raise ValueError(f"Only orders 2, 4, and inf are supported.")
     return - safe_div(1, kk)
 
 
@@ -154,8 +156,10 @@ def gradient_hat(kvec, direction:int, fd_order=np.inf):
         ki = np.sin(ki)
     elif fd_order == 4:
         ki = (8 * np.sin(ki) - np.sin(2 * ki)) / 6
+    elif fd_order == np.inf:
+        pass
     else:
-        assert fd_order == np.inf, "Only orders 2, 4, and inf are supported."
+        raise ValueError(f"Only orders 2, 4, and inf are supported.")
     return 1j * ki
 
 
@@ -316,6 +320,8 @@ def deconv_paint(mesh, order:int=2, kernel_type='rectangular', oversamp=1.):
         kernel = lambda kvec: rectangular_hat(kvec, order)
     elif kernel_type == 'kaiser_bessel':
         kernel = lambda kvec: kaiser_bessel_hat(kvec, order, optim_kcut(oversamp))
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel_type}")
     
     if jnp.isrealobj(mesh):
         kvec = rfftk(mesh.shape) # in cell units
@@ -374,6 +380,9 @@ def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', 
         kernel = lambda s: rectangular(s, order)
     elif kernel_type == 'kaiser_bessel':
         kernel = lambda s: kaiser_bessel(s, order, optim_kcut(oversamp))
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel_type}")
+        
 
     def step(carry, ishift):
         idx = id0 + ishift

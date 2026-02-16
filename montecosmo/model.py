@@ -616,13 +616,13 @@ class FieldLevelModel(Model):
         #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
         #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
 
-
         if self.evolution=='kaiser':
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
             gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
                                     fNL_bp=fNL_bp, png_type=self.png_type, los=cell_los)
+            # NOTE: Kaiser model does not need any oversampling
             phi_mesh = 0.
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
@@ -657,18 +657,16 @@ class FieldLevelModel(Model):
                 # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution can amplify AP-induced high-frequencies.
                 gxy_mesh *= (self.evol_shape / self.ptcl_shape).prod()
                 
-            # if tuple(gxy_mesh.shape) != tuple(self.final_shape):
-            gxy_mesh = jnp.fft.rfftn(gxy_mesh)
-            gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
-            gxy_mesh = 1 + jnp.fft.irfftn(gxy_mesh)
+            if tuple(gxy_mesh.shape) != tuple(self.final_shape):
+                gxy_mesh = jnp.fft.rfftn(gxy_mesh)
+                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
+                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
 
-    
         else:
             # Create regular grid of particles, and get their scale factors
             pos = regular_pos(self.evol_shape, self.ptcl_shape)
             _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
-
 
             # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
             lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
@@ -1020,9 +1018,6 @@ class FieldLevelModel(Model):
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
 
-        elif self.precond=='x':
-            scale, transfer = jnp.ones(self.init_shape), jnp.ones(r2chshape(self.init_shape))
-        
         else:
             raise ValueError(f"Unknown preconditioning type: {self.precond}")
         
@@ -1199,7 +1194,7 @@ class FieldLevelModel(Model):
     #     return chains
     
     def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
-                           kedges:int|float|list=None, deconv=(0, 0), batch_ndim=2) -> Chains:
+                           kedges:int|float|list=None, batch_ndim=2) -> Chains:
         """
         Return wavenumber, power spectrum, transfer function, and coherence 
         of meshes in chains compared to a reference mesh.
@@ -1207,7 +1202,7 @@ class FieldLevelModel(Model):
         (k, pow1, (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5).
         """
         chains = chains.copy()
-        fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges, deconv=deconv), batch_ndim)
+        fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges), batch_ndim)
         chains.data['kptc'] = fn(chains.data[name])
         return chains
     

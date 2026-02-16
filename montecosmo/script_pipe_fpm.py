@@ -56,7 +56,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_s2_100"
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_herm"
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        'b1': .8,
+        'b1': 1.,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
@@ -163,7 +163,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         'ngbars': 1e-4,
         # 'ngbars': 10000., # neglect lik noise
         's_0': 0.2,
-        's_2': 100.,
+        's_2': 0.,
         's_2mu': 0.,
         's_delta': 0.7,
         's_phi': 0.,
@@ -203,11 +203,14 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
 
     if fNL_true == 0:
-        obs_mesh = jnp.load(load_dir / f'tracer_2099282_fNL0_paint2_deconv1_{mesh_length}.npy')
+        # obs_mesh = jnp.load(load_dir / f'tracer_2099282_fNL0_paint2_deconv1_{mesh_length}.npy')
+        obs_mesh = jnp.load(load_dir / f'tracer_fNL0_paint2_deconv1_{mesh_length}.npy')
     elif fNL_true == 100:
-        obs_mesh = jnp.load(load_dir / f'tracer_2099376_fNL100_paint2_deconv1_{mesh_length}.npy')
+        # obs_mesh = jnp.load(load_dir / f'tracer_2099376_fNL100_paint2_deconv1_{mesh_length}.npy')
+        obs_mesh = jnp.load(load_dir / f'tracer_fNL100_paint2_deconv1_{mesh_length}.npy')
     elif fNL_true == -100:
-        obs_mesh = jnp.load(load_dir / f'tracer_2099359_fNL-100_paint2_deconv1_{mesh_length}.npy')
+        # obs_mesh = jnp.load(load_dir / f'tracer_2099359_fNL-100_paint2_deconv1_{mesh_length}.npy')
+        obs_mesh = jnp.load(load_dir / f'tracer_fNL-100_paint2_deconv1_{mesh_length}.npy')
     obs_mesh *= truth['ngbars'] * model.cell_length**3
     
 
@@ -351,12 +354,12 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
             # 'b1',
         #     'b2','bs2','bn2', 
         #    'bnpar',
-            #   'b3',
+              'b3',
             # 'ngbars', 
             # 's_0',
             's_2',
             's_2mu',
-            's_delta',
+            # 's_delta',
             's_phi',
             # 'Omega_m',
             # 'sigma8',
@@ -504,7 +507,7 @@ if __name__ == '__main__':
     s8s = [False]
     selects = [None]
     png_types = ['fNL_bias']  # 'fNL', 'fNL_bias', None
-    fouriers = [True]
+    fouriers = [False]
     # infer_model = tm.python_app(infer_model)
     
     for mesh_length in mesh_lengths:
