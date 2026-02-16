@@ -760,8 +760,8 @@ class FieldLevelModel(Model):
 
             # posit_fn = lambda x: jnp.maximum(x, 1e-9)
             # posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
-            # posit_fn = lambda x: jnp.abs(x)
-            posit_fn = lambda x: jnp.abs(x)**2
+            posit_fn = lambda x: jnp.abs(x)
+            # posit_fn = lambda x: jnp.abs(x)**2
 
             if self.lik_type == 'poisson':
                 # intens = posit_fn(mesh * mean_count)

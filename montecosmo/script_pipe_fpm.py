@@ -148,7 +148,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         # 'b1': 0.,
         # 'b2': 0.,
         # 'bs2': 0.,
-        'b1': 1.,
+        'b1': 1.2,
         'b2': 0.,
         'bs2': 0.,
         'bn2': 0.,
@@ -203,14 +203,14 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # obs_mesh = jnp.load(load_dir / f'tracer_6746545_rsdflat_paint2_deconv1_{mesh_length}.npy')
 
     if fNL_true == 0:
-        # obs_mesh = jnp.load(load_dir / f'tracer_2099282_fNL0_paint2_deconv1_{mesh_length}.npy')
-        obs_mesh = jnp.load(load_dir / f'tracer_fNL0_paint2_deconv1_{mesh_length}.npy')
+        obs_mesh = jnp.load(load_dir / f'tracer_2099282_fNL0_paint2_deconv1_{mesh_length}.npy')
+        # obs_mesh = jnp.load(load_dir / f'tracer_fNL0_paint2_deconv1_{mesh_length}.npy')
     elif fNL_true == 100:
-        # obs_mesh = jnp.load(load_dir / f'tracer_2099376_fNL100_paint2_deconv1_{mesh_length}.npy')
-        obs_mesh = jnp.load(load_dir / f'tracer_fNL100_paint2_deconv1_{mesh_length}.npy')
+        obs_mesh = jnp.load(load_dir / f'tracer_2099376_fNL100_paint2_deconv1_{mesh_length}.npy')
+        # obs_mesh = jnp.load(load_dir / f'tracer_fNL100_paint2_deconv1_{mesh_length}.npy')
     elif fNL_true == -100:
-        # obs_mesh = jnp.load(load_dir / f'tracer_2099359_fNL-100_paint2_deconv1_{mesh_length}.npy')
-        obs_mesh = jnp.load(load_dir / f'tracer_fNL-100_paint2_deconv1_{mesh_length}.npy')
+        obs_mesh = jnp.load(load_dir / f'tracer_2099359_fNL-100_paint2_deconv1_{mesh_length}.npy')
+        # obs_mesh = jnp.load(load_dir / f'tracer_fNL-100_paint2_deconv1_{mesh_length}.npy')
     obs_mesh *= truth['ngbars'] * model.cell_length**3
     
 
