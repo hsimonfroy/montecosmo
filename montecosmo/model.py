@@ -16,18 +16,17 @@ from jax.scipy.spatial.transform import Rotation
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
-                               lagrangian_bias, b1_L2E, b2_L2E, fNL_bias,
+                               lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, fNL_bias,
                                top_hat_selection, gen_gauss_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
-                               catalog2mesh, catalog2selection, pos_mesh, regular_pos, sobol_pos, get_scaled_shape,
-                               set_radial_count)
+                               catalog2count, catalog2config, catalog2selection, pos_mesh, regular_pos, sobol_pos, set_radial_count, count2delta)
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
                               nbody_tsit5, 
-                              paint, read, deconv_paint, interlace, rfftk, top_hat)
+                              paint, read, deconv_paint, nufft, rfftk, top_hat)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial, distr_angular, mse_radius, mse_value, mse_wave
 from montecosmo.utils import (ysafe_dump, ysafe_load,
-                              cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked,
-                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, rg2cgh2)
+                              cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked, scale_shape,
+                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, SinhArcsinh, QuadGaussian, rg2cgh2)
 from montecosmo.chains import Chains
 
 
@@ -63,9 +62,10 @@ default_config={
         'a_obs':None, # if None, light-cone
         'curved_sky':True, # curved vs. flat sky
         'ap_auto': None, # auto AP vs. parametric AP, if None, no AP
-        'selection':None, # if float, padded fraction, if str or Path, path to selection mesh file
+        'meshes':None, # if float, padded fraction, if str or Path, path to painted meshes file
         'n_rbins':None, # if None, set to maximum number of radial bins
         'lik_type': 'gaussian', # gaussian, poisson
+        'bias_type': 'lagrangian', # lagrangian, eulerian
         # Latents
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
         'latents': {
@@ -177,7 +177,8 @@ default_config={
                                 # 'loc':1e-3, # in galaxy / (Mpc/h)^3
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
                                 'scale':1e-2,
-                                'scale_fid':3e-8,
+                                # 'scale_fid':3e-8,
+                                'scale_fid':1e-7,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
@@ -205,17 +206,17 @@ default_config={
                                 'label':'{s}_{\\delta}',
                                 'loc':1.,
                                 'scale':1.,
-                                # 'scale_fid':1e-1, # delta
-                                'scale_fid':1e-2, # delta_power
-                                'low':0.,
-                                'high':jnp.inf,
+                                'scale_fid':3e-2, # delta**2
+                                # 'scale_fid':1e-2, # delta_power
+                                # 'low':0.,
+                                # 'high':jnp.inf,
                                 },
-                's_phi': {'group':'syst',
-                                'label':'{s}_{\\phi}',
-                                'loc':0.,
-                                'scale':1e3,
-                                'scale_fid':1e2,
-                                },
+                # 's_phi': {'group':'syst',
+                #                 'label':'{s}_{\\phi}',
+                #                 'loc':0.,
+                #                 'scale':1e3,
+                #                 'scale_fid':1e2,
+                #                 },
                 'init_mesh': {'group':'init',
                                 'label':'{\\delta}_\\mathrm{L}',},
                 },
@@ -452,9 +453,10 @@ class FieldLevelModel(Model):
     a_obs:None|float
     curved_sky:bool
     ap_auto:bool
-    selection:None|float|str|Path
+    meshes:None|float|str|Path
     n_rbins:None|int
     lik_type:str
+    bias_type:str
     # Latents
     precond:str
     latents:dict
@@ -470,10 +472,10 @@ class FieldLevelModel(Model):
         # Shapes
         self.final_shape = np.asarray(self.final_shape)
         self.box_size = self.final_shape * self.cell_length
-        self.init_shape = get_scaled_shape(self.final_shape, self.init_oversamp)
-        self.evol_shape = get_scaled_shape(self.final_shape, self.evol_oversamp)
-        self.ptcl_shape = get_scaled_shape(self.final_shape, self.ptcl_oversamp)
-        self.paint_shape = get_scaled_shape(self.final_shape, self.paint_oversamp)
+        self.init_shape = scale_shape(self.final_shape, self.init_oversamp)
+        self.evol_shape = scale_shape(self.final_shape, self.evol_oversamp)
+        self.ptcl_shape = scale_shape(self.final_shape, self.ptcl_oversamp)
+        self.paint_shape = scale_shape(self.final_shape, self.paint_oversamp)
         # NOTE: if x32, cast shapes into float to avoid overflow when computing products
 
         # Scale cut
@@ -498,24 +500,35 @@ class FieldLevelModel(Model):
             raise ValueError("init_power should be None, str, or Path.")
         
         # Selection function
-        # TODO: might implement selection in Lagrangian
-        if self.selection is None:
+        # TODO: might implement selection in Lagrangian: 
+        # still requires the eulerian selec, to be read and used in likelihood, 
+        # but can use lagrangian for computing the product delta * selec. 
+        # However, can lack consistency with likelihood
+        if self.meshes is None:
             self.selec_mesh = np.array(1.)
-            self.mask = None
-        elif isinstance(self.selection, float):
-            self.selec_mesh = top_hat_selection(self.final_shape, self.selection, norm_order=np.inf)
-            self.selec_mesh *= top_hat_selection(self.final_shape, 1., norm_order=4., pow_order=4.)
-            # self.selec_mesh *= gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
-                                # self.final_shape, True, order=4.)
-            self.selec_mesh /= self.selec_mesh[self.selec_mesh > 0].mean()
-            self.mask = self.selec_mesh > 0
-        elif isinstance(self.selection, (str, Path.__base__)):
-            self.selection = str(self.selection) # cast to str to allow yaml saving
-            self.selec_mesh = np.load(self.selection)
-            self.mask = self.selec_mesh > 0
+            self.mask_mesh = None
+            self.selec_fid = np.array(1.)
+        elif isinstance(self.meshes, float):
+            # TODO: to fix shapes
+            self.selec_mesh = top_hat_selection(self.evol_shape, self.meshes, norm_order=np.inf, pow_order=np.inf)
+            self.selec_mesh *= gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
+                                self.evol_shape, None, None, order=4.)
+            self.mask_mesh = self.selec_mesh > 0
+            self.selec_mesh /= self.selec_mesh[self.mask_mesh].mean()
+            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
+        elif isinstance(self.meshes, (str, Path.__base__)):
+            self.meshes = str(self.meshes) # cast to str to allow yaml saving
+            meshes = np.load(self.meshes)
+            self.selec_mesh = meshes['selec_mesh']
+            self.mask_mesh = meshes['mask_mesh']
+            self.count_mesh = meshes['count_mesh']
+            self.latents['ngbars']['loc'] = meshes['ngbars'] # before _validate_rbins
+            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
         else:
-            raise ValueError("selection should be None, float, str, or Path.")
+            raise ValueError("meshes should be None, float, str, or Path.")
         
+
+
         # Imaging
         # TODO
 
@@ -613,17 +626,20 @@ class FieldLevelModel(Model):
 
         # if self.png_type is not None:
         #     init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-        #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
-        #     init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+        #     init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
 
         if self.evolution=='kaiser':
+         
+            if self.png_type is not None:
+                init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
+                init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
+
             los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
             gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
                                     fNL_bp=fNL_bp, png_type=self.png_type, los=cell_los)
             # NOTE: Kaiser model does not need any oversampling
-            phi_mesh = 0.
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
             # gxy_mesh = jnp.abs(gxy_mesh)
@@ -647,7 +663,8 @@ class FieldLevelModel(Model):
                     # weights *= ap['alpha_iso']**3
 
                 pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.paint_shape)
-                gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, deconv=True)
+                # gxy_mesh = interlace(pos, self.paint_shape, weights=lbe_weights, 
+                #                      paint_order=self.paint_order, interlace_order=self.interlace_order, deconv=True)
                 
                 # weights = read2(pos, gxy_mesh, self.paint_order, 1/ap['alpha_iso'])
                 # pos = regular_pos(self.mesh_shape, self.ptcl_shape)
@@ -668,15 +685,14 @@ class FieldLevelModel(Model):
             _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
 
-            # Lagrangian bias expansion weights at a_obs (but based on initial particules positions)
+            # Lagrangian bias expansion weights (based on initial particules positions)
             lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
                                                 fNL=png['fNL'], 
                                                 fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, read_order=1)
             
             if self.png_type is not None:
                 init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.init_shape))
-                init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+                init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
@@ -714,30 +730,42 @@ class FieldLevelModel(Model):
                     # lbe_weights *= ap['alpha_iso']**3 
 
             # Paint weighted by Lagrangian bias expansion weights
-            # lbe_weights = jnp.ones(len(pos)) ###XXX
-            pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.paint_shape)
-            gxy_mesh = interlace(pos, self.paint_shape, lbe_weights, self.paint_order, self.interlace_order, 
-                                 kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
-            # gxy_mesh = jnp.fft.rfftn(jnp.fft.irfftn(gxy_mesh) * (1 + bias['b1'] * jnp.fft.irfftn(init['init_mesh']))) ###XXX
-            
-            # NOTE: final deconvolution can amplify AP-induced high-frequencies.
-            gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-            gxy_mesh = chreshape(gxy_mesh, r2chshape(self.final_shape))
-            gxy_mesh = jnp.fft.irfftn(gxy_mesh)
-            # gxy_mesh = 1 + (gxy_mesh - 1) * (1 + bias['b1']) ###XXX
+            if self.bias_type == 'lagrangian':
+                pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.init_shape)
+                gxy_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=lbe_weights, 
+                                paint_order=self.paint_order, interlace_order=self.interlace_order, kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                # gxy_mesh = jnp.fft.rfftn(jnp.fft.irfftn(gxy_mesh) * (1 + bias['b1'] * jnp.fft.irfftn(init['init_mesh']))) ###XXX
+                # gxy_mesh = jnp.fft.rfftn(1 + (jnp.fft.irfftn(gxy_mesh) - 1) * (1 + bias['b1'])) ###XXX
+                
+                # NOTE: final deconvolution can amplify AP-induced high-frequencies.
+                gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.evol_shape))
+                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
+                # gxy_mesh = 1 + (gxy_mesh - 1) * (1 + bias['b1']) ###XXX
 
-            # phi_mesh = interlace(pos, self.paint_shape, phi_pos, self.paint_order, self.interlace_order, 
-            #             kernel_type=self.kernel_type, oversamp=self.paint_oversamp, deconv=self.paint_deconv)
-            # phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-            # phi_mesh = chreshape(phi_mesh, r2chshape(self.final_shape))
-            # phi_mesh = jnp.fft.irfftn(phi_mesh)
-            phi_mesh = 0.
+            elif self.bias_type == 'eulerian':
+                pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.init_shape)
+                cdm_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=1., 
+                                paint_order=self.paint_order, interlace_order=self.interlace_order, kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                cdm_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+                cdm_mesh = chreshape(cdm_mesh, r2chshape(self.evol_shape))
+                print(jnp.fft.irfftn(cdm_mesh).mean(), jnp.fft.irfftn(cdm_mesh).std())
+
+                phi_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=phi_pos, 
+                                paint_order=self.paint_order, interlace_order=self.interlace_order, kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+                phi_mesh = chreshape(phi_mesh, r2chshape(self.evol_shape))
+                print(jnp.fft.irfftn(phi_mesh).mean(), jnp.fft.irfftn(phi_mesh).std())
+
+                gxy_mesh = eulerian_bias(cdm_mesh, phi_mesh, self.box_size, **bias,                             
+                                         fNL=png['fNL'], 
+                                        fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type)
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
-        return gxy_mesh, syst, phi_mesh # NOTE: mesh is 1+delta_obs
+        return gxy_mesh, syst # NOTE: mesh is 1+delta_obs
 
 
     def likelihood(self, params:tuple, temp=1.):
@@ -746,11 +774,12 @@ class FieldLevelModel(Model):
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-        mesh, syst, phi_mesh = params
+        gxy_mesh, syst = params
 
         if self.observable == 'field':
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            mesh = mesh2masked(mesh * self.selec_mesh, self.mask)
+            mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
+            mesh = mesh2masked(mesh, self.mask_mesh)
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
             # mesh /= mesh.mean()
 
@@ -771,23 +800,33 @@ class FieldLevelModel(Model):
                 if self.lik_type == 'gaussian':
                     var = syst['s_0']
                 elif self.lik_type == 'gaussian_delta':
-                    delta = mesh - 1
-                    var = syst['s_0'] * posit_fn(1 + syst['s_delta'] * delta + syst['s_phi'] * phi_mesh)
+                    delta = gxy_mesh - 1
+                    var = 1 + syst['s_delta'] * delta
                     # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
-                elif self.lik_type == 'gaussian_delta_power':
-                    delta = mesh - 1
-                    var = jnp.abs(1 + delta)**1.7 * syst['s_delta'] + syst['s_0']
+                    var = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(var * self.selec_mesh), r2chshape(self.final_shape)))
+                    var = syst['s_0'] * posit_fn(var)
+                    var = mesh2masked(var, self.mask_mesh)
                 elif self.lik_type == 'gaussian_fourier':
                     kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
                     kmesh = sum(ki**2 for ki in kvec)**.5
                     mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
                     mumesh = safe_div(mumesh, kmesh)
                     
-                    phi_mesh = jnp.fft.rfftn(phi_mesh)
-
-                    var = syst['s_0'] * posit_fn(1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2 + syst['s_phi'] * phi_mesh)
+                    var = syst['s_0'] * posit_fn(1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2)
                     var = cgh2rg(var, norm="amp")
                     mesh = cgh2rg(jnp.fft.rfftn(mesh))
+                elif self.lik_type == 'shash':
+                    obs = sample("obs", SinhArcsinh(mesh * mean_count, 
+                                                    syst['s_0'] * mean_count, 
+                                                    syst['s_delta'], 
+                                                    1))
+                    return obs
+                elif self.lik_type == 'quadgauss':
+                    obs = sample("obs", QuadGaussian(mesh * mean_count, 
+                                                    syst['s_0'] * mean_count, 
+                                                    syst['s_delta']))
+                    return obs
+                    
 
                 var *= mean_count
                 obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var)**.5))
@@ -947,7 +986,7 @@ class FieldLevelModel(Model):
         Validate radial density and setup radial bins quantities. 
         """
         rmesh = np.array(self.radius_mesh())
-        rmasked = mesh2masked(rmesh, self.mask)
+        rmasked = mesh2masked(rmesh, self.mask_mesh)
         rmin, rmax = rmasked.min(), rmasked.max()
         dr = 3**.5 * self.cell_length # minimum dr to guarantee connected shell bins
 
@@ -1000,10 +1039,9 @@ class FieldLevelModel(Model):
             b1E_fid = b1_L2E(self.loc_fid['b1'])
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
-            selec = (self.selec_mesh**2).mean()**.5
             noise_fid = self.loc_fid['s_0'] / self.count_fid
 
-            scale = (1 + selec / noise_fid * boost_fid**2 * pmesh_fid)**.5
+            scale = (1 + self.selec_fid / noise_fid * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -1011,10 +1049,9 @@ class FieldLevelModel(Model):
             b1E = b1_L2E(bias['b1'])
             count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
-            selec = (self.selec_mesh**2).mean()**.5
             noise = syst['s_0'] / count
 
-            scale = (1 + selec / noise * boost**2 * pmesh)**.5
+            scale = (1 + self.selec_fid / noise * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
 
@@ -1087,48 +1124,97 @@ class FieldLevelModel(Model):
         return radius_mesh(self.box_center, self.box_rot, self.box_size, shape, self.curved_sky)
     
     def mesh2masked(self, mesh):
-        return mesh2masked(mesh, self.mask)
+        return mesh2masked(mesh, self.mask_mesh)
     
     def masked2mesh(self, mesh):
-        return masked2mesh(mesh, self.mask)
+        return masked2mesh(mesh, self.mask_mesh)
 
     def count2delta(self, mesh, from_masked=True):
         """
         Count mesh to delta mesh, by imposing global integral constraint.
         """
         if from_masked:
-            mesh = masked2mesh(mesh, self.mask)
+            mesh = self.masked2mesh(mesh)
 
-        # NOTE: equivalent to:
-        # mesh = self.mesh2masked(mesh)
-        # mesh = (mesh / mesh.mean() - self.mesh2masked(model.selec_mesh))
-        # return self.masked2mesh(mesh) / (model.selec_mesh**2).mean()**.5
-
-        alpha_selec = self.selec_mesh * mesh.mean() / self.selec_mesh.mean()
-        return (mesh - alpha_selec) / (alpha_selec**2).mean()**.5
+        if self.selec_mesh.ndim == 3 and self.selec_mesh.shape != mesh.shape:
+            selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(self.selec_mesh), r2chshape(mesh.shape)))
+            selec_mesh = self.masked2mesh(self.mesh2masked(selec_mesh))
+        else:
+            selec_mesh = np.asarray(self.selec_mesh)
+        return count2delta(mesh, selec_mesh)
     
-    def add_selection(self, load_path:str|Path, cell_budget:float, padding:float=0., save_path:str|Path=None):
+    def register_meshes(self, data, random, save_path:str|Path, 
+                        cell_budget:float, padding:float=0., 
+                      box_size=None, box_center=None, box_rotvec=None):
         """
-        Compute and save a painted selection mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
+        Compute and save painted selection, mask, and count meshes
+        from a (RA, DEC, Z, WEIGHT) random catalog, given budget and padding.
+        Optionally enforce box geometry. Then update model accordingly.
         """
-        selec_mesh, cell_length, box_center, box_rotvec = catalog2selection(load_path, self.cosmo_fid, cell_budget, padding, self.paint_order)
-        if save_path is None:
-            save_path = Path(load_path).with_suffix('.npy')
-        save_path = str(save_path) # cast to str to allow yaml saving
-        np.save(save_path, selec_mesh)
-
-        self.selection = save_path
-        self.final_shape = selec_mesh.shape
+        # Get geometry from random, budget, and padding 
+        final_shape, cell_length, box_center, box_rotvec = catalog2config(random, self.cosmo_fid, cell_budget, padding, 
+                                                                          box_size=box_size, box_center=box_center, box_rotvec=box_rotvec)
+        self.final_shape = final_shape
         self.cell_length = cell_length
         self.box_center = box_center
         self.box_rotvec = box_rotvec
-        self.__post_init__() # update other model attributes
 
-    def catalog2mesh(self, path:str|Path):
-        """
-        Compute a painted mesh from a RA, DEC, Z .fits catalog.
-        """
-        return catalog2mesh(path, self.cosmo_fid, self.box_center, self.box_rot, self.box_size, self.final_shape, self.paint_order)
+        box_size = final_shape * cell_length # box_size update due to rounding and padding
+        evol_shape = scale_shape(final_shape, self.evol_oversamp)
+        init_shape = scale_shape(final_shape, self.init_oversamp)
+        
+        # Paint selection and mask from random catalog
+        selec_mesh, mask_mesh = catalog2selection(random, self.cosmo_fid, mask_shape=final_shape, selec_shape=init_shape, paint_shape=evol_shape,
+                                                box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
+                                                paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
+        selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(selec_mesh), r2chshape(evol_shape)))
+
+        # Paint count from data catalog, compute mean density within support
+        count_mesh, ngbars = catalog2count(data, mask_mesh, self.cosmo_fid, evol_shape,
+                                          box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
+                                          paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
+
+        # Save meshes and update model
+        save_path = str(save_path) # cast to str to allow yaml to save path
+        np.savez(save_path, selec_mesh=selec_mesh, mask_mesh=mask_mesh,
+                count_mesh=count_mesh, ngbars=ngbars, 
+                final_shape=final_shape, cell_length=cell_length, box_center=box_center, box_rotvec=box_rotvec)
+        self.meshes = save_path
+        self.__post_init__() # update potential other model attributes accordingly
+
+
+
+
+    # def add_selection(self, load_path:str|Path, cell_budget:float, padding:float=0., 
+    #                     box_size=None, box_center=None, box_rotvec=None,
+    #                     save_path:str|Path=None):
+    #     """
+    #     Compute and save a painted selection mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
+    #     """
+    #     final_shape, cell_length, box_center, box_rotvec = catalog2config(load_path, self.cosmo_fid, cell_budget, padding, 
+    #                                                                         box_size=box_size, box_center=box_center, box_rotvec=box_rotvec)
+    #     self.final_shape = final_shape
+    #     self.cell_length = cell_length
+    #     self.box_center = box_center
+    #     self.box_rotvec = box_rotvec
+
+    #     box_size = final_shape * cell_length # box_size update due to rounding and padding
+    #     evol_shape = scale_shape(final_shape, self.evol_oversamp)
+    #     init_shape = scale_shape(final_shape, self.init_oversamp)
+        
+    #     selec_mesh, mask_mesh = catalog2selection(load_path, self.cosmo_fid, mask_shape=final_shape, selec_shape=init_shape, paint_shape=evol_shape,
+    #                                             box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
+    #                                             paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
+    #     selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(selec_mesh), r2chshape(evol_shape)))
+
+    #     if save_path is None:
+    #         save_path = Path(load_path).with_suffix('.npz')
+    #     save_path = str(save_path) # cast to str to allow yaml to save path
+    #     np.savez(save_path, selec_mesh=selec_mesh, mask_mesh=mask_mesh)
+
+    #     self.meshes = save_path
+    #     self.__post_init__() # update other model attributes
+
 
 
     ###########
@@ -1149,8 +1235,8 @@ class FieldLevelModel(Model):
         if cell_length is None:
             cell_length = self.cell_length
         if not from_masked:
-            mesh0 = mesh2masked(mesh0, self.mask)
-            mesh1 = mesh2masked(mesh1, self.mask)
+            mesh0 = mesh2masked(mesh0, self.mask_mesh)
+            mesh1 = mesh2masked(mesh1, self.mask_mesh)
 
         return mse_radius(mesh0, mesh1, self.rmasked, cell_length, redges=redges, aggr_fn=aggr_fn)
 
@@ -1167,7 +1253,7 @@ class FieldLevelModel(Model):
         if cell_length is None:
             cell_length = self.cell_length
         if not from_masked:
-            mesh = mesh2masked(mesh, self.mask)
+            mesh = mesh2masked(mesh, self.mask_mesh)
 
         return distr_radial(mesh, self.rmasked, cell_length, redges=redges, aggr_fn=aggr_fn)
 
@@ -1219,7 +1305,7 @@ class FieldLevelModel(Model):
                              b1=self.loc_fid['b1'], b2=self.loc_fid['b2'], p=1., png_type=self.png_type)
         
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, noise=noise_fid, b1E=b1E_fid, 
-                                       fNL_bp=fNL_bp, png_type=self.png_type, selec_mesh=self.selec_mesh, los=self.los_fid)
+                                       fNL_bp=fNL_bp, png_type=self.png_type, selec_fid=self.selec_fid, los=self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
         # post_mesh = rg2cgh2(jr.normal(seed, ch2rshape(means.shape)))
@@ -1229,6 +1315,7 @@ class FieldLevelModel(Model):
         # because many high-wavevector amplitudes can be set to high.
         post_mesh *= scale_field 
 
+        # Return starting values for all latent parameters except those in data
         start_params = {k: self.loc_fid[k] for k in self.loc_fid.keys() - self.data.keys()}
         start_params |= {k: post_mesh for k in {'init_mesh'} - self.data.keys()}
         if base:

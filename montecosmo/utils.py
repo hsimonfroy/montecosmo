@@ -6,13 +6,14 @@ import yaml
 from functools import partial, wraps
 
 import numpy as np
-from jax import jit, numpy as jnp, vmap, grad, tree, lax
+from jax import jit, numpy as jnp, random as jr, vmap, grad, tree, lax
 
 from jax.scipy.special import logsumexp, gammaln
 from jax.scipy.stats import norm
 
 
 from numpyro.distributions import Distribution, constraints, TruncatedNormal, Uniform, util
+from numpyro.distributions.util import validate_sample, promote_shapes
 
 
 
@@ -286,6 +287,99 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
     # return jnp.log(scale * (cdf_high - cdf_low) * norm.pdf(x) / norm.pdf(norm.ppf(cdf_y)))
 
 
+
+class SinhArcsinh(Distribution):
+    """Sinh-arcsinh distribution (Jones & Pewsey 2009), standalone NumPyro implementation.
+
+    Matches tfp.distributions.SinhArcsinh (Normal base): if Z ~ Normal(0, 1), then
+        Y = loc + scale * sinh((arcsinh(Z) + skewness) * tailweight).
+    - skewness > 0 (resp. < 0) skews right (resp. left).
+    - tailweight > 1 (resp. < 1) gives heavier (resp. lighter) tails than Normal.
+    - skewness=0, tailweight=1 recovers Normal(loc, scale).
+    """
+    arg_constraints = {
+        "loc": constraints.real,
+        "scale": constraints.positive,
+        "skewness": constraints.real,
+        "tailweight": constraints.positive,
+    }
+    support = constraints.real
+    reparametrized_params = ["loc", "scale", "skewness", "tailweight"]
+
+    def __init__(self, loc=0.0, scale=1.0, skewness=0.0, tailweight=1.0, *, validate_args=None):
+        batch_shape = lax.broadcast_shapes(
+            jnp.shape(loc), jnp.shape(scale), jnp.shape(skewness), jnp.shape(tailweight))
+        self.loc, self.scale, self.skewness, self.tailweight = promote_shapes(
+            loc, scale, skewness, tailweight)
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+    def sample(self, key, sample_shape=()):
+        shape = sample_shape + self.batch_shape + self.event_shape
+        z = jr.normal(key, shape)
+        w = jnp.sinh((jnp.arcsinh(z) + self.skewness) * self.tailweight)
+        return self.loc + self.scale * w
+
+    @validate_sample
+    def log_prob(self, value):
+        w = (value - self.loc) / self.scale
+        # Map back to the standard normal variate Z (inverse transform).
+        z = jnp.sinh(jnp.arcsinh(w) / self.tailweight - self.skewness)
+        # log N(z) + log|dz/dw| + log|dw/dvalue|,
+        # with |dz/dw| = sqrt(1+z^2)/(tailweight*sqrt(1+w^2)).
+        return (-0.5 * jnp.log(2 * jnp.pi)
+                - 0.5 * z ** 2
+                + 0.5 * jnp.log1p(z ** 2)
+                - jnp.log(self.tailweight)
+                - 0.5 * jnp.log1p(w ** 2)
+                - jnp.log(self.scale))
+
+
+
+class QuadGaussian(Distribution):
+    """Quadratic-in-Gaussian noise, mean-subtracted:
+           obs = loc + scale1 * eps + scale2 * (eps**2 - 1),   eps ~ N(0,1)
+       so E[obs] = loc and Var[obs] = scale1**2 + 2*scale2**2.
+       Reduces to Normal(loc, scale1) as scale2 -> 0."""
+    arg_constraints = {"loc": constraints.real,
+                       "scale1": constraints.positive,
+                       "scale2": constraints.real}
+    support = constraints.real
+    reparametrized_params = ["loc", "scale1", "scale2"]
+
+    def __init__(self, loc=0.0, scale1=1.0, scale2=0.0, *, validate_args=None):
+        self.loc, self.scale1, self.scale2 = promote_shapes(loc, scale1, scale2)
+        bs = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale1), jnp.shape(scale2))
+        super().__init__(batch_shape=bs, validate_args=validate_args)
+
+    def sample(self, key, sample_shape=()):
+        eps = jr.normal(key, sample_shape + self.batch_shape)
+        return self.loc + self.scale1 * eps + self.scale2 * (eps**2 - 1.0)
+
+    @validate_sample
+    def log_prob(self, value):
+        a, b = self.scale2, self.scale1
+        r = value - self.loc + a                       # a*eps^2 + b*eps = r
+        D = b**2 + 4.0 * a * r                         # discriminant
+        D_safe = jnp.where(D > 0, D, 1.0)
+        sq = jnp.sqrt(D_safe)
+        a_safe = jnp.where(jnp.abs(a) < 1e-12, 1.0, a)
+        ep = (-b + sq) / (2.0 * a_safe)                # two Gaussian preimages
+        em = (-b - sq) / (2.0 * a_safe)
+        lp_quad = (-0.5*jnp.log(2*jnp.pi) - 0.5*jnp.log(D_safe)
+                   + logsumexp(jnp.stack([-0.5*ep**2, -0.5*em**2], 0), axis=0))
+        lp_quad = jnp.where(D > 0, lp_quad, -jnp.inf)  # outside support
+        lp_gauss = -0.5*jnp.log(2*jnp.pi) - jnp.log(b) - 0.5*((value-self.loc)/b)**2
+        return jnp.where(jnp.abs(a) < 1e-8, lp_gauss, lp_quad)
+
+    @property
+    def mean(self):     
+        return jnp.broadcast_to(self.loc, self.batch_shape)
+    
+    @property
+    def variance(self): 
+        return jnp.broadcast_to(self.scale1**2 + 2*self.scale2**2, self.batch_shape)
+
+
 ##############################
 # Fourier (Memory efficient) #
 ##############################
@@ -447,7 +541,7 @@ def cgh2rg(meshk, norm="backward"):
 def _chreshape(mesh, shape):
     """
     Naively reshape a complex Hermitian tensor.
-    /!\ Does not preserve Hermitian symmetry nor power.
+    Carefull, does not preserve Hermitian symmetry nor power.
     """
     scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
 
@@ -498,7 +592,8 @@ def hermitian_symmetric(arr):
 def chreshape(mesh, shape):
     """
     Reshape a complex Hermitian tensor,
-    with truncating or padding that preserve the Hermitian symmetry and power.
+    with truncating or padding that preserve the Hermitian symmetry and the mean, 
+    hence the average power.
     """
     mesh = jnp.asarray(mesh)
     # NOTE: reverse axes order to start with last axis, 
@@ -640,7 +735,7 @@ def cgh2rg2(meshk, norm="backward"):
 def _chreshape2(mesh, shape):
     """
     Naively reshape a complex Hermitian tensor.
-    /!\ Does not preserve Hermitian symmetry nor power.
+    Carefull, does not preserve Hermitian symmetry nor power.
     """
     ids_shape = tuple(np.minimum(mesh.shape, shape))
     scale = np.divide(ch2rshape(shape), ch2rshape(mesh.shape)).prod()
@@ -681,6 +776,13 @@ def boxreshape(mesh, shape):
     half_over = np.maximum(shape - mesh_shape, 0) // 2
     mesh = jnp.pad(mesh, pad_width=tuple((ho,ho) for ho in half_over))
     return mesh
+
+def scale_shape(shape, scale=1.):
+    """
+    Return a valid scaled shape from a given mesh shape and a 1D scaling factor.
+    """
+    shape = np.asarray(shape)
+    return 2 * np.rint(shape * scale / 2).astype(int)
     
 
 def mesh2masked(mesh, mask=None):
@@ -735,6 +837,7 @@ def volume_hypersphere(d, R=1):
     """d is the embedding dimension"""
     log_vol = d/2 * np.log(np.pi) + d * np.log(R) - gammaln(d/2 + 1)
     return np.exp(log_vol)
+
 
 
 # def get_noise_fn(t0, t1, noises, steps=False):

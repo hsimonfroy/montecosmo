@@ -209,7 +209,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
                 #   lambda x: x[np.array([0,1,2])],
                 partial(Chains.thin, thinning=thinning),                     # thin the chains
                 model.reparam_chains,                                 # reparametrize sample variables into base variables
-                model.reparam_bias if reparb else lambda x: x,        # reparametrize bias parameters
+                # model.reparam_bias if reparb else lambda x: x,        # reparametrize bias parameters
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),   # compute mesh statistics
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
@@ -282,7 +282,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
     transforms = [
                 partial(Chains.thin, thinning=64),
                 model.reparam_chains,
-                model.reparam_bias if reparb else lambda x: x,
+                # model.reparam_bias if reparb else lambda x: x,
                 partial(model.powtranscoh_chains, mesh0=mesh_ref),
                 ]
     chains = model.load_runs(chains_dir, 1, 100, transforms=transforms, batch_ndim=2)
@@ -323,10 +323,13 @@ def compare_chains(load_dirs, labels, save_dir="./"):
     gdplt = plots.get_subplot_plotter(width_inch=7)
     gdplt.triangle_plot(roots=gdsamps,
                     title_limit=1,
-                    filled=True, 
+                    # filled=True, 
+                    filled=3*[True]+3*[False], 
                     # markers=truth,
                     # markers={k:v for k,v in truth.items() if k in ['fNL', 'fNL_bp', 'fNL_bpd']},
-                    contour_colors=[SetDark2(i) for i in range(len(gdsamps))],)
+                    contour_colors=[SetDark2(i) for i in range(3)]+[SetDark2(i) for i in range(3)],
+                    contour_ls=3*['-']+3*['--']+3*[':']+3*['-.'],
+                    )
     plt.savefig(save_dir / f"triangle_{'_'.join(labels)[:200]}.png", dpi=300)
 
 
@@ -365,5 +368,6 @@ def print_mclmc_config(config, state):
     _, unrav_fn = ravel_pytree(tree.map(lambda x:x[0], state.position))
     invmm = vmap(unrav_fn)(config.inverse_mass_matrix)
     print("invmm mean:", tree.map(lambda x: x.mean(range(1, x.ndim)), invmm))
-    print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
+    if 'init_mesh_' in invmm:
+        print("invmm init_mesh_ std:", tree.map(lambda x: x.std(range(1, x.ndim)), invmm)['init_mesh_'])
     # print("invmm nan count:", tree.map(lambda x: jnp.isnan(x).sum(range(1, x.ndim)), invmm))

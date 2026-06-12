@@ -5,7 +5,7 @@ import numpy as np
 from jax import numpy as jnp, tree, debug, lax
 from jax_cosmo import Cosmology, background
 from jax_cosmo.scipy.ode import odeint
-from montecosmo.utils import ch2rshape, r2chshape, safe_div
+from montecosmo.utils import chreshape, ch2rshape, r2chshape, safe_div, scale_shape
 
 
 ###########
@@ -50,7 +50,7 @@ from montecosmo.utils import ch2rshape, r2chshape, safe_div
 def rfftk(shape, box_size=None):
     """
     Return wavevectors for rfftn.
-    If `box_size` is provided, return wavevectors in physical units, else in cell units.
+    If `box_size` is provided, return wavevectors in physical units, else in cell units (k in [-pi, pi[).
 
     Examples
     --------
@@ -80,7 +80,7 @@ def rfftk(shape, box_size=None):
 def fftk(shape, box_size=None):
     """
     Return wavevectors for fftn (you shouldn't need it).
-    If `box_size` is provided, return wavevectors in physical units, else in cell units.
+    If `box_size` is provided, return wavevectors in physical units, else in cell units (k in [-pi, pi[).
 
     Examples
     --------
@@ -383,7 +383,6 @@ def paint(pos, shape:tuple, weights=1., order:int=2, kernel_type='rectangular', 
     else:
         raise ValueError(f"Unknown kernel type: {kernel_type}")
         
-
     def step(carry, ishift):
         idx = id0 + ishift
         idx, ker = wrap(idx), kernel(idx - pos).prod(-1)
@@ -510,8 +509,9 @@ def read(pos, mesh:jnp.ndarray, order:int=2, kernel_type='rectangular', oversamp
 
 
 
-def interlace(pos, shape:tuple, weights=1., paint_order:int=2, interlace_order:int=2, 
-              kernel_type='rectangular', oversamp=1., deconv=True):
+
+def interlace(pos, shape:tuple, weights=1., 
+              paint_order:int=2, interlace_order:int=2, kernel_type='rectangular', paint_oversamp:float=1.):
     """
     Equal-spacing interlacing. Carefull `interlace_order>=3` is not isotropic.
     See [Wang&Yu2024](https://arxiv.org/abs/2403.13561)
@@ -521,15 +521,57 @@ def interlace(pos, shape:tuple, weights=1., paint_order:int=2, interlace_order:i
     shifts = jnp.arange(interlace_order) / interlace_order
 
     def step(carry, shift):
-        mesh = paint(pos + shift, shape, weights, paint_order, kernel_type, oversamp)
+        mesh = paint(pos + shift, shape, weights, paint_order, kernel_type=kernel_type, oversamp=paint_oversamp)
         carry += jnp.fft.rfftn(mesh) * jnp.exp(1j * shift * sum(kvec)) / interlace_order
         return carry, None
 
     mesh = lax.scan(step, mesh, shifts)[0]
-    if deconv:
-        mesh = deconv_paint(mesh, paint_order, kernel_type=kernel_type, oversamp=oversamp)
     return mesh
 
+
+def nufft(pos, final_shape:tuple, paint_shape:tuple|float=None, weights=1., 
+              paint_order:int=2, interlace_order:int=2, kernel_type='rectangular', paint_deconv=True):
+    """
+    Non-Uniform FFT, with oversampling, kernel deconvolution, interlacing, and kernel choice.
+    
+    Parameters
+    ----------
+    pos: array_like
+        Positions of the particles in cell units (in [0, final_shape[)
+    final_shape: tuple
+        Shape of the final mesh
+    paint_shape: tuple or float, optional
+        If None, paint_shape = final_shape. 
+        If float, oversampling factor on final_shape.
+    weights: array_like, optional
+        Weights of the particles
+    paint_order: int, optional
+        Order of the painting kernel
+    interlace_order: int, optional
+        Order of the interlacing. 
+        Carefull `interlace_order>=3` is not isotropic.
+    kernel_type: str, optional
+        Type of painting kernel: "rectangular" or "kaiser_bessel"
+    paint_deconv: bool, optional
+        Whether to perform deconvolution of the painting kernel
+    """
+    if paint_shape is None:
+        paint_shape = final_shape
+        paint_oversamp = 1.
+    elif isinstance(paint_shape, float):
+        paint_oversamp = paint_shape
+        paint_shape = scale_shape(final_shape, paint_oversamp)
+    else:
+        paint_oversamp = np.exp(np.log(np.divide(final_shape, paint_shape)).mean())
+
+    pos *= np.divide(paint_shape, final_shape) # final cell units to paint cell units
+    mesh = interlace(pos, paint_shape, weights, paint_order, interlace_order, kernel_type=kernel_type, paint_oversamp=paint_oversamp)
+
+    if paint_deconv:
+        mesh = deconv_paint(mesh, paint_order, kernel_type=kernel_type, oversamp=paint_oversamp)
+    if tuple(final_shape) != tuple(paint_shape):
+        mesh = chreshape(mesh, r2chshape(final_shape))
+    return mesh
 
 
 ##########

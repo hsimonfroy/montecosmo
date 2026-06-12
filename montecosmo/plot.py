@@ -387,7 +387,9 @@ def interlace(a, b, axis=0):
 c1 = plt.get_cmap('Dark2').colors
 c2 = plt.get_cmap('Set2').colors
 
-SetDark2 = ListedColormap(alternate(c2, c1))
+colors = alternate(c2, c1)
+colors[np.array([0,2])] = colors[np.array([2,0])]
+SetDark2 = ListedColormap(colors)
 DarkSet2 = ListedColormap(alternate(c1, c2))
 # SetDark2_k = ListedColormap(alternate(1-np.array(c2), 1-np.array(c1)))
 # DarkSet2_k = ListedColormap(alternate(1-np.array(c1), 1-np.array(c2)))
@@ -426,7 +428,7 @@ def set_plotting_options(usetex=False, font_size=10):
     params = {'text.usetex': usetex,
             #   'ps.useafm': True,
             #   'pdf.use14corefonts': True,
-              'font.family': 'roman' if usetex else 'sans-serif',
+              'font.family': 'serif' if usetex else 'sans-serif',
               'font.size':font_size,} 
             # NOTE: 'ps.useafm' and 'pdf.use14corefonts' for PS and PDF font comptatibiliies
     plt.rcParams.update(params)

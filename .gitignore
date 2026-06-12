@@ -68,6 +68,9 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Agent stuff:
+CLAUDE.md
+
 # Sphinx documentation
 docs/_build/
 
