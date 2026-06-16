@@ -161,10 +161,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         # 'ngbars': 8.43318125e-4,
         'ngbars': 1e-4,
         # 'ngbars': 1e5., # neglect lik noise
-        's_0': 1.0,
-        's_2': 0.,
-        's_2mu': 0.,
-        's_delta': 1.0,
+        's_e': 1.0,
+        's_k2e': 0.,
+        's_kmu2e': 0.,
+        's_ed': 1.0,
         }
     
 
@@ -180,7 +180,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # obs_mesh = jnp.load(load_dir / f'fin_paint2_interl2_deconv1_{mesh_length}.npy')
     # # obs_mesh = (1 + truth['b1']) * (obs_mesh - 1) + 1
     # obs_mesh *= truth['ngbars'] * model.cell_length**3
-    # var = truth['s_0'] * model.cell_length**3
+    # var = truth['s_e'] * model.cell_length**3
     # obs_mesh += jr.normal(jr.key(44), obs_mesh.shape) * var**.5
     # # obs_mesh = jr.poisson(jr.key(44), jnp.abs(obs_mesh + 1) * mean_count)
 
@@ -319,10 +319,10 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         #    'bnpar',
               'b3',
             # 'ngbars', 
-            's_0',
-            's_2',
-            's_2mu',
-            's_delta',
+            's_e',
+            's_k2e',
+            's_kmu2e',
+            's_ed',
             # 'Omega_m',
             # 'sigma8',
             # 'init_mesh',
@@ -331,7 +331,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     obs += ['sigma8'] if not s8 else []
     obs += ['fNL_bp','fNL_bpd'] if not png_type=='fNL_bias' else []
     obs += ['fNL'] if not ('fNL'==png_type or 'fNL_bias'==png_type) else []
-    obs += ['s_delta'] if fourier else ['s_2', 's_2mu']
+    obs += ['s_ed'] if fourier else ['s_k2e', 's_kmu2e']
     
     # obs += ['fNL']
     obs = {k: truth[k] for k in obs}

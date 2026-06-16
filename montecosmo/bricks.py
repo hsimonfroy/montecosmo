@@ -304,9 +304,7 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
 ########
 # Bias #
 ########
-def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh, 
-                       b1, b2, bs2, bn2, b3, bnpar, 
-                       fNL, fNL_bp, fNL_bpd,
+def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png, 
                        png_type=None, read_order:int=2):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -317,6 +315,9 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
         + b_{\\phi} f_\\mathrm{NL} \\phi + b_{\\phi \\delta} f_\\mathrm{NL} (\\phi \\delta_L - \\braket{\\phi \\delta_L})
     """    
     # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases?
+    init_mesh = init['init_mesh']
+    b1, b2, bs2, bn2, bnpar, b3 = bias['b1'], bias['b2'], bias['bs2'], bias['bn2'], bias['bnpar'], bias['b3']
+    fNL_bp, fNL_bpd, fNL_bn2p = png['fNL_bp'], png['fNL_bpd'], png['fNL_bn2p']
 
     delta = jnp.fft.irfftn(init_mesh)
     growths = a2g(cosmo, a)
@@ -343,6 +344,11 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
         # Apply bphidelta, primordial term
         phi_delta_pos = phi_pos * delta_pos
         weights += fNL_bpd * (phi_delta_pos - phi_delta_pos.mean())
+
+        # Apply bnabla2phi, primordial higher-order term
+        phi_nab2 = jnp.fft.irfftn( - kmesh**2 * safe_div(init_mesh, trans_phi2delta))
+        phi_nab2_pos = read(pos, phi_nab2, read_order)
+        weights += fNL_bn2p * phi_nab2_pos
     else: 
         phi_pos = None ###XXX
 
@@ -352,7 +358,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     # delta2_pos -= delta2_pos.mean() * (1 + fNL * phi_pos) * (1 + 68 / 21 * delta_pos)
     delta2_pos -= delta2_pos.mean()
     # print("delta2_pos.std()", delta2_pos.std())
-    weights += b2 * delta2_pos
+    weights += b2 * delta2_pos / 2
 
     # Apply bshear2, non-punctual term
     pot = init_mesh * invlaplace_hat(kvec)
@@ -380,7 +386,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init_mesh,
     # # Apply b3, punctual term
     delta3_pos = delta_pos**3
     delta3_pos -= 3 * delta2_pos.mean() * delta_pos
-    weights += b3 * delta3_pos
+    weights += b3 * delta3_pos / 3
     # print("delta3_pos.std()", delta3_pos.std())
 
 
@@ -428,24 +434,30 @@ def b_phi_delta(b1, b2, delta_c=1.686):
     # bpdE = bp + bpd / 2 = bpE + dc (b2E - 8/21 (b1E - 1)) - (b1E - 1)
     return 2 * (delta_c * b2 - b1)
 
-def fNL_bias(fNL_bp, fNL_bpd, fNL, 
-             b1, b2, p=1., png_type=None):
-    if png_type == "fNL":
+def fNL_bias(png, bias, p=1., png_type=None):
+    fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
+    b1, b2 = bias['b1'], bias['b2']
+    
+    if png_type == 'fNL':
         fNL_bp = fNL * b_phi(b1, p)
         fNL_bpd = fNL * b_phi_delta(b1, b2)
+    elif png_type == 'bias':
+        fNL_bp = fNL * fNL_bp
+        fNL_bpd = fNL * fNL_bpd
 
-    # fNL_bpd = fNL_bpd - 2 * fNL ##### XXX
-    return fNL_bp, fNL_bpd
+    # fNL_bpd = fNL_bpd - 2 * fNL * b1 ##### XXX
+    png['fNL_bp'], png['fNL_bpd'] = fNL_bp, fNL_bpd
+    return png
 
 
 
 
-def eulerian_bias(cdm_mesh, 
-                  phi_mesh,
-                  box_size, 
-                    b1, b2, bs2, bn2, b3, bnpar, 
-                    fNL, fNL_bp, fNL_bpd,
-                    png_type=None):
+def eulerian_bias(cdm_mesh, phi_mesh, box_size, 
+                    bias, png, png_type=None):
+    b1, b2, bs2, bn2 = bias['b1'], bias['b2'], bias['bs2'], bias['bn2']
+    fNL_bp, fNL_bpd = png['fNL_bp'], png['fNL_bpd']
+    
+
     cdm_mesh = cdm_mesh.at[0,0,0].set(0.) # ensure zero mean
     delta = jnp.fft.irfftn(cdm_mesh)
     phi_mesh = jnp.fft.irfftn(phi_mesh)

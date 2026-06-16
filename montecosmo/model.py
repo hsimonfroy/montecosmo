@@ -7,7 +7,7 @@ from pprint import pformat
 from pathlib import Path
 
 from numpyro import sample, deterministic, render_model, handlers, distributions as dist
-from numpyro.infer.util import log_density
+from numpyro.infer.util import log_density, compute_log_probs
 import numpy as np
 
 from jax import numpy as jnp, random as jr, vmap, tree, grad, debug, lax
@@ -64,7 +64,7 @@ default_config={
         'ap_auto': None, # auto AP vs. parametric AP, if None, no AP
         'meshes':None, # if float, padded fraction, if str or Path, path to painted meshes file
         'n_rbins':None, # if None, set to maximum number of radial bins
-        'lik_type': 'gaussian', # gaussian, poisson
+        'lik_type': 'quad_gauss', # poisson, fourier_gauss, quad_gauss
         'bias_type': 'lagrangian', # lagrangian, eulerian
         # Latents
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
@@ -145,19 +145,25 @@ default_config={
                             'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
-                            'label':'{f}_\\mathrm{NL} b_\\phi',
+                            'label':'{f}_\mathrm{NL} b_\phi',
                             'loc':0.,
                             'scale':3e3,
                             'scale_fid':3e1,
                             },
                 'fNL_bpd': {'group':'png',
-                            'label':'{f}_\\mathrm{NL} b_{\\phi\\delta}',
+                            'label':r'{f}_\mathrm{NL} b_{\phi\delta}',
                             'loc':0.,
                             'scale':3e3,
                             'scale_fid':3e2,
                             },
+                'fNL_bn2p': {'group':'png',
+                            'label':r'{f}_\mathrm{NL} b_{\nabla^2\phi}',
+                            'loc':0.,
+                            'scale':3e4,
+                            'scale_fid':3e3,
+                            },
                 'alpha_iso': {'group':'ap',
-                                'label':'{\\alpha}_\\mathrm{iso}',
+                                'label':r'{\alpha}_\mathrm{iso}',
                                 'loc':1.,
                                 'scale':1e-1,
                                 'scale_fid':1e-2,
@@ -165,7 +171,7 @@ default_config={
                                 'high':jnp.inf,
                                 },
                 'alpha_ap': {'group':'ap',
-                                'label':'{\\alpha}_\\mathrm{AP}',
+                                'label':r'{\alpha}_\mathrm{AP}',
                                 'loc':1.,
                                 'scale':1e-1,
                                 'scale_fid':1e-2,
@@ -173,7 +179,7 @@ default_config={
                                 'high':jnp.inf,
                                 },
                 'ngbars': {'group':'syst',
-                                'label':'{\\bar{n}}_g',
+                                'label':r'{\bar{n}}_g',
                                 # 'loc':1e-3, # in galaxy / (Mpc/h)^3
                                 'loc':0.000843318125, # in galaxy / (Mpc/h)^3
                                 'scale':1e-2,
@@ -182,34 +188,37 @@ default_config={
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                's_0': {'group':'syst',
-                                'label':'{s}_{0}',
+                's_e': {'group':'syst',
+                                'label':r'{s}_{\epsilon}',
                                 'loc':1.,
                                 'scale':1.,
-                                'scale_fid':3e-2,
+                                'scale_fid':3e-3,
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                's_2': {'group':'syst',
-                                'label':'{s}_{2}',
+                's_k2e': {'group':'syst',
+                                'label':r'{s}_{k^2}',
                                 'loc':0.,
                                 'scale':3e2,
                                 'scale_fid':1e1,
                                 },
-                's_2mu': {'group':'syst',
-                                'label':'{s}_{2,\\mu}',
+                's_kmu2e': {'group':'syst',
+                                'label':r'{s}_{k^2\mu^2}',
                                 'loc':0.,
                                 'scale':3e2,
                                 'scale_fid':1e1,
                                 },
-                's_delta': {'group':'syst',
-                                'label':'{s}_{\\delta}',
+                's_ed': {'group':'syst',
+                                'label':r'{s}_{\epsilon\delta}',
                                 'loc':1.,
                                 'scale':1.,
-                                'scale_fid':3e-2, # delta**2
-                                # 'scale_fid':1e-2, # delta_power
-                                # 'low':0.,
-                                # 'high':jnp.inf,
+                                'scale_fid':1e-2,
+                                },
+                's_e2': {'group':'syst',
+                                'label':r'{s}_{\epsilon^2}',
+                                'loc':1.,
+                                'scale':1.,
+                                'scale_fid':3e-3,
                                 },
                 # 's_phi': {'group':'syst',
                 #                 'label':'{s}_{\\phi}',
@@ -327,7 +336,25 @@ class Model():
     
     def force(self, params={}):
         return grad(self.logpdf)(params) # force = - grad potential = grad logpdf
-    
+
+    def logdf_mesh(self, params={}, site='obs'):
+        """
+        Element-wise likelihood and cumulative likelihood for ``site`` (default 'obs').
+        Return a tuple (logp(y_i | x), log F(y_i | x)), evaluated at latents x and observables y.
+
+        For the per-voxel score d/dtheta (few theta, many voxels), use forward-mode:
+            jax.jacfwd(lambda th: self.logp_field({**params, **th})[0])(theta_dict)
+
+        NOTE: logcdf requires the site distribution to implement cdf/log_cdf
+        """
+        logpdfs, trace = compute_log_probs(self.model, (), {}, params, sum_log_prob=False)
+        logpdf = logpdfs[site] # == d.log_prob(value)
+
+        node = trace[site]
+        d, value = node['fn'], node['value']
+        logcdf = d.log_cdf(value) if hasattr(d, 'log_cdf') else jnp.log(d.cdf(value))
+        return logpdf, logcdf
+
     def trace(self, seed):
         return handlers.trace(handlers.seed(self.model, rng_seed=seed)).get_trace()
     
@@ -622,7 +649,7 @@ class FieldLevelModel(Model):
         cosmology, bias, png, ap, syst, init = params
         
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
-        fNL_bp, fNL_bpd = fNL_bias(**png, b1=bias['b1'], b2=bias['b2'], p=1., png_type=self.png_type)
+        png = fNL_bias(png, bias, p=1., png_type=self.png_type)
 
         # if self.png_type is not None:
         #     init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
@@ -638,8 +665,8 @@ class FieldLevelModel(Model):
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
             gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
-                                    fNL_bp=fNL_bp, png_type=self.png_type, los=cell_los)
-            # NOTE: Kaiser model does not need any oversampling
+                                    fNL_bp=png['fNL_bp'], png_type=self.png_type, los=cell_los)
+            # NOTE: Kaiser model does not need any oversampling, even for curved-sky
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
             # gxy_mesh = jnp.abs(gxy_mesh)
@@ -686,9 +713,8 @@ class FieldLevelModel(Model):
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights (based on initial particules positions)
-            lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, **init, **bias, 
-                                                fNL=png['fNL'], 
-                                                fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, read_order=1)
+            lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, init, bias, png,
+                                                png_type=self.png_type, read_order=1)
             
             if self.png_type is not None:
                 init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
@@ -757,9 +783,7 @@ class FieldLevelModel(Model):
                 phi_mesh = chreshape(phi_mesh, r2chshape(self.evol_shape))
                 print(jnp.fft.irfftn(phi_mesh).mean(), jnp.fft.irfftn(phi_mesh).std())
 
-                gxy_mesh = eulerian_bias(cdm_mesh, phi_mesh, self.box_size, **bias,                             
-                                         fNL=png['fNL'], 
-                                        fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type)
+                gxy_mesh = eulerian_bias(cdm_mesh, phi_mesh, self.box_size, bias, png, png_type=self.png_type)
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
@@ -778,59 +802,74 @@ class FieldLevelModel(Model):
 
         if self.observable == 'field':
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
-            mesh = mesh2masked(mesh, self.mask_mesh)
-            # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
-            # mesh /= mesh.mean()
-
             rcounts = syst['ngbars'] * self.cell_length**3
-            mean_count = rcounts.mean()            
-            # nmesh = set_radial_count(mesh, self.rmasked, self.redges, rcounts)
-
             # posit_fn = lambda x: jnp.maximum(x, 1e-9)
             # posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
-            posit_fn = lambda x: jnp.abs(x)
             # posit_fn = lambda x: jnp.abs(x)**2
+            posit_fn = lambda x: jnp.abs(x)
+
+            count_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
+            count_mesh = mesh2masked(count_mesh, self.mask_mesh)
+            count_mesh = set_radial_count(count_mesh, self.rmasked, self.redges, rcounts)
+            count_mesh = posit_fn(count_mesh)
+
+            if self.selec_mesh.ndim == 3:
+                selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(self.selec_mesh), r2chshape(self.final_shape)))
+                selec_mesh = mesh2masked(selec_mesh, self.mask_mesh)
+                selec_mesh = set_radial_count(selec_mesh, self.rmasked, self.redges, rcounts)
+                selec_mesh = posit_fn(selec_mesh)
+            else:
+                selec_mesh = jnp.mean(rcounts)
+
 
             if self.lik_type == 'poisson':
-                # intens = posit_fn(mesh * mean_count)
-                intens = posit_fn(mesh) * mean_count
-                obs = sample('obs', dist.Poisson(intens**(1 / temp)))
-            else:
-                if self.lik_type == 'gaussian':
-                    var = syst['s_0']
-                elif self.lik_type == 'gaussian_delta':
-                    delta = gxy_mesh - 1
-                    var = 1 + syst['s_delta'] * delta
-                    # var = posit_fn((1 + syst['s_delta'] * delta) * syst['s_0'])
-                    var = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(var * self.selec_mesh), r2chshape(self.final_shape)))
-                    var = syst['s_0'] * posit_fn(var)
-                    var = mesh2masked(var, self.mask_mesh)
-                elif self.lik_type == 'gaussian_fourier':
-                    kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
-                    kmesh = sum(ki**2 for ki in kvec)**.5
-                    mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
-                    mumesh = safe_div(mumesh, kmesh)
-                    
-                    var = syst['s_0'] * posit_fn(1 + syst['s_2'] * kmesh**2 + syst['s_2mu'] * (kmesh * mumesh)**2)
-                    var = cgh2rg(var, norm="amp")
-                    mesh = cgh2rg(jnp.fft.rfftn(mesh))
-                elif self.lik_type == 'shash':
-                    obs = sample("obs", SinhArcsinh(mesh * mean_count, 
-                                                    syst['s_0'] * mean_count, 
-                                                    syst['s_delta'], 
-                                                    1))
-                    return obs
-                elif self.lik_type == 'quadgauss':
-                    obs = sample("obs", QuadGaussian(mesh * mean_count, 
-                                                    syst['s_0'] * mean_count, 
-                                                    syst['s_delta']))
-                    return obs
-                    
+                obs = sample('obs', dist.Poisson(count_mesh**(1 / temp)))
 
-                var *= mean_count
-                obs = sample('obs', dist.Normal(mesh * mean_count, (temp * var)**.5))
+            elif self.lik_type == 'fourier_gauss':
+                assert self.mask_mesh is None, "Fourier likelihood not implemented for cut-sky."
+                kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
+                kmesh = sum(ki**2 for ki in kvec)**.5
+                mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
+                mumesh = safe_div(mumesh, kmesh)
+                
+                scale = posit_fn(syst['s_e'] + syst['s_k2e'] * kmesh**2 + syst['s_kmu2e'] * (kmesh * mumesh)**2)
+                scale *= selec_mesh**.5 * temp**.5
+                scale = cgh2rg(scale, norm="amp")
+                count_mesh = cgh2rg(jnp.fft.rfftn(count_mesh))
+                obs = sample('obs', dist.Normal(count_mesh, scale))
+            
+            elif self.lik_type == 'quad_gauss':
+                # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
+                delta = count_mesh / selec_mesh - 1
+                # print("delta", delta.mean(), delta.std(), delta.min(), delta.max())
+
+                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta)
+                scale1 *= selec_mesh**.5 * temp**.5
+                scale2 = syst['s_e2']
+                scale2 *= selec_mesh**.5
+
+                obs = sample("obs", QuadGaussian(count_mesh, scale1, scale2))
+                
+            elif self.lik_type == 'shash':
+                delta = count_mesh / selec_mesh - 1
+                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta)
+                scale1 *= selec_mesh**.5 * temp**.5
+                scale2 = syst['s_e2']
+                scale2 *= selec_mesh**.5 
+            
+                # NOTE: First order equivalence between QuadGauss(mean, scale1, scale2) and ShAsh(loc, scale, skew, tail)
+                # loc = mean - 4.8 * scale2
+                # scale = scale1
+                # skew = 3.5 * scale2 / scale1
+                # tail = 1 + 5.9 * (scale2 / scale1)**2
+                obs = sample("obs", SinhArcsinh(count_mesh - 4.8 * scale2, scale1, 3.5 * scale2 / scale1, 1 + 5.9 * (scale2 / scale1)**2))
+
             return obs 
+
+
+
+
+
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
@@ -1039,7 +1078,7 @@ class FieldLevelModel(Model):
             b1E_fid = b1_L2E(self.loc_fid['b1'])
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
-            noise_fid = self.loc_fid['s_0'] / self.count_fid
+            noise_fid = self.loc_fid['s_e'] / self.count_fid
 
             scale = (1 + self.selec_fid / noise_fid * boost_fid**2 * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
@@ -1049,7 +1088,7 @@ class FieldLevelModel(Model):
             b1E = b1_L2E(bias['b1'])
             count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
-            noise = syst['s_0'] / count
+            noise = syst['s_e'] / count
 
             scale = (1 + self.selec_fid / noise * boost**2 * pmesh)**.5
             transfer = pmesh**.5 / scale
@@ -1293,6 +1332,12 @@ class FieldLevelModel(Model):
         return chains
     
     def kaiser_post(self, seed, delta_obs, base=False, temp=1., scale_field=1.):
+        """
+        Return posterior on init field given obs field, 
+        as well as latent parameters fiducial values that are not in data.
+        For MCMC initilization purposes.
+        Assume a Kaiser linear Gaussian model.
+        """
         if jnp.isrealobj(delta_obs):
             delta_obs = jnp.fft.rfftn(delta_obs)
         
@@ -1300,9 +1345,8 @@ class FieldLevelModel(Model):
         delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
 
         b1E_fid = b1_L2E(self.loc_fid['b1'])
-        noise_fid = self.loc_fid['s_0'] / self.count_fid
-        fNL_bp, fNL_bpd = fNL_bias(self.loc_fid['fNL_bp'], self.loc_fid['fNL_bpd'], self.loc_fid['fNL'], 
-                             b1=self.loc_fid['b1'], b2=self.loc_fid['b2'], p=1., png_type=self.png_type)
+        noise_fid = self.loc_fid['s_e'] / self.count_fid
+        fNL_bp, fNL_bpd = fNL_bias(self.loc_fid, self.loc_fid, p=1., png_type=self.png_type)
         
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, noise=noise_fid, b1E=b1E_fid, 
                                        fNL_bp=fNL_bp, png_type=self.png_type, selec_fid=self.selec_fid, los=self.los_fid)

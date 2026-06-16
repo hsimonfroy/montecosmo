@@ -288,6 +288,21 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
 
 
 
+def _log1mexp(x):
+    """Numerically stable log(1 - exp(x)) for x <= 0."""
+    return jnp.where(x > -jnp.log(2.0),
+                     jnp.log(-jnp.expm1(x)),
+                     jnp.log1p(-jnp.exp(x)))
+
+
+def _log_diff_cdf(hi, lo):
+    """log(Phi(hi) - Phi(lo)) for hi >= lo, evaluated on the more accurate tail."""
+    use_upper = (hi + lo) > 0  # interval right of 0: work with survival function
+    lower = norm.logcdf(hi) + _log1mexp(norm.logcdf(lo) - norm.logcdf(hi))
+    upper = norm.logcdf(-lo) + _log1mexp(norm.logcdf(-hi) - norm.logcdf(-lo))
+    return jnp.where(use_upper, upper, lower)
+
+
 class SinhArcsinh(Distribution):
     """Sinh-arcsinh distribution (Jones & Pewsey 2009), standalone NumPyro implementation.
 
@@ -333,6 +348,17 @@ class SinhArcsinh(Distribution):
                 - 0.5 * jnp.log1p(w ** 2)
                 - jnp.log(self.scale))
 
+    def _to_normal(self, value):
+        # Inverse of the monotone increasing transform: standard normal variate Z.
+        w = (value - self.loc) / self.scale
+        return jnp.sinh(jnp.arcsinh(w) / self.tailweight - self.skewness)
+
+    def cdf(self, value):
+        return norm.cdf(self._to_normal(value))
+
+    def log_cdf(self, value):
+        return norm.logcdf(self._to_normal(value))
+
 
 
 class QuadGaussian(Distribution):
@@ -371,8 +397,28 @@ class QuadGaussian(Distribution):
         lp_gauss = -0.5*jnp.log(2*jnp.pi) - jnp.log(b) - 0.5*((value-self.loc)/b)**2
         return jnp.where(jnp.abs(a) < 1e-8, lp_gauss, lp_quad)
 
+    def log_cdf(self, value):
+        a, b = self.scale2, self.scale1
+        r = value - self.loc + a                        # a*eps^2 + b*eps <= r
+        D = b**2 + 4.0 * a * r                          # discriminant
+        D_safe = jnp.where(D > 0, D, 1.0)
+        sq = jnp.sqrt(D_safe)
+        a_safe = jnp.where(jnp.abs(a) < 1e-12, 1.0, a)
+        ep = (-b + sq) / (2.0 * a_safe)                 # two Gaussian preimages
+        em = (-b - sq) / (2.0 * a_safe)
+        # a > 0: parabola opens up, region is the interval [em, ep] (empty if D<0).
+        lc_pos = jnp.where(D > 0, _log_diff_cdf(ep, em), -jnp.inf)
+        # a < 0: parabola opens down, region is (-inf, ep] U [em, +inf) (all if D<0).
+        lc_neg = jnp.where(D > 0, jnp.logaddexp(norm.logcdf(ep), norm.logcdf(-em)), 0.0)
+        lc_quad = jnp.where(a > 0, lc_pos, lc_neg)
+        lc_gauss = norm.logcdf((value - self.loc) / b)  # scale2 -> 0 limit
+        return jnp.where(jnp.abs(a) < 1e-8, lc_gauss, lc_quad)
+
+    def cdf(self, value):
+        return jnp.exp(self.log_cdf(value))
+
     @property
-    def mean(self):     
+    def mean(self):
         return jnp.broadcast_to(self.loc, self.batch_shape)
     
     @property
