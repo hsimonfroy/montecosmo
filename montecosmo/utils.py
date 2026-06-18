@@ -426,6 +426,111 @@ class QuadGaussian(Distribution):
         return jnp.broadcast_to(self.scale1**2 + 2*self.scale2**2, self.batch_shape)
 
 
+
+
+from numpy.polynomial.hermite_e import hermegauss
+class TwoQuadGaussian(Distribution):
+    """Two-field quadratic-in-Gaussian noise, mean-subtracted:
+ 
+           obs = loc + scale1 * eps1 + scale2 * (eps2**2 - 1),
+           eps1, eps2 ~ N(0, 1)   INDEPENDENT.
+ 
+    This is the "naive expansion" counterpart of QuadGaussian: the linear and
+    quadratic responses are driven by two *independent* noise fields instead of
+    a single shared one. Same first two moments as the single-field model,
+ 
+        E[obs]   = loc
+        Var[obs] = scale1**2 + 2 * scale2**2,
+ 
+    but a different third moment (see note below), hence a genuinely different
+    distribution.
+ 
+    The density has no elementary closed form: marginalizing eps1 analytically
+    leaves obs | eps2 ~ N(loc + scale2*(eps2**2 - 1), scale1), and the remaining
+    1-D integral over eps2 is a Gaussian (x) shifted/scaled chi^2_1 convolution
+    (a parabolic-cylinder / Bessel-K_{1/4} function). We evaluate that one
+    integral by Gauss-Hermite quadrature against the N(0,1) weight, which is
+    smooth, fast, and fully differentiable.
+ 
+    Accuracy note: the integrand sharpens as scale2/scale1 grows. For a
+    perturbative non-Gaussian noise term (scale2 <~ scale1/3) n_quad=32 already
+    gives ~1e-5 relative error in the bulk; for scale2 ~ scale1 use n_quad ~ 96-128.
+    Reduces exactly to Normal(loc, scale1) as scale2 -> 0 (no special-casing needed).
+ 
+    Third-moment contrast (with the single-field QuadGaussian):
+        single field : E[(obs-loc)^3] = 2*scale2*(3*scale1**2 + 4*scale2**2)
+        two   fields : E[(obs-loc)^3] = 8*scale2**3
+    The difference, 6*scale1**2*scale2, is exactly the linear-quadratic
+    covariance that exists only when both share the same eps.
+    """
+ 
+    arg_constraints = {"loc": constraints.real,
+                       "scale1": constraints.positive,
+                       "scale2": constraints.real}
+    support = constraints.real
+    reparametrized_params = ["loc", "scale1", "scale2"]
+ 
+    def __init__(self, loc=0.0, scale1=1.0, scale2=0.0, *, n_quad=64,
+                 validate_args=None):
+        self.loc, self.scale1, self.scale2 = promote_shapes(loc, scale1, scale2)
+        bs = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale1),
+                                  jnp.shape(scale2))
+        # Gauss-Hermite nodes/weights for E_{N(0,1)}[ f ] ~ sum wn_i f(z_i):
+        #   hermegauss gives  int f(x) e^{-x^2/2} dx ~ sum w_i f(x_i),  sum w = sqrt(2pi)
+        z, w = hermegauss(n_quad)
+        self._gh_z = jnp.asarray(z)                          # (n_quad,)
+        self._gh_logw = jnp.asarray(np.log(w) - 0.5 * np.log(2 * np.pi))  # log(wn)
+        self.n_quad = n_quad
+        super().__init__(batch_shape=bs, validate_args=validate_args)
+ 
+    def sample(self, key, sample_shape=()):
+        k1, k2 = jr.split(key)
+        shp = sample_shape + self.batch_shape
+        eps1 = jr.normal(k1, shp)
+        eps2 = jr.normal(k2, shp)
+        return self.loc + self.scale1 * eps1 + self.scale2 * (eps2 ** 2 - 1.0)
+ 
+    def _quad_axes(self, value):
+        # broadcast helpers: put the quadrature axis as a new leading axis 0
+        nd = jnp.ndim(value)
+        zr = self._gh_z.reshape((-1,) + (1,) * nd)           # (n_quad, 1...,1)
+        logwr = self._gh_logw.reshape((-1,) + (1,) * nd)
+        mu = self.loc + self.scale2 * (zr ** 2 - 1.0)        # (n_quad, *batch)
+        return zr, logwr, mu
+ 
+    @validate_sample
+    def log_prob(self, value):
+        _, logwr, mu = self._quad_axes(value)
+        v = value[None, ...]
+        s1 = self.scale1
+        comp = logwr + norm.logpdf(v, loc=mu, scale=s1)       # (n_quad, *shape)
+        return logsumexp(comp, axis=0)
+ 
+    def log_cdf(self, value):
+        _, logwr, mu = self._quad_axes(value)
+        v = value[None, ...]
+        s1 = self.scale1
+        comp = logwr + norm.logcdf((v - mu) / s1)
+        return logsumexp(comp, axis=0)
+ 
+    def cdf(self, value):
+        return jnp.exp(self.log_cdf(value))
+ 
+    @property
+    def mean(self):
+        return jnp.broadcast_to(self.loc, self.batch_shape)
+ 
+    @property
+    def variance(self):
+        return jnp.broadcast_to(self.scale1 ** 2 + 2 * self.scale2 ** 2,
+                                self.batch_shape)
+ 
+
+
+
+
+
+
 ##############################
 # Fourier (Memory efficient) #
 ##############################
