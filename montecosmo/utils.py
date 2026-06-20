@@ -8,6 +8,7 @@ from functools import partial, wraps
 import numpy as np
 from jax import jit, numpy as jnp, random as jr, vmap, grad, tree, lax
 
+from numpy.polynomial.hermite_e import hermegauss
 from jax.scipy.special import logsumexp, gammaln
 from jax.scipy.stats import norm
 
@@ -303,61 +304,92 @@ def _log_diff_cdf(hi, lo):
     return jnp.where(use_upper, upper, lower)
 
 
-class SinhArcsinh(Distribution):
-    """Sinh-arcsinh distribution (Jones & Pewsey 2009), standalone NumPyro implementation.
+_SHASH_QUAD_DEG = 20
+_shash_x, _shash_w = hermegauss(_SHASH_QUAD_DEG)
+_shash_x = jnp.asarray(_shash_x)
+_shash_w = jnp.asarray(_shash_w / np.sqrt(2 * np.pi))   # E_{N(0,1)}[f] = sum_i w_i f(x_i)
+_shash_asinh_x = jnp.arcsinh(_shash_x)
 
-    Matches tfp.distributions.SinhArcsinh (Normal base): if Z ~ Normal(0, 1), then
-        Y = loc + scale * sinh((arcsinh(Z) + skewness) * tailweight).
-    - skewness > 0 (resp. < 0) skews right (resp. left).
-    - tailweight > 1 (resp. < 1) gives heavier (resp. lighter) tails than Normal.
-    - skewness=0, tailweight=1 recovers Normal(loc, scale).
+
+class SinhArcsinh(Distribution):
+    """Sinh-Arcsinh of Normal distribution, standardized so loc/scale ARE the mean/std.
+
+    Raw transform (eps ~ N(0,1)):  Z = sinh((asinh(eps) + skewness) * tailweight),
+    then x = mean + std * (Z - E[Z]) / sqrt(Var[Z]).  Hence E[x]=mean, SD[x]=std for
+    every (skewness, tailweight); shape (skew/kurtosis) is orthogonal to mean/std,
+    which removes the loc<->skew (and scale<->shape) sampling ridge of the raw form.
+    tailweight>1 (resp. <1) -> heavier (resp. lighter) tails; skewness>0 -> right skew;
+    skewness=0, tailweight=1 -> Normal(mean, std).
+    E[Z], Var[Z] are computed by Gauss-Hermite quadrature (degree _SHASH_QUAD_DEG).
     """
-    arg_constraints = {
-        "loc": constraints.real,
-        "scale": constraints.positive,
-        "skewness": constraints.real,
-        "tailweight": constraints.positive,
-    }
+    arg_constraints = {"loc": constraints.real, "scale": constraints.positive,
+                       "skewness": constraints.real, "tailweight": constraints.positive}
     support = constraints.real
     reparametrized_params = ["loc", "scale", "skewness", "tailweight"]
 
-    def __init__(self, loc=0.0, scale=1.0, skewness=0.0, tailweight=1.0, *, validate_args=None):
-        batch_shape = lax.broadcast_shapes(
-            jnp.shape(loc), jnp.shape(scale), jnp.shape(skewness), jnp.shape(tailweight))
+    def __init__(self, mean=0.0, std=1.0, skewness=0.0, tailweight=1.0, *, validate_args=None):
+        batch_shape = lax.broadcast_shapes(jnp.shape(mean), jnp.shape(std),
+                                           jnp.shape(skewness), jnp.shape(tailweight))
+        # attribute names match arg_constraints keys (pytree fields); loc/scale = true mean/std
         self.loc, self.scale, self.skewness, self.tailweight = promote_shapes(
-            loc, scale, skewness, tailweight)
+            mean, std, skewness, tailweight)
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
+    def _standardizer(self):
+        # mean m and std s of the raw Z under eps ~ N(0,1), per-element via GH quadrature.
+        # Computed lazily (not stored): numpyro tree_unflatten bypasses __init__.
+        # Without standardizer, the local moment matching between 
+        # QuadGauss(mean, scale1, scale2) and ShAsh(loc, scale, skew, tail) is
+        # loc = mean - 4.8 * scale2
+        # scale = scale1
+        # skew = 3.5 * scale2 / scale1
+        # tail = 1 + 5.9 * (scale2 / scale1)**2
+        a = _shash_asinh_x.reshape((-1,) + (1,) * len(self.batch_shape))
+        Z = jnp.sinh((a + self.skewness) * self.tailweight)        # (Q, *batch)
+        m = jnp.tensordot(_shash_w, Z, axes=(0, 0))
+        v = jnp.tensordot(_shash_w, Z ** 2, axes=(0, 0)) - m ** 2
+        return m, jnp.sqrt(v)
+
     def sample(self, key, sample_shape=()):
-        shape = sample_shape + self.batch_shape + self.event_shape
-        z = jr.normal(key, shape)
-        w = jnp.sinh((jnp.arcsinh(z) + self.skewness) * self.tailweight)
-        return self.loc + self.scale * w
+        m, s = self._standardizer()
+        eps = jr.normal(key, sample_shape + self.batch_shape + self.event_shape)
+        Z = jnp.sinh((jnp.arcsinh(eps) + self.skewness) * self.tailweight)
+        return self.loc + self.scale * (Z - m) / s
+
+    def _to_normal(self, value):
+        # Inverse of the monotone increasing transform -> standard normal variate eps.
+        m, s = self._standardizer()
+        Z = m + s * (value - self.loc) / self.scale
+        eps = jnp.sinh(jnp.arcsinh(Z) / self.tailweight - self.skewness)
+        return eps, Z, s
 
     @validate_sample
     def log_prob(self, value):
-        w = (value - self.loc) / self.scale
-        # Map back to the standard normal variate Z (inverse transform).
-        z = jnp.sinh(jnp.arcsinh(w) / self.tailweight - self.skewness)
-        # log N(z) + log|dz/dw| + log|dw/dvalue|,
-        # with |dz/dw| = sqrt(1+z^2)/(tailweight*sqrt(1+w^2)).
-        return (-0.5 * jnp.log(2 * jnp.pi)
-                - 0.5 * z ** 2
-                + 0.5 * jnp.log1p(z ** 2)
-                - jnp.log(self.tailweight)
-                - 0.5 * jnp.log1p(w ** 2)
-                - jnp.log(self.scale))
-
-    def _to_normal(self, value):
-        # Inverse of the monotone increasing transform: standard normal variate Z.
-        w = (value - self.loc) / self.scale
-        return jnp.sinh(jnp.arcsinh(w) / self.tailweight - self.skewness)
+        eps, Z, s = self._to_normal(value)
+        # log N(eps) + log|deps/dZ| + log|dZ/dvalue|, with the +log s - log scale Jacobian.
+        return (-0.5 * jnp.log(2 * jnp.pi) - 0.5 * eps ** 2 + 0.5 * jnp.log1p(eps ** 2)
+                - jnp.log(self.tailweight) - 0.5 * jnp.log1p(Z ** 2)
+                + jnp.log(s) - jnp.log(self.scale))
 
     def cdf(self, value):
-        return norm.cdf(self._to_normal(value))
+        return norm.cdf(self._to_normal(value)[0])
 
     def log_cdf(self, value):
-        return norm.logcdf(self._to_normal(value))
+        return norm.logcdf(self._to_normal(value)[0])
+
+    @property
+    def mean(self):
+        return jnp.broadcast_to(self.loc, self.batch_shape)
+
+    @property
+    def variance(self):
+        return jnp.broadcast_to(self.scale ** 2, self.batch_shape)
+
+
+
+
+
+
 
 
 
@@ -365,7 +397,9 @@ class QuadGaussian(Distribution):
     """Quadratic-in-Gaussian noise, mean-subtracted:
            obs = loc + scale1 * eps + scale2 * (eps**2 - 1),   eps ~ N(0,1)
        so E[obs] = loc and Var[obs] = scale1**2 + 2*scale2**2.
-       Reduces to Normal(loc, scale1) as scale2 -> 0."""
+       Reduces to Normal(loc, scale1) as scale2 -> 0.
+       Careful, has support bounded by loc - scale2 - scale1**2 / (4*scale2)
+       (upper or lower bound depending on sign of scale2)"""
     arg_constraints = {"loc": constraints.real,
                        "scale1": constraints.positive,
                        "scale2": constraints.real}
@@ -424,6 +458,106 @@ class QuadGaussian(Distribution):
     @property
     def variance(self): 
         return jnp.broadcast_to(self.scale1**2 + 2*self.scale2**2, self.batch_shape)
+
+
+class TwoQuadGaussian(Distribution):
+    """Two-field quadratic-in-Gaussian noise, mean-subtracted:
+ 
+           obs = loc + scale1 * eps1 + scale2 * (eps2**2 - 1),
+           eps1, eps2 ~ N(0, 1)   INDEPENDENT.
+ 
+    This is the "naive expansion" counterpart of QuadGaussian: the linear and
+    quadratic responses are driven by two *independent* noise fields instead of
+    a single shared one. Same first two moments as the single-field model,
+ 
+        E[obs]   = loc
+        Var[obs] = scale1**2 + 2 * scale2**2,
+ 
+    but a different third moment (see note below), hence a genuinely different
+    distribution.
+ 
+    The density has no elementary closed form: marginalizing eps1 analytically
+    leaves obs | eps2 ~ N(loc + scale2*(eps2**2 - 1), scale1), and the remaining
+    1-D integral over eps2 is a Gaussian (x) shifted/scaled chi^2_1 convolution
+    (a parabolic-cylinder / Bessel-K_{1/4} function). We evaluate that one
+    integral by Gauss-Hermite quadrature against the N(0,1) weight, which is
+    smooth, fast, and fully differentiable.
+ 
+    Accuracy note: the integrand sharpens as scale2/scale1 grows. For a
+    perturbative non-Gaussian noise term (scale2 <~ scale1/3) n_quad=32 already
+    gives ~1e-5 relative error in the bulk; for scale2 ~ scale1 use n_quad ~ 96-128.
+    Reduces exactly to Normal(loc, scale1) as scale2 -> 0 (no special-casing needed).
+ 
+    Third-moment contrast (with the single-field QuadGaussian):
+        single field : E[(obs-loc)^3] = 2*scale2*(3*scale1**2 + 4*scale2**2)
+        two   fields : E[(obs-loc)^3] = 8*scale2**3
+    The difference, 6*scale1**2*scale2, is exactly the linear-quadratic
+    covariance that exists only when both share the same eps.
+    """
+ 
+    arg_constraints = {"loc": constraints.real,
+                       "scale1": constraints.positive,
+                       "scale2": constraints.real}
+    support = constraints.real
+    reparametrized_params = ["loc", "scale1", "scale2"]
+ 
+    def __init__(self, loc=0.0, scale1=1.0, scale2=0.0, *, n_quad=64,
+                 validate_args=None):
+        self.loc, self.scale1, self.scale2 = promote_shapes(loc, scale1, scale2)
+        bs = lax.broadcast_shapes(jnp.shape(loc), jnp.shape(scale1),
+                                  jnp.shape(scale2))
+        # Gauss-Hermite nodes/weights for E_{N(0,1)}[ f ] ~ sum wn_i f(z_i):
+        #   hermegauss gives  int f(x) e^{-x^2/2} dx ~ sum w_i f(x_i),  sum w = sqrt(2pi)
+        z, w = hermegauss(n_quad)
+        self._gh_z = jnp.asarray(z)                          # (n_quad,)
+        self._gh_logw = jnp.asarray(np.log(w) - 0.5 * np.log(2 * np.pi))  # log(wn)
+        self.n_quad = n_quad
+        super().__init__(batch_shape=bs, validate_args=validate_args)
+ 
+    def sample(self, key, sample_shape=()):
+        k1, k2 = jr.split(key)
+        shp = sample_shape + self.batch_shape
+        eps1 = jr.normal(k1, shp)
+        eps2 = jr.normal(k2, shp)
+        return self.loc + self.scale1 * eps1 + self.scale2 * (eps2 ** 2 - 1.0)
+ 
+    def _quad_axes(self, value):
+        # broadcast helpers: put the quadrature axis as a new leading axis 0
+        nd = jnp.ndim(value)
+        zr = self._gh_z.reshape((-1,) + (1,) * nd)           # (n_quad, 1...,1)
+        logwr = self._gh_logw.reshape((-1,) + (1,) * nd)
+        mu = self.loc + self.scale2 * (zr ** 2 - 1.0)        # (n_quad, *batch)
+        return zr, logwr, mu
+ 
+    @validate_sample
+    def log_prob(self, value):
+        _, logwr, mu = self._quad_axes(value)
+        v = value[None, ...]
+        s1 = self.scale1
+        comp = logwr + norm.logpdf(v, loc=mu, scale=s1)       # (n_quad, *shape)
+        return logsumexp(comp, axis=0)
+ 
+    def log_cdf(self, value):
+        _, logwr, mu = self._quad_axes(value)
+        v = value[None, ...]
+        s1 = self.scale1
+        comp = logwr + norm.logcdf((v - mu) / s1)
+        return logsumexp(comp, axis=0)
+ 
+    def cdf(self, value):
+        return jnp.exp(self.log_cdf(value))
+ 
+    @property
+    def mean(self):
+        return jnp.broadcast_to(self.loc, self.batch_shape)
+ 
+    @property
+    def variance(self):
+        return jnp.broadcast_to(self.scale1 ** 2 + 2 * self.scale2 ** 2,
+                                self.batch_shape)
+ 
+
+
 
 
 ##############################
@@ -831,15 +965,15 @@ def scale_shape(shape, scale=1.):
     return 2 * np.rint(shape * scale / 2).astype(int)
     
 
-def mesh2masked(mesh, mask=None):
-    if mask is None:
+def mesh2masked(mesh, mask=...):
+    if mask is ...:
         return mesh
     else:
         return mesh[...,mask]
 
 
-def masked2mesh(masked, mask=None):
-    if mask is None:
+def masked2mesh(masked, mask=...):
+    if mask is ...:
         return masked
     else:
         shape = jnp.shape(masked)[:-1] + jnp.shape(mask)

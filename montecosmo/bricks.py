@@ -186,7 +186,7 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
         if png_type is not None:
             trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
             phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
-            delta += fNL_bp * phi # TODO: fNL_bp(a)
+            delta += fNL_bp * phi # TODO: fNL_bp(a)?
 
     else: # curved-sky
         # # 8 FFTs
@@ -209,8 +209,7 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
     return 1 + delta
 
 
-def kaiser_posterior(delta_obs, cosmo:Cosmology, a, box_size, noise, b1E, 
-                     fNL_bp=0., png_type=None, selec_fid=1., los=(0.,0.,0.)):
+def kaiser_posterior(delta_obs, cosmo:Cosmology, a, box_size, var_noise, b1E, los=(0.,0.,0.)):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -220,10 +219,10 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, a, box_size, noise, b1E,
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
     pmesh = lin_power_mesh(cosmo, mesh_shape, box_size)
-    boost = kaiser_boost(cosmo, a, mesh_shape, box_size, b1E, fNL_bp, png_type, los=los)
+    boost = kaiser_boost(cosmo, a, mesh_shape, box_size, b1E, los=los)
 
-    stds = (pmesh / (1 + selec_fid / noise * boost**2 * pmesh))**.5
-    means = stds**2 * boost * selec_fid / noise * delta_obs
+    stds = (pmesh / (1 + boost**2 / var_noise * pmesh))**.5
+    means = stds**2 * boost / var_noise * delta_obs
     return means, stds
 
 
@@ -350,15 +349,18 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
         phi_nab2_pos = read(pos, phi_nab2, read_order)
         weights += fNL_bn2p * phi_nab2_pos
     else: 
-        phi_pos = None ###XXX
+        phi_pos = 0. ###XXX
 
 
     # Apply b2, punctual term
     delta2_pos = delta_pos**2
-    # delta2_pos -= delta2_pos.mean() * (1 + fNL * phi_pos) * (1 + 68 / 21 * delta_pos)
-    delta2_pos -= delta2_pos.mean()
-    # print("delta2_pos.std()", delta2_pos.std())
+    sigma2 = delta2_pos.mean()
+    # Unadvected renormalization  
+    # delta2_pos -= sigma2 * (1 + 4 * fNL * phi_pos)
+    # Advected renormalization
+    delta2_pos -= sigma2
     weights += b2 * delta2_pos / 2
+    # debug.print('delta2_pos mean {mean} std {std}', mean=delta2_pos.mean(), std=delta2_pos.std())
 
     # Apply bshear2, non-punctual term
     pot = init_mesh * invlaplace_hat(kvec)
@@ -375,7 +377,11 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
             shear2 += 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
 
     shear2_pos = read(pos, shear2, read_order) * growths.squeeze()**2
-    weights += bs2 * (shear2_pos - shear2_pos.mean())
+    # Unadvected renormalization
+    # shear2_pos -= 2 / 3 * sigma2 * (1 + 4 * fNL * phi_pos) # <s^2> = 2/3 <delta^2>
+    # Advected renormalization
+    shear2_pos -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
+    weights += bs2 * shear2_pos
 
     # Apply bnabla2, higher-order term
     delta_nab2 = jnp.fft.irfftn( - kmesh**2 * init_mesh)
@@ -383,11 +389,13 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     delta_nab2_pos = read(pos, delta_nab2, read_order) * growths.squeeze()
     weights += bn2 * delta_nab2_pos
 
-    # # Apply b3, punctual term
+    # Apply b3, punctual term
     delta3_pos = delta_pos**3
-    delta3_pos -= 3 * delta2_pos.mean() * delta_pos
-    weights += b3 * delta3_pos / 3
-    # print("delta3_pos.std()", delta3_pos.std())
+    # Unadvected renormalization
+    # delta3_pos -= 3 * sigma2 * delta_pos * (1 + 4 * fNL * phi_pos)
+    # Advected renormalization
+    delta3_pos -= 3 * sigma2 * delta_pos
+    weights += b3 * delta3_pos / 6
 
 
     # Compute separately bnablapar, velocity bias term
@@ -441,11 +449,13 @@ def fNL_bias(png, bias, p=1., png_type=None):
     if png_type == 'fNL':
         fNL_bp = fNL * b_phi(b1, p)
         fNL_bpd = fNL * b_phi_delta(b1, b2)
+
     elif png_type == 'bias':
         fNL_bp = fNL * fNL_bp
         fNL_bpd = fNL * fNL_bpd
 
     # fNL_bpd = fNL_bpd - 2 * fNL * b1 ##### XXX
+    # print("====== fNL_bp repramed ======")
     png['fNL_bp'], png['fNL_bpd'] = fNL_bp, fNL_bpd
     return png
 
@@ -454,8 +464,13 @@ def fNL_bias(png, bias, p=1., png_type=None):
 
 def eulerian_bias(cdm_mesh, phi_mesh, box_size, 
                     bias, png, png_type=None):
+    """
+    Renormalization of Eulerian operators in eq. 3.38, 7.10, 7.11
+    of http://arxiv.org/abs/1611.09787
+    """
+    
     b1, b2, bs2, bn2 = bias['b1'], bias['b2'], bias['bs2'], bias['bn2']
-    fNL_bp, fNL_bpd = png['fNL_bp'], png['fNL_bpd']
+    fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
     
 
     cdm_mesh = cdm_mesh.at[0,0,0].set(0.) # ensure zero mean
@@ -483,7 +498,13 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
 
 
     # Apply b2, punctual term
-    weights += b2 * (delta**2 - (delta**2).mean())
+    delta2 = delta**2
+    sigma2 = delta2.mean()
+    # # Unadvected renormalization
+    # delta2 -= sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh)
+    # Advected renormalization
+    delta2 -= sigma2
+    weights += b2 * delta2 / 2
 
     # Apply bshear2, non-punctual term
     pot = cdm_mesh * invlaplace_hat(kvec)
@@ -499,7 +520,11 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
             nabj = gradient_hat(kvec, j)
             shear2 += 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
 
-    weights += bs2 * (shear2 - shear2.mean())
+    # # Unadvected renormalization
+    # shear2 -= 2 / 3 * sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh) # <s^2> = 2/3 <delta^2>
+    # Advected renormalization
+    shear2 -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
+    weights += bs2 * shear2
 
     # Apply bnabla2, higher-order term
     delta_nab2 = jnp.fft.irfftn( - kmesh**2 * cdm_mesh)
@@ -1001,8 +1026,7 @@ def catalog2count(data, mask_mesh, cosmo:Cosmology, paint_shape:tuple|float,
                         paint_order=paint_order, interlace_order=interlace_order, paint_deconv=paint_deconv)
     count_mesh = jnp.fft.irfftn(count_mesh)
     count_mesh *= np.divide(paint_shape, count_shape).prod()
-    ngbars = count_mesh[mask_mesh].mean() / np.divide(box_size, count_shape).prod()
-    return count_mesh, ngbars
+    return count_mesh
 
 
 def set_radial_count(mesh, rmesh, redges, rcounts):

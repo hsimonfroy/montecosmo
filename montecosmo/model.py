@@ -26,7 +26,7 @@ from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial, distr_angular, mse_radius, mse_value, mse_wave
 from montecosmo.utils import (ysafe_dump, ysafe_load,
                               cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked, scale_shape,
-                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, SinhArcsinh, QuadGaussian, rg2cgh2)
+                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, SinhArcsinh, SinhArcsinhOld, QuadGaussian, TwoQuadGaussian, rg2cgh2)
 from montecosmo.chains import Chains
 
 
@@ -40,7 +40,7 @@ default_config={
         # 'box_size': 3 * (1280.,), # in Mpc/h
         'k_cut': jnp.inf, # in h/Mpc, if None, k_nyquist
         # Init
-        'init_power':None, # if None, use EH approx, if str or Path, path to initial (wavenumber, power) file
+        'register_init':None, # if None, use EH approx, if str or Path, path to initial (wavenumber, power) file
         'png_type': None, # None, 'fNL', 'fNL_bias'
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
@@ -62,7 +62,7 @@ default_config={
         'a_obs':None, # if None, light-cone
         'curved_sky':True, # curved vs. flat sky
         'ap_auto': None, # auto AP vs. parametric AP, if None, no AP
-        'meshes':None, # if float, padded fraction, if str or Path, path to painted meshes file
+        'register_obs':None, # if float, padded fraction, if str or Path, path to painted meshes file
         'n_rbins':None, # if None, set to maximum number of radial bins
         'lik_type': 'quad_gauss', # poisson, fourier_gauss, quad_gauss
         'bias_type': 'lagrangian', # lagrangian, eulerian
@@ -70,7 +70,7 @@ default_config={
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
         'latents': {
                 'Omega_m': {'group':'cosmo', 
-                            'label':'{\\Omega}_m', 
+                            'label':r'{\Omega}_m', 
                             'loc':0.3111,
                             # 'loc': 0.3137721, 
                             'scale':0.1,
@@ -78,21 +78,21 @@ default_config={
                             'low': 0.05, # XXX: Omega_m < Omega_b implies nan
                             'high': 1.},
                 # 'Omega_c': {'group':'cosmo', 
-                #             'label':'{\\Omega}_c', 
+                #             'label':r'{\Omega}_c', 
                 #             'loc':0.2607, 
                 #             'scale':0.1,
                 #             'scale_fid':1e-2,
                 #             'low': 0.,
                 #             'high': 1.},
                 # 'Omega_b': {'group':'cosmo', 
-                #             'label':'{\\Omega}_b', 
+                #             'label':r'{\Omega}_b', 
                 #             'loc':0.0490, 
                 #             'scale':0.1,
                 #             'scale_fid':1e-2,
                 #             'low': 0.,
                 #             'high': 1.},
                 'sigma8': {'group':'cosmo',
-                            'label':'{\\sigma}_8',
+                            'label':r'{\sigma}_8',
                             'loc':0.8102,
                             # 'loc': 0.8076353990239834,
                             'scale':1e-1, # Redshift-space
@@ -102,50 +102,50 @@ default_config={
                             'low': 0.,
                             'high':jnp.inf,},
                 'b1': {'group':'bias',
-                            'label':'{b}_1',
+                            'label':r'{b}_1',
                             # 'label':'{b}_1 \\frac{\\s_8}{\\s_8^\\mathrm{fid}}',
                             'loc':1.,
                             'scale':1e2,
                             'scale_fid':1e-2,
                             },
                 'b2': {'group':'bias',
-                            'label':'{b}_2',
+                            'label':r'{b}_2',
                             'loc':0.,
                             'scale':1e2,
                             'scale_fid':3e-2,
                             },
                 'bs2': {'group':'bias',
-                            'label':'{b}_{s^2}',
+                            'label':r'{b}_{s^2}',
                             'loc':0.,
                             'scale':1e2,
                             'scale_fid':1e-1,
                             },
                 'bn2': {'group':'bias',
-                            'label':'{b}_{\\nabla^2}',
+                            'label':r'{b}_{\nabla^2}',
                             'loc':0.,
                             'scale':1e3,
                             'scale_fid':1e0,
                             },
                 'bnpar': {'group':'bias',
-                            'label':'{b}_{\\nabla_\\parallel}',
+                            'label':r'{b}_{\nabla_\parallel}',
                             'loc':0.,
                             'scale':1e2,
                             'scale_fid':1e0,
                             },
                 'b3': {'group':'bias',
-                            'label':'{b}_{3}',
+                            'label':r'{b}_{3}',
                             'loc':0.,
                             'scale':1e2,
                             'scale_fid':3e-2,
                             },                            
                 'fNL': {'group':'png',
-                            'label':'{f}_\\mathrm{NL}',
+                            'label':r'{f}_\mathrm{NL}',
                             'loc':0.,
                             'scale':3e3,
                             'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
-                            'label':'{f}_\mathrm{NL} b_\phi',
+                            'label':r'{f}_\mathrm{NL} b_\phi',
                             'loc':0.,
                             'scale':3e3,
                             'scale_fid':3e1,
@@ -159,8 +159,8 @@ default_config={
                 'fNL_bn2p': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_{\nabla^2\phi}',
                             'loc':0.,
-                            'scale':3e4,
-                            'scale_fid':3e3,
+                            'scale':1e8,
+                            'scale_fid':3e5,
                             },
                 'alpha_iso': {'group':'ap',
                                 'label':r'{\alpha}_\mathrm{iso}',
@@ -191,6 +191,7 @@ default_config={
                 's_e': {'group':'syst',
                                 'label':r'{s}_{\epsilon}',
                                 'loc':1.,
+                                # 'scale':1e-1,
                                 'scale':1.,
                                 'scale_fid':3e-3,
                                 'low':0.,
@@ -210,14 +211,14 @@ default_config={
                                 },
                 's_ed': {'group':'syst',
                                 'label':r'{s}_{\epsilon\delta}',
-                                'loc':1.,
-                                'scale':1.,
+                                'loc':0.,
+                                'scale':1e1,
                                 'scale_fid':1e-2,
                                 },
                 's_e2': {'group':'syst',
                                 'label':r'{s}_{\epsilon^2}',
-                                'loc':1.,
-                                'scale':1.,
+                                'loc':0.,
+                                'scale':1e1,
                                 'scale_fid':3e-3,
                                 },
                 # 's_phi': {'group':'syst',
@@ -458,7 +459,7 @@ class FieldLevelModel(Model):
     box_rotvec:np.ndarray
     k_cut:None|float
     # Init  
-    init_power:None|str|Path
+    register_init:None|str|Path
     png_type:None|str
     # Evolution
     evolution:str
@@ -480,7 +481,7 @@ class FieldLevelModel(Model):
     a_obs:None|float
     curved_sky:bool
     ap_auto:bool
-    meshes:None|float|str|Path
+    register_obs:None|float|str|Path
     n_rbins:None|int
     lik_type:str
     bias_type:str
@@ -490,6 +491,47 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         super().__post_init__()
+
+        # Initial mesh and power spectrum
+        if self.register_init is None:
+            self.init_kpow = None
+            self.init_mesh = None
+        elif isinstance(self.register_init, (str, Path.__base__)):
+            self.register_init = str(self.register_init) # cast to str to allow yaml saving
+            register_init = np.load(self.register_init)
+            self.init_kpow = register_init.get('init_kpow', None) # normalized to sigma8=1
+            self.init_mesh = register_init.get('init_mesh', register_init.get('init_fake', None))
+        else:
+            raise ValueError("register_init should be None, str, or Path.")
+        
+        # Load data and selection, along with their geometry
+        # TODO: might implement selection in Lagrangian: 
+        # still requires the eulerian selec, to be read and used in likelihood, 
+        # but can use lagrangian for computing the product delta * selec. 
+        # However, can lack consistency with likelihood
+        if self.register_obs is None:
+            self.selec_mesh = np.array(1.)
+            self.mask_mesh = ...
+            self.selec_fid = np.array(1.)
+        elif isinstance(self.register_obs, float):
+            # TODO: to fix shapes
+            self.selec_mesh = top_hat_selection(self.evol_shape, self.register_obs, norm_order=np.inf, pow_order=np.inf)
+            self.selec_mesh *= gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
+                                self.evol_shape, None, None, order=4.)
+            self.mask_mesh = self.selec_mesh > 0
+            self.selec_mesh /= self.selec_mesh[self.mask_mesh].mean()
+            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
+        elif isinstance(self.register_obs, (str, Path.__base__)):
+            self.register_obs = str(self.register_obs) # cast to str to allow yaml saving
+            register_obs = np.load(self.register_obs)
+            self.selec_mesh = register_obs['selec_mesh']
+            self.mask_mesh = register_obs['mask_mesh']
+            self.count_mesh = register_obs['count_mesh']
+            self.latents['ngbars']['loc'] = register_obs['ngbars'] # before _validate_rbins
+            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
+        else:
+            raise ValueError("register_obs should be None, float, str, or Path.")
+        
         # Geometry
         self.cell_length = float(self.cell_length)
         self.box_center = np.asarray(self.box_center)
@@ -517,44 +559,6 @@ class FieldLevelModel(Model):
             mask = top_hat(kvec, self.k_cut)
             self.cut_mask = np.array(cgh2rg(mask, norm="amp"), dtype=bool)
 
-        # Initial power spectrum
-        if self.init_power is None:
-            self.init_kpow = None
-        elif isinstance(self.init_power, (str, Path.__base__)):
-            self.init_power = str(self.init_power) # cast to str to allow yaml saving
-            self.init_kpow = np.load(self.init_power)
-        else:
-            raise ValueError("init_power should be None, str, or Path.")
-        
-        # Selection function
-        # TODO: might implement selection in Lagrangian: 
-        # still requires the eulerian selec, to be read and used in likelihood, 
-        # but can use lagrangian for computing the product delta * selec. 
-        # However, can lack consistency with likelihood
-        if self.meshes is None:
-            self.selec_mesh = np.array(1.)
-            self.mask_mesh = None
-            self.selec_fid = np.array(1.)
-        elif isinstance(self.meshes, float):
-            # TODO: to fix shapes
-            self.selec_mesh = top_hat_selection(self.evol_shape, self.meshes, norm_order=np.inf, pow_order=np.inf)
-            self.selec_mesh *= gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
-                                self.evol_shape, None, None, order=4.)
-            self.mask_mesh = self.selec_mesh > 0
-            self.selec_mesh /= self.selec_mesh[self.mask_mesh].mean()
-            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
-        elif isinstance(self.meshes, (str, Path.__base__)):
-            self.meshes = str(self.meshes) # cast to str to allow yaml saving
-            meshes = np.load(self.meshes)
-            self.selec_mesh = meshes['selec_mesh']
-            self.mask_mesh = meshes['mask_mesh']
-            self.count_mesh = meshes['count_mesh']
-            self.latents['ngbars']['loc'] = meshes['ngbars'] # before _validate_rbins
-            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
-        else:
-            raise ValueError("meshes should be None, float, str, or Path.")
-        
-
 
         # Imaging
         # TODO
@@ -565,9 +569,9 @@ class FieldLevelModel(Model):
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
-        self.loc_fid = self._loc_fid()
 
         # Fiducial quantities
+        self.loc_fid = self._loc_fid()
         self.count_fid = self.loc_fid['ngbars'].mean() * self.cell_length**3
         self.cosmo_fid = get_cosmology(**self.loc_fid)
         _, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape,
@@ -575,6 +579,8 @@ class FieldLevelModel(Model):
         self.a_fid = g2a(self.cosmo_fid, jnp.mean(a2g(self.cosmo_fid, a)))
         los = safe_div(self.box_center, np.linalg.norm(self.box_center))
         self.los_fid = self.box_rot.apply(los, inverse=True) # cell los
+        self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
+
 
         # TODO: cell_length_init, cell_length_final, count_fid_init, count_fid_final 
 
@@ -805,7 +811,6 @@ class FieldLevelModel(Model):
             rcounts = syst['ngbars'] * self.cell_length**3
             # posit_fn = lambda x: jnp.maximum(x, 1e-9)
             # posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
-            # posit_fn = lambda x: jnp.abs(x)**2
             posit_fn = lambda x: jnp.abs(x)
 
             count_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
@@ -823,10 +828,10 @@ class FieldLevelModel(Model):
 
 
             if self.lik_type == 'poisson':
-                obs = sample('obs', dist.Poisson(count_mesh**(1 / temp)))
+                obs = sample('obs', dist.Poisson(posit_fn(count_mesh)**(1 / temp)))
 
             elif self.lik_type == 'fourier_gauss':
-                assert self.mask_mesh is None, "Fourier likelihood not implemented for cut-sky."
+                assert self.mask_mesh is ..., "Fourier likelihood not implemented for cut-sky."
                 kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
                 kmesh = sum(ki**2 for ki in kvec)**.5
                 mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
@@ -839,37 +844,49 @@ class FieldLevelModel(Model):
                 obs = sample('obs', dist.Normal(count_mesh, scale))
             
             elif self.lik_type == 'quad_gauss':
-                # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 delta = count_mesh / selec_mesh - 1
-                # print("delta", delta.mean(), delta.std(), delta.min(), delta.max())
-
-                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta)
+                # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
+                # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
+                
+                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = syst['s_e2']
                 scale2 *= selec_mesh**.5
 
+                # NOTE: QuadGaussian has a variable-dependent bounded support
+                # that can make evaluations venture outside easily. 
                 obs = sample("obs", QuadGaussian(count_mesh, scale1, scale2))
+
+            elif self.lik_type == 'two_quad_gauss':
+                delta = count_mesh / selec_mesh - 1
+                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta) + 1e-9
+                scale1 *= selec_mesh**.5 * temp**.5
+                scale2 = syst['s_e2']
+                scale2 *= selec_mesh**.5
+                obs = sample("obs", TwoQuadGaussian(count_mesh, scale1, scale2))
                 
             elif self.lik_type == 'shash':
                 delta = count_mesh / selec_mesh - 1
-                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta)
+                # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
+                # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
+                      
+                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = syst['s_e2']
                 scale2 *= selec_mesh**.5 
             
-                # NOTE: First order equivalence between QuadGauss(mean, scale1, scale2) and ShAsh(loc, scale, skew, tail)
-                # loc = mean - 4.8 * scale2
-                # scale = scale1
-                # skew = 3.5 * scale2 / scale1
-                # tail = 1 + 5.9 * (scale2 / scale1)**2
-                obs = sample("obs", SinhArcsinh(count_mesh - 4.8 * scale2, scale1, 3.5 * scale2 / scale1, 1 + 5.9 * (scale2 / scale1)**2))
-
+                # NOTE: Local moment-match to QuadGaussian(count_mesh, scale1, scale2) 
+                # (mean/std are exact and skew/tail match to first order in scale2/scale1):
+                #   mean = count_mesh                            (exact)
+                #   std  = (scale1**2 + 2*scale2**2)**.5         (exact: QuadGaussian variance)
+                #   skewness   = 3.540 * (scale2/scale1)         (first-order skew match)
+                #   tailweight = 1 + 5.884 * (scale2/scale1)**2  (first-order excess-kurtosis match)
+                ratio = scale2 / scale1
+                obs = sample("obs", SinhArcsinh(count_mesh,
+                                                (scale1**2 + 2 * scale2**2)**.5,
+                                                3.540 * ratio,
+                                                1 + 5.884 * ratio**2))
             return obs 
-
-
-
-
-
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)
@@ -883,6 +900,10 @@ class FieldLevelModel(Model):
         #     obs_pk = loc_pk.at[sli_multip].set(sample('obs', dist.Normal(loc_pk[sli_multip], sigma2**.5)))
         #     obs_pk = deterministic('obs_pk', obs_pk)
         #     return obs_pk
+
+
+
+
 
 
     def reparam(self, params:dict, fourier=True, inv=False, temp=1.):
@@ -1064,7 +1085,7 @@ class FieldLevelModel(Model):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
-        if self.init_power is None:
+        if self.init_kpow is None:
             pmesh = lin_power_mesh(cosmo, self.init_shape, self.box_size)
         else:
             pmesh = kpower_mesh(self.init_kpow, self.init_shape, self.box_size, transfer=cosmo.sigma8)
@@ -1078,9 +1099,9 @@ class FieldLevelModel(Model):
             b1E_fid = b1_L2E(self.loc_fid['b1'])
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
-            noise_fid = self.loc_fid['s_e'] / self.count_fid
+            var_fid = self.loc_fid['s_e'] / (self.count_fid * self.selec_fid)
 
-            scale = (1 + self.selec_fid / noise_fid * boost_fid**2 * pmesh_fid)**.5
+            scale = (1 + boost_fid**2 / var_fid * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
         
@@ -1088,9 +1109,9 @@ class FieldLevelModel(Model):
             b1E = b1_L2E(bias['b1'])
             count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
-            noise = syst['s_e'] / count
+            var = syst['s_e'] / (count * self.selec_fid)
 
-            scale = (1 + self.selec_fid / noise * boost**2 * pmesh)**.5
+            scale = (1 + boost**2 / var * pmesh)**.5
             transfer = pmesh**.5 / scale
             scale = cgh2rg(scale, norm="amp")
 
@@ -1182,7 +1203,7 @@ class FieldLevelModel(Model):
             selec_mesh = np.asarray(self.selec_mesh)
         return count2delta(mesh, selec_mesh)
     
-    def register_meshes(self, data, random, save_path:str|Path, 
+    def register_catalog(self, data, random, save_path:str|Path, 
                         cell_budget:float, padding:float=0., 
                       box_size=None, box_center=None, box_rotvec=None):
         """
@@ -1209,16 +1230,20 @@ class FieldLevelModel(Model):
         selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(selec_mesh), r2chshape(evol_shape)))
 
         # Paint count from data catalog, compute mean density within support
-        count_mesh, ngbars = catalog2count(data, mask_mesh, self.cosmo_fid, evol_shape,
+        count_mesh = catalog2count(data, mask_mesh, self.cosmo_fid, evol_shape,
                                           box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
                                           paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
+
+        # Weighted tracer and random counts
+        n_tracers = jnp.sum(data['WEIGHT'])
+        n_randoms = jnp.sum(random['WEIGHT'])
 
         # Save meshes and update model
         save_path = str(save_path) # cast to str to allow yaml to save path
         np.savez(save_path, selec_mesh=selec_mesh, mask_mesh=mask_mesh,
-                count_mesh=count_mesh, ngbars=ngbars, 
+                count_mesh=count_mesh, n_tracers=n_tracers, n_randoms=n_randoms,
                 final_shape=final_shape, cell_length=cell_length, box_center=box_center, box_rotvec=box_rotvec)
-        self.meshes = save_path
+        self.register_obs = save_path
         self.__post_init__() # update potential other model attributes accordingly
 
 
@@ -1345,11 +1370,9 @@ class FieldLevelModel(Model):
         delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
 
         b1E_fid = b1_L2E(self.loc_fid['b1'])
-        noise_fid = self.loc_fid['s_e'] / self.count_fid
-        fNL_bp, fNL_bpd = fNL_bias(self.loc_fid, self.loc_fid, p=1., png_type=self.png_type)
-        
-        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, noise=noise_fid, b1E=b1E_fid, 
-                                       fNL_bp=fNL_bp, png_type=self.png_type, selec_fid=self.selec_fid, los=self.los_fid)
+        var_fid = self.loc_fid['s_e'] / (self.count_fid * self.selec_fid)
+        means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, 
+                                       var_noise=var_fid, b1E=b1E_fid, los=self.los_fid)
         
         # HACK: rg2cgh has absurd problem with vmaped random arrays in CUDA11, so rely on rg2cgh2 until fully moved to CUDA12.
         # post_mesh = rg2cgh2(jr.normal(seed, ch2rshape(means.shape)))
