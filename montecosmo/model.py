@@ -564,17 +564,16 @@ class FieldLevelModel(Model):
         self.box_rot = Rotation.from_rotvec(self.box_rotvec)
 
         # Shapes
-        self.final_shape = np.asarray(self.final_shape)
-        self.box_size = self.final_shape * self.cell_length
+        self.final_shape = tuple(map(int, self.final_shape))
+        self.box_size = np.multiply(self.final_shape, self.cell_length)
         self.init_shape = scale_shape(self.final_shape, self.init_oversamp)
         self.evol_shape = scale_shape(self.final_shape, self.evol_oversamp)
         self.ptcl_shape = scale_shape(self.final_shape, self.ptcl_oversamp)
         self.paint_shape = scale_shape(self.final_shape, self.paint_oversamp)
-        # NOTE: if x32, cast shapes into float to avoid overflow when computing products
 
         # Scale cut
-        self.k_funda = 2*np.pi / np.min(self.box_size) 
-        self.k_nyquist = np.pi * np.min(self.final_shape / self.box_size)
+        self.k_funda = 2*np.pi / np.min(self.box_size)
+        self.k_nyquist = np.pi * np.min(np.divide(self.final_shape, self.box_size))
         if self.k_cut == np.inf:
             self.cut_mask = None
         else:
@@ -730,7 +729,7 @@ class FieldLevelModel(Model):
 
                 # gxy_mesh = jnp.fft.irfftn(interlace(pos, self.mesh_shape, weights, self.paint_order, self.interlace_order))
                 # gxy_mesh = deconv_paint(gxy_mesh, order=self.paint_order); print("fin deconv") # NOTE: final deconvolution can amplify AP-induced high-frequencies.
-                gxy_mesh *= (self.evol_shape / self.ptcl_shape).prod()
+                gxy_mesh *= np.divide(self.evol_shape, self.ptcl_shape).prod()
                 
             if tuple(gxy_mesh.shape) != tuple(self.final_shape):
                 gxy_mesh = jnp.fft.rfftn(gxy_mesh)
@@ -811,14 +810,14 @@ class FieldLevelModel(Model):
                 matter_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=1., 
                                 paint_order=self.paint_order, interlace_order=self.interlace_order, 
                                 kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
-                matter_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+                matter_mesh *= np.divide(self.paint_shape, self.ptcl_shape).prod()
                 matter_mesh = chreshape(matter_mesh, r2chshape(self.paint_shape))
                 print(jnp.fft.irfftn(matter_mesh).mean(), jnp.fft.irfftn(matter_mesh).std())
 
                 phi_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=phi_pos, 
                                 paint_order=self.paint_order, interlace_order=self.interlace_order, 
                                 kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
-                phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+                phi_mesh *= np.divide(self.paint_shape, self.ptcl_shape).prod()
                 phi_mesh = chreshape(phi_mesh, r2chshape(self.paint_shape))
                 print(jnp.fft.irfftn(phi_mesh).mean(), jnp.fft.irfftn(phi_mesh).std())
 
@@ -1272,7 +1271,7 @@ class FieldLevelModel(Model):
             final_shape, cell_length = get_mesh_shape(box_size, cell_budget, padding=0.)
             curved_sky = False
         paint = dict(paint_order=paint_order, interlace_order=interlace_order, paint_deconv=paint_deconv)
-        box_size = final_shape * cell_length # box_size update due to rounding and padding
+        box_size = np.multiply(final_shape, cell_length) # box_size update due to rounding and padding
         init_shape = scale_shape(final_shape, init_oversamp)
         paint_shape = scale_shape(final_shape, paint_oversamp)
 

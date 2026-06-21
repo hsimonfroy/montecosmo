@@ -566,7 +566,7 @@ def nufft(pos, final_shape:tuple, paint_shape:tuple|float=None, weights=1.,
     else:
         raise ValueError("paint_shape must be None, a float, or a tuple/ndarray")
 
-    pos *= np.divide(paint_shape, final_shape) # final units to paint units
+    pos = pos * np.divide(paint_shape, final_shape) # final units to paint units (not in-place)
     mesh = interlace(pos, paint_shape, weights, paint_order, interlace_order, kernel_type=kernel_type, paint_oversamp=paint_oversamp)
     mesh *= np.divide(paint_shape, final_shape).prod() # jacobian of final units to paint units
 

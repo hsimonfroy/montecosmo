@@ -81,17 +81,17 @@ def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
     return pow_fn
 
-def lin_power_mesh(cosmo:Cosmology, mesh_shape, box_size, a=1., n_interp=256):
+def lin_power_mesh(cosmo:Cosmology, mesh_shape:tuple, box_size, a=1., n_interp=256):
     """
     Return linear matter power spectrum field.
     """
     pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
-    
+
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
-    return pow_fn(kmesh) * (mesh_shape / box_size).prod() # from [Mpc/h]^3 to cell units
+    return pow_fn(kmesh) * np.divide(mesh_shape, box_size).prod() # from [Mpc/h]^3 to cell units
 
-def kpower_mesh(kpow, mesh_shape, box_size, transfer=1.):
+def kpower_mesh(kpow, mesh_shape:tuple, box_size, transfer=1.):
     """
     Return power spectrum field from given (wavenumber, power).
     power can be scaled by transfer^2.
@@ -99,10 +99,10 @@ def kpower_mesh(kpow, mesh_shape, box_size, transfer=1.):
     ks, pows = kpow
     pows = pows * transfer**2 # NOTE: ensure not inplace multiplication
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
-    
+
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
-    return pow_fn(kmesh) * (mesh_shape / box_size).prod() # from [Mpc/h]^3 to cell units
+    return pow_fn(kmesh) * np.divide(mesh_shape, box_size).prod() # from [Mpc/h]^3 to cell units
 
 def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     """
@@ -585,7 +585,7 @@ def unif_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
     from jax import random as jr
     if isinstance(seed, int):
         seed = jr.key(seed)
-    pos = jr.uniform(seed, shape=(ptcl_shape.prod(), 3), minval=0., maxval=mesh_shape)
+    pos = jr.uniform(seed, shape=(np.prod(ptcl_shape), 3), minval=0., maxval=np.array(mesh_shape))
     return pos
 
 def sobol_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
@@ -597,14 +597,13 @@ def sobol_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
 
     from scipy.stats import qmc
     sampler = qmc.Sobol(d=3, scramble=True, seed=seed)
-    return jnp.array(sampler.random(n=ptcl_shape.prod()) * mesh_shape)
-
+    return jnp.array(sampler.random(n=np.prod(ptcl_shape)) * np.array(mesh_shape))
 
 def cell2phys_pos(pos, box_center:tuple, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Cell positions to physical positions.
     """
-    pos *= np.divide(box_size, mesh_shape)
+    pos = pos * np.divide(box_size, mesh_shape) # not in-place: do not mutate the input
     pos -= np.asarray(box_size) / 2
     pos = box_rot.apply(pos)
     pos += np.asarray(box_center)
@@ -614,7 +613,7 @@ def phys2cell_pos(pos, box_center:tuple, box_rot:Rotation, box_size:tuple, mesh_
     """
     Physical positions to cell positions.
     """
-    pos -= np.asarray(box_center)
+    pos = pos - np.asarray(box_center) # not in-place: do not mutate the input
     pos = box_rot.apply(pos, inverse=True)
     pos += np.asarray(box_size) / 2
     pos /= np.divide(box_size, mesh_shape)
@@ -624,7 +623,7 @@ def cell2phys_vel(vel, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Cell velocities to physical velocities.
     """
-    vel *= np.divide(box_size, mesh_shape)
+    vel = vel * np.divide(box_size, mesh_shape) # not in-place: do not mutate the input
     vel = box_rot.apply(vel)
     return vel
 
@@ -977,15 +976,15 @@ def minmax_box(pos):
     rotvec = jnp.zeros(jnp.shape(pos)[-1])
     return size, center, rotvec
 
-def get_mesh_shape(box_size, cell_budget, padding=0.):
+def get_mesh_shape(box_size:tuple, cell_budget, padding=0.):
     """
-    Return mesh shape and cell length from a given box size and cell budget, with optional padding.
-    Mesh shape is rounded to the nearest even integers.
+    Return mesh shape (tuple) and cell length from a given box size and cell budget, with optional
+    padding. Mesh shape is rounded to the nearest even integers.
     """
-    box_size *= 1 + padding
+    box_size = np.multiply(box_size, 1 + padding) # not in-place: do not mutate the input
     cell_length = float((box_size.prod() / cell_budget)**(1/3))
     mesh_shape = 2 * np.rint(box_size / cell_length / 2).astype(int)
-    return mesh_shape, cell_length
+    return tuple(map(int, mesh_shape)), cell_length
 
 
 def cutsky2config(data, cosmo:Cosmology, cell_budget:float, padding:float=0.,
@@ -1063,7 +1062,7 @@ def fullsky2count(data, cosmo:Cosmology, a_obs:float, los:tuple,
     count_mesh = jnp.zeros(r2chshape(tuple(int(s) for s in final_shape)), dtype=complex)
     n_tracers = 0.
     for chunk in chunks:
-        pos = np.asarray(chunk['pos'], dtype=float)
+        pos = np.asarray(chunk['pos'], dtype=float) # phys2cell_pos no longer mutates in place
         if 'vel' in chunk:
             E = background.Esqr(cosmo, a_obs)**.5
             vel = np.asarray(chunk['vel'], dtype=float) / (a_obs * 100 * E) # peculiar vel -> Mpc/h

@@ -231,13 +231,13 @@ def register(spec, cell_budget, padding=0.):
         a_obs=spec.get('a_obs'), padding=padding,
         init_oversamp=INIT_OVERSAMP, paint_oversamp=PAINT_OVERSAMP, **PAINT)
 
-    final_shape = np.asarray(obs['count_mesh'].shape)
-    box_size = final_shape * obs['cell_length']
+    final_shape = obs['count_mesh'].shape # tuple
+    box_size = np.multiply(final_shape, obs['cell_length'])
     init_shape = scale_shape(final_shape, INIT_OVERSAMP)
     init = build_init(spec, init_shape, cosmo_jax, box_size)
     path = _register_path(spec, cell_budget, padding)
     h5save(path, {**obs, **init})
-    print(f"registered {path.name}: final={tuple(int(s) for s in final_shape)} "
+    print(f"registered {path.name}: final={final_shape} "
           f"cell={obs['cell_length']:.1f} Mpc/h n_tracers={obs['n_tracers']:.3e} "
           f"count.sum()={float(obs['count_mesh'].sum()):.3e} "
           f"init={'init_mesh' if 'init_mesh' in init else 'init_fake'}")

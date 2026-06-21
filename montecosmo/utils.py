@@ -146,6 +146,8 @@ def h5load(path):
                 v = item[()]
                 if isinstance(v, bytes):
                     v = v.decode()
+                elif isinstance(v, np.ndarray) and v.dtype.kind in ('S', 'O'):
+                    v = [x.decode() if isinstance(x, bytes) else x for x in v] # string array -> list of str
                 out[k] = v
         return out
     with h5py.File(str(path), 'r') as f:
@@ -1122,12 +1124,12 @@ def boxreshape(mesh, shape):
     mesh = jnp.pad(mesh, pad_width=tuple((ho,ho) for ho in half_over))
     return mesh
 
-def scale_shape(shape, scale=1.):
+def scale_shape(shape:tuple, scale=1.):
     """
-    Return a valid scaled shape from a given mesh shape and a 1D scaling factor.
+    Return a valid scaled shape (tuple) from a given mesh shape and a 1D scaling factor.
     """
-    shape = np.asarray(shape)
-    return 2 * np.rint(shape * scale / 2).astype(int)
+    out = 2 * np.rint(np.multiply(shape, scale) / 2).astype(int)
+    return tuple(map(int, out))
     
 
 def mesh2masked(mesh, mask=None):

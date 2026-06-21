@@ -11,7 +11,7 @@ from jax import numpy as jnp, random as jr, jit, tree, tree_util, flatten_util
 from numpyro.diagnostics import print_summary
 from getdist import MCSamples
 
-from montecosmo.utils import nvmap
+from montecosmo.utils import nvmap, h5save, h5load
 from montecosmo.metrics import multi_ess, multi_gr
 
 from dataclasses import dataclass, fields
@@ -269,10 +269,21 @@ class Samples(UserDict):
 @dataclass
 class Chains(Samples):
     labels: dict = None
-        
+
     # NOTE: no need with register_dataclass JAX >=0.4.27
     def tree_flatten(self):
         return (self.data,), (self.groups, self.labels)
+
+
+    def save(self, path:str|Path):
+        """Save chains (data, groups, labels) to an HDF5 file."""
+        h5save(path, {'data': self.data, 'groups': self.groups, 'labels': self.labels})
+
+    @classmethod
+    def load(cls, path:str|Path) -> Self:
+        """Load chains from an HDF5 file written by `save`."""
+        d = h5load(path)
+        return cls(d['data'], groups=d.get('groups'), labels=d.get('labels'))
 
 
     @classmethod
