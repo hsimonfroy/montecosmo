@@ -685,7 +685,7 @@ def run_with_thinning(
 ############################
 # NumPyro API for HMC/NUTS #
 ############################
-from montecosmo.utils import pdump
+from montecosmo.utils import psave
 
 def save_run(mcmc:MCMC, i_run:int, path:str, extra_fields:list=None, group_by_chain:bool=True):
     """
@@ -706,7 +706,7 @@ def save_run(mcmc:MCMC, i_run:int, path:str, extra_fields:list=None, group_by_ch
     del samples
 
     # Save or overwrite last state
-    pdump(mcmc.last_state, path+f"_last_state.p")
+    psave(mcmc.last_state, path+f"_last_state.p")
 
 
 def sample_and_save(mcmc:MCMC, path:str, start:int=0, end:int=1, extra_fields=(),

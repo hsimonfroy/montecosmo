@@ -73,7 +73,7 @@ def get_jit(*args, **kwargs):
 #         return NotImplemented
 
 
-def pdump(obj, path):
+def psave(obj, path):
     """Pickle save"""
     with open(path, 'wb') as file:
         pickle.dump(obj, file, protocol=pickle.HIGHEST_PROTOCOL)
@@ -83,12 +83,12 @@ def pload(path):
     with open(path, 'rb') as file:
         return pickle.load(file)    
 
-def ydump(obj, path):
-    """YAML dump"""
+def _ysave(obj, path):
+    """YAML save"""
     with open(path, 'w') as file:
         yaml.dump(obj, file)
 
-def yload(path):
+def _yload(path):
     """YAML load"""
     with open(path, 'r') as file:
         return yaml.load(file, Loader=yaml.Loader)
@@ -102,12 +102,12 @@ def numpy_array_constructor(loader, node):
 yaml.add_representer(np.ndarray, numpy_array_representer, Dumper=yaml.SafeDumper)
 yaml.add_constructor(np.ndarray, numpy_array_constructor, Loader=yaml.SafeLoader)
 
-def ysafe_dump(obj, path):
+def ysave(obj, path):
     """YAML safe dump"""
     with open(path, 'w') as file:
         yaml.safe_dump(obj, file)
 
-def ysafe_load(path):
+def yload(path):
     """YAML safe load"""
     with open(path, 'r') as file:
         return yaml.safe_load(file)

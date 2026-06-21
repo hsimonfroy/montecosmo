@@ -79,7 +79,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     jconfig.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
     from montecosmo.model import FieldLevelModel, default_config
-    from montecosmo.utils import pdump, pload, chreshape, r2chshape, boxreshape, cgh2rg
+    from montecosmo.utils import psave, pload, chreshape, r2chshape, boxreshape, cgh2rg
     from montecosmo.bricks import top_hat_selection, gen_gauss_selection
     
 
@@ -282,8 +282,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
         print_mclmc_config(config, state)
 
-        pdump(state, chains_dir / "warm2_state.p")
-        pdump(config, chains_dir / "warm2_conf.p")
+        psave(state, chains_dir / "warm2_state.p")
+        psave(config, chains_dir / "warm2_conf.p")
 
     elif not os.path.exists(chains_dir / "last_state.p") or overwrite:
         state = pload(chains_dir / "warm2_state.p")
@@ -316,7 +316,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         
         print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
         jnp.savez(chains_dir / f"run_{i_run}.npz", **samples)
-        pdump(state, chains_dir / "last_state.p")
+        psave(state, chains_dir / "last_state.p")
 
     make_chains(save_dir, start=1, end=100, reparb=False)
     print(f"Finished running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")

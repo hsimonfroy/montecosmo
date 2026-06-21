@@ -1,5 +1,5 @@
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.utils import pdump, pload , chreshape, r2chshape, boxreshape, rg2cgh, cgh2rg
+from montecosmo.utils import psave, pload , chreshape, r2chshape, boxreshape, rg2cgh, cgh2rg
 from montecosmo.bricks import top_hat_selection, gen_gauss_selection
 
 # box_size = 3*(2000,)

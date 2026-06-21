@@ -15,7 +15,7 @@ jconfig.update("jax_enable_x64", True)
 print(jdevices())
 
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.utils import pdump, pload, Path
+from montecosmo.utils import psave, pload, Path
 from getdist import plots
 
 
@@ -52,7 +52,7 @@ for sd, sp in zip(save_dirs, save_paths):
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
     chains = model.load_runs(sp, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, sp + "_chains.p")
+    psave(chains, sp + "_chains.p")
     print(chains.shape, '\n')
 
 
@@ -62,7 +62,7 @@ for sd, sp in zip(save_dirs, save_paths):
                 partial(Chains.choice, n=10, names=['init','init_']), # subsample mesh 
                 ]
     chains = model.load_runs(sp, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, sp + "_chains_.p")
+    psave(chains, sp + "_chains_.p")
     print(chains.shape, '\n')
 
 
@@ -73,7 +73,7 @@ for sd, sp in zip(save_dirs, save_paths):
                 partial(model.powtranscoh_chains, mesh0=mesh_true),
                 ]
     chains = model.load_runs(sp, 1, 100, transforms=transforms, batch_ndim=2)
-    pdump(chains, sp + "_chains_mesh.p")
+    psave(chains, sp + "_chains_mesh.p")
     print(chains.shape, '\n')
 
 

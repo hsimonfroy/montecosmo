@@ -18,7 +18,7 @@ jconfig.update("jax_enable_x64", True)
 print(jdevices())
 
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.utils import pdump, pload, Path
+from montecosmo.utils import psave, pload, Path
 
 # save_dir = Path("/feynman/home/dphp/hs276503/scratch/png/lpt_64_fnl_0")
 save_dir = Path("/pscratch/sd/h/hsimfroy/png/lpt_32_fnl_0_lc_apauto_nodec")
@@ -143,8 +143,8 @@ if not os.path.exists(save_path+"_warm_state.p") or overwrite:
     warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None, 
                                 desired_energy_var=1e-6, diagonal_preconditioning=False)))
     state, config = warmup_fn(jr.split(jr.key(43), n_chains), {k: params_init[k] for k in ['init_mesh_']})
-    pdump(state, save_path+"_warm_state.p")
-    pdump(config, save_path+"_warm_conf.p")
+    psave(state, save_path+"_warm_state.p")
+    psave(config, save_path+"_warm_conf.p")
 else:
     state = pload(save_path+"_warm_state.p")
     config = pload(save_path+"_warm_conf.p")
@@ -243,8 +243,8 @@ if not os.path.exists(save_path+"_warm2_state.p") or overwrite:
     print("inv_mm:", unrav_fn(config.inverse_mass_matrix[0]))
     print(tree.map(vmap(lambda x: jnp.isnan(x).sum()), state.position))
 
-    pdump(state, save_path+"_warm2_state.p")
-    pdump(config, save_path+"_conf.p")
+    psave(state, save_path+"_warm2_state.p")
+    psave(config, save_path+"_conf.p")
     start = 1
 
 elif not os.path.exists(save_path+"_last_state.p") or overwrite:
@@ -270,5 +270,5 @@ for i_run in tqdm(range(start, end + 1)):
     
     print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
     jnp.savez(save_path+f"_{i_run}.npz", **samples)
-    pdump(state, save_path+"_last_state.p")
+    psave(state, save_path+"_last_state.p")
 

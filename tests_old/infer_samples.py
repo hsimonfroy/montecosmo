@@ -19,7 +19,7 @@ from getdist import plots
 from numpyro import infer
 
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.utils import pdump, pload
+from montecosmo.utils import psave, pload
 from montecosmo.samplers import sample_and_save
 from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
@@ -109,7 +109,7 @@ for i_s, (start, end, tid, lab) in enumerate(zip(starts, ends, tids, labels)):
                 ]
     chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
     print(chains.shape)
-    pdump(chains, save_path+'_chains.p')
+    psave(chains, save_path+'_chains.p')
 
     # Load chains
     thinning = 1
@@ -120,5 +120,5 @@ for i_s, (start, end, tid, lab) in enumerate(zip(starts, ends, tids, labels)):
                 ]
     chains = model.load_runs(save_path, start, end, transforms=transforms, batch_ndim=2)
     print(chains.shape)
-    pdump(chains, save_path+'_chains_.p')
+    psave(chains, save_path+'_chains_.p')
 

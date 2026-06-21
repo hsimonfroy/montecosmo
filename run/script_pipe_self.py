@@ -41,7 +41,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
     vmap = pmap
 
     from montecosmo.model import FieldLevelModel, default_config
-    from montecosmo.utils import pdump, pload, Path
+    from montecosmo.utils import psave, pload, Path
 
     save_dir = Path("/pscratch/sd/h/hsimfroy/png/leave1out/lpt") # Perlmutter
 
@@ -145,8 +145,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None, 
                                     desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
-        pdump(state, save_path+"_warm1_state.p")
-        pdump(config, save_path+"_warm1_conf.p")
+        psave(state, save_path+"_warm1_state.p")
+        psave(config, save_path+"_warm1_conf.p")
     else:
         state = pload(save_path+"_warm1_state.p")
         config = pload(save_path+"_warm1_conf.p")
@@ -246,8 +246,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
             print("nan count:", tree.map(vmap(lambda x: jnp.isnan(x).sum()), state.position))
         
         print_mclmc_config(config, state)
-        pdump(state, save_path+"_warm2_state.p")
-        pdump(config, save_path+"_warm2_conf.p")
+        psave(state, save_path+"_warm2_state.p")
+        psave(config, save_path+"_warm2_conf.p")
 
     elif not os.path.exists(save_path+"_last_state.p") or overwrite:
         state = pload(save_path+"_warm2_state.p")
@@ -272,7 +272,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=False):
         
         print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
-        pdump(state, save_path+"_last_state.p")
+        psave(state, save_path+"_last_state.p")
 
     from montecosmo.script import make_chains
     make_chains(save_path, start=1, end=100)

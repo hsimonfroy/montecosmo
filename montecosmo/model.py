@@ -24,7 +24,7 @@ from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g
                               nbody_tsit5, 
                               paint, read, deconv_paint, nufft, rfftk, top_hat)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial, distr_angular, mse_radius, mse_value, mse_wave
-from montecosmo.utils import (ysafe_dump, ysafe_load, h5save, h5load,
+from montecosmo.utils import (ysave, yload, h5save, h5load,
                               cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked, scale_shape,
                               nvmap, safe_div, DetruncTruncNorm, DetruncUnif, SinhArcsinh, QuadGaussian, TwoQuadGaussian, rg2cgh2)
 from montecosmo.chains import Chains
@@ -427,11 +427,11 @@ class Model():
         return asdict(self)
     
     def save(self, path): # with yaml because not array-like
-        ysafe_dump(asdict(self), path)
+        ysave(asdict(self), path)
 
     @classmethod
     def load(cls, path):
-        return cls(**ysafe_load(path))
+        return cls(**yload(path))
 
 
 

@@ -19,7 +19,7 @@ from getdist import plots
 from numpyro import infer
 
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.utils import pdump, pload
+from montecosmo.utils import psave, pload
 from montecosmo.samplers import sample_and_save
 from montecosmo.script import from_id, get_mcmc, get_init_mcmc
 
@@ -82,7 +82,7 @@ if not os.path.exists(save_dir+"truth.p"):
     
     print(f"Saving model and truth at {save_dir}")
     model.save(save_dir+"model.p")    
-    pdump(truth, save_dir+"truth.p")
+    psave(truth, save_dir+"truth.p")
 
 elif not os.path.exists(save_dir+"model.p"):
     print(f"Loading truth from {save_dir} and saving model")
@@ -134,8 +134,8 @@ else:
         warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**12, config=None, 
                                     desired_energy_var=1e-5, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), mcmc_config['n_chains']), init_mesh_)
-        pdump(state, save_path+f"_init_last_state.p")
-        pdump(config, save_path+f"_init_conf.p")
+        psave(state, save_path+f"_init_last_state.p")
+        psave(config, save_path+f"_init_conf.p")
         print("# End warmup")
         print("Init config:", config)
         ils = state.position
@@ -232,8 +232,8 @@ elif mcmc_config['sampler'] in ['NUTSwG','NUTSwG2']:
     print("conf:", conf,
             "\n\ninfos:", infos, '\n#################\n')
     jnp.savez(save_path+f"_{0}.npz", **samples | {k:infos[k] for k in ['n_evals']})
-    pdump(state, save_path+f"_last_state.p")
-    pdump(conf, save_path+'_conf.p'), pdump(tree.map(jnp.mean, infos), save_path+'_infos.p')
+    psave(state, save_path+f"_last_state.p")
+    psave(conf, save_path+'_conf.p'), psave(tree.map(jnp.mean, infos), save_path+'_infos.p')
 
     # conf = pload(save_path+'_conf.p')
     # state = pload(save_path+'_last_state.p')
@@ -248,7 +248,7 @@ elif mcmc_config['sampler'] in ['NUTSwG','NUTSwG2']:
         samples, infos, state = run_fn(jr.split(run_key, n_chains), state, conf)
         print("infos:", tree.map(lambda x: jnp.mean(x, 1), infos))
         jnp.savez(save_path+f"_{i_run}.npz", **samples | {k:infos[k] for k in ['n_evals']})
-        pdump(state, save_path+f"_last_state.p")
+        psave(state, save_path+f"_last_state.p")
 
 
 elif mcmc_config['sampler'] == 'MCLMC':
@@ -284,8 +284,8 @@ elif mcmc_config['sampler'] == 'MCLMC':
                                 inverse_mass_matrix=jnp.median(config.inverse_mass_matrix, 0))
     config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
 
-    pdump(state, save_path+f"_0_last_state.p")
-    pdump(config, save_path+f"_conf.p")
+    psave(state, save_path+f"_0_last_state.p")
+    psave(config, save_path+f"_conf.p")
     
     print(config)
     thinning = 16
@@ -301,7 +301,7 @@ elif mcmc_config['sampler'] == 'MCLMC':
         
         print("MSE per dim:", jnp.mean(samples['mse_per_dim'], 1), '\n')
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
-        pdump(state, save_path+f"_last_state.p")
+        psave(state, save_path+f"_last_state.p")
 
 
 
@@ -326,8 +326,8 @@ elif mcmc_config['sampler'] == 'aMCLMC':
                                 inverse_mass_matrix=jnp.median(config.inverse_mass_matrix, 0))
     config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
 
-    pdump(state, save_path+f"_0_last_state.p")
-    pdump(config, save_path+f"_conf.p")
+    psave(state, save_path+f"_0_last_state.p")
+    psave(config, save_path+f"_conf.p")
     
     print(config)
     thinning = 1
@@ -343,7 +343,7 @@ elif mcmc_config['sampler'] == 'aMCLMC':
         
         print("n_evals:", jnp.mean(samples['n_evals'], 1), '\n')
         jnp.savez(save_path+f"_{i_run}.npz", **samples)
-        pdump(state, save_path+f"_last_state.p")
+        psave(state, save_path+f"_last_state.p")
 
 
 
