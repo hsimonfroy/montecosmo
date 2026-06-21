@@ -34,7 +34,7 @@ print(jdevices())
 
 import fitsio
 from montecosmo.model import FieldLevelModel, default_config
-from montecosmo.bricks import Planck15, lin_power_mesh, lin_power_interp
+from montecosmo.bricks import Planck18, lin_power_mesh, lin_power_interp
 from montecosmo.utils import chreshape, r2chshape
 from montecosmo.metrics import kaiser_formula
 from montecosmo.plot import plot_mesh, plot_pow
@@ -100,7 +100,7 @@ model = FieldLevelModel(**model.asdict() | {'latents': latents})
 
 # Theory curves use the *mock* cosmology (Planck15). model.cosmo_fid = get_cosmology(Om, s8)
 # keeps AbacusSummit0's h/n_s/Omega_b, which differs from Planck15 by ~3% in P(k) shape.
-cosmo_theory = Planck15()
+cosmo_theory = Planck18()
 
 
 def eff_shot_noise(count_mesh):

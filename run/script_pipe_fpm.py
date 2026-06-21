@@ -51,17 +51,19 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     main_dir = Path("/pscratch/sd/h/hsimfroy/png/fpm_b2760_z1_lrg_fNL") # Perlmutter
     load_dir = main_dir / "load"
 
-    fNL_true = -100
+    fNL_true = 0
 
     # save_dir = main_dir / f"tracer_real_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     save_dir = main_dir / (f"tracer_fpmred_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}" + ("_fNL" if png_type=='fNL' else "_fNLb" if png_type=='fNL_bias' else ""))
     # save_dir = main_dir / f"selfspec_red_eh{eh_approx:d}_ovsamp{oversamp:d}_s8{s8:d}_fNL"
     
     # save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_noise0"
-    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_noisehalf"
+    # save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_noisehalf"
+    save_dir /= f"lpt_{mesh_length:d}" + (f"_sel{select}" if select is not None else "") + f"_fNL{fNL_true:.0f}" + ("_fourier" if fourier else "") + "_shash_se1"
 
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
+    print(f"SAVE DIR: {save_dir}")
     import sys
     sys.stdout = sys.stderr = open(save_dir / "run.out", "a")
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
@@ -91,7 +93,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # Load #
     ########
     box_size = 3*(2760,)
-    selection = None
+    register_obs = None
     z_obs = 1.
 
     oversamp_config = {
@@ -123,7 +125,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
                             'a_obs': 1 / (1 + z_obs), # light-cone if None
                             'curved_sky': False, # curved vs. flat sky
                             'ap_auto': None, # parametrized AP vs. auto AP
-                            'selection': selection, # if float, padded fraction, if str or Path, path to window mesh file
+                            'register_obs': register_obs, # if float, padded fraction, if str or Path, path to window mesh file
                             'paint_order':2, # order of interpolation kernel
                             'paint_deconv': True, # whether to deconvolve painted field
                             'kernel_type':'rectangular', # 'rectangular', 'kaiser_bessel'
@@ -136,10 +138,11 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
                             'k_cut': np.inf,
-                            'init_power': load_dir / f'init_kpow.npy' if not eh_approx else None,
-                            # 'init_power': None,
-                            'lik_type': 'gaussian_fourier' if fourier else 'gaussian_delta',
-                            # 'lik_type': 'gaussian_fourier' if fourier else 'gaussian_delta_power',
+                            'register': load_dir / f'register_init.npz' if not eh_approx else None,
+                            # 'register': None,
+                            # 'lik_type': 'fourier_gauss' if fourier else 'two_quad_gauss',
+                            # 'lik_type': 'fourier_gauss' if fourier else 'quad_gauss',
+                            'lik_type': 'fourier_gauss' if fourier else 'shash',
                             'png_type': png_type,
                             } | oversamp_config)
 
@@ -147,26 +150,32 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         'Omega_m': 0.3137721, 
         'sigma8': 0.8076353990239834,
         # 'b1': 0.,
-        'b1': 1.,
+        'b1': 0.7,
         'b2': 0.,
         'bs2': 0.,
+        'b3': 0.,
+        'bds2': 0.,
+        'bs3': 0.,
         'bn2': 0.,
         'bnpar': 0.,
-        'b3': 0.,
-        'fNL': 0.,
+        'fNL': fNL_true/2,
         'fNL_bp':fNL_true/2,
         'fNL_bpd':0.,
+        'fNL_bpd2':0.,
+        'fNL_bps':0.,
+        'fNL_bn2p':0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
         # 'ngbars': 8.43318125e-4,
         'ngbars': 1e-4,
         # 'ngbars': 1e5., # neglect lik noise
+        # 's_e': 0.8,
         's_e': 1.0,
         's_k2e': 0.,
         's_kmu2e': 0.,
-        's_ed': 1.0,
+        's_ed': 0.1,
+        's_e2': 0.1,
         }
-    
 
     latents = model.new_latents_from_loc(truth, update_prior=True)
     model = FieldLevelModel(**model.asdict() | {'latents': latents})
@@ -220,11 +229,20 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     sys.stdout.flush()
 
 
+    print("==================")
+    print("Log PDF of truth:")
+    print(truth.keys())
+    logpd = model.logpdf(model.reparam(truth, inv=True))
+    print(logpd)
+    print("==================\n")
+    sys.stdout.flush()
+    if logpd == -jnp.inf or jnp.isnan(logpd):
+        print("Error: Log PDF is invalid!")
+        sys.exit(1)
 
-
-    ##########
-    # Warmup #
-    ##########
+    # ##########
+    # # Warmup #
+    # ##########
     n_samples, n_runs, n_chains = 128 * 64 // model.final_shape[0], 8, 4
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}")
     tune_mass = True
@@ -232,6 +250,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     # overwrite = True
     overwrite = False
     if not os.path.exists(chains_dir / "warm1_state.p") or overwrite:
+        # Sample initial conditions, fix other parameters to fiducial values.
         print("\nWarming up...")
         model.reset()
         if fourier:
@@ -241,15 +260,15 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
 
         print('data params:', model.data.keys())
         model.block()
-        params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=3/4)))(jr.split(jr.key(45), n_chains))
+        params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(truth['obs']), scale_field=7/8)))(jr.split(jr.key(45), n_chains))
         print('start params:', params_start.keys())
         # model.logpdf = jit(model.logpdf) # TODO: test if pre-jitting helps
 
         from montecosmo.samplers import get_mclmc_warmup
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**12, config=None,
         # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**15, config=None,
-                                    desired_energy_var=1e-6, diagonal_preconditioning=False)))
+                                    desired_energy_var=1e-5, diagonal_preconditioning=False)))
+                                    # desired_energy_var=1e-6, diagonal_preconditioning=False)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_start)
         pdump(state, chains_dir / "warm1_state.p")
         pdump(config, chains_dir / "warm1_conf.p")
@@ -312,28 +331,27 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
 
     obs = ['obs',
         #    'fNL',
-        # 'fNL_bp',
-        # 'fNL_bpd',
-            # 'b1',
-            # 'b2','bs2','bn2', 
-        #    'bnpar',
-              'b3',
-            # 'ngbars', 
-            's_e',
-            's_k2e',
-            's_kmu2e',
-            's_ed',
-            # 'Omega_m',
-            # 'sigma8',
-            # 'init_mesh',
+        # 'fNL_bp', 'fNL_bpd',
+        'fNL_bn2p',
+        # 'b1',
+        # 'b2','bs2',
+        # 'b3','bds2','bs3',
+        # 'bn2', 'bnpar',
+        # 'ngbars', 
+        's_e',
+        # 's_k2e', 's_kmu2e',
+        # 's_ed',
+        # 's_e2',
+        # 'Omega_m',
+        # 'sigma8',
+        # 'init_mesh',
         'alpha_iso','alpha_ap',]
     obs += ['Omega_m'] if not eh_approx else []
     obs += ['sigma8'] if not s8 else []
-    obs += ['fNL_bp','fNL_bpd'] if not png_type=='fNL_bias' else []
+    obs += ['fNL_bp','fNL_bpd','fNL_bn2p'] if not png_type=='fNL_bias' else []
     obs += ['fNL'] if not ('fNL'==png_type or 'fNL_bias'==png_type) else []
-    obs += ['s_ed'] if fourier else ['s_k2e', 's_kmu2e']
+    obs += ['s_ed', 's_e2'] if fourier else ['s_k2e', 's_kmu2e']
     
-    # obs += ['fNL']
     obs = {k: truth[k] for k in obs}
     obs |= {'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} if fourier else {}
 
@@ -352,9 +370,8 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         print('warm params:', params_warm.keys())
         print('warm params:', vmap(model.reparam)({k:v for k,v in params_warm.items() if k != 'init_mesh_'}))
 
-        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
-                                            # desired_energy_var=3e-7, diagonal_preconditioning=tune_mass)))
+        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**13, config=None,
+        # warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=2**14, config=None,
                                             desired_energy_var=1e-7, diagonal_preconditioning=tune_mass)))
                                             # desired_energy_var=1e-8, diagonal_preconditioning=tune_mass)))
         state, config = warmup_fn(jr.split(jr.key(43), n_chains), params_warm)
@@ -463,7 +480,7 @@ def compare_chains_dir(main_dir, labels, names=None):
 
 if __name__ == '__main__':
     print("Demat")
-    mesh_lengths = [32]
+    mesh_lengths = [64]
     # data_types = ['abacus']
     # data_types = ['fpm']
     eh_approxs = [False]
@@ -485,21 +502,18 @@ if __name__ == '__main__':
                                 infer_model(mesh_length, eh_approx=eh_approx, oversamp=oversamp, s8=s8, 
                                             select=select, png_type=png_type, fourier=fourier)
 
-    # # # overwrite = False
     # overwrite = True
-    # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z05_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb/lpt_64_fNL-100"
+    # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z1_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb/lpt_64_fNL0_shash_sesed0_b3bn2p"
     # make_chains_dir(save_dir, start=1, end=100, thinning=1, reparb=False, overwrite=overwrite)
 
     # save_dir = "/pscratch/sd/h/hsimfroy/png/fpm_b2760_z1_lrg_fNL/tracer_fpmred_eh0_ovsamp2_s80_fNLb"
     # compare_chains_dir(save_dir,
     #                    labels=["$f_\\mathrm{NL}=-100$","$f_\\mathrm{NL}=0$", "$f_\\mathrm{NL}=100$"],
-    #                    names=["lpt_64_fNL-100", "lpt_64_fNL0", "lpt_64_fNL100"])
+    #                    names=["lpt_32_fNL-100_shash", "lpt_32_fNL0_shash", "lpt_32_fNL100_shash"])
     #                 #    names=["lpt_32_fNL-100", "lpt_32_fNL0", "lpt_32_fNL100"])
 
     # spawn(queue, spawn=True)
     print("Kenavo")
-
-
 
 
 

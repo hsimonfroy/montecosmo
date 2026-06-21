@@ -74,7 +74,7 @@ def get_jit(*args, **kwargs):
 
 
 def pdump(obj, path):
-    """Pickle dump"""
+    """Pickle save"""
     with open(path, 'wb') as file:
         pickle.dump(obj, file, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -111,6 +111,46 @@ def ysafe_load(path):
     """YAML safe load"""
     with open(path, 'r') as file:
         return yaml.safe_load(file)
+
+def h5save(path, data:dict):
+    """
+    Save a (possibly nested) dict to an HDF5 file. None values are skipped, nested
+    dicts become groups, and everything else (arrays, scalars, strings, bools) is a
+    dataset. Used for self-describing 'register' files (geometry, meshes, init, cosmo).
+    """
+    import h5py
+    def _write(grp, d):
+        for k, v in d.items():
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                _write(grp.create_group(k), v)
+            else:
+                grp[k] = v
+    with h5py.File(str(path), 'w') as f:
+        _write(f, data)
+
+
+def h5load(path):
+    """
+    Load an HDF5 file written by `save_h5` into a (possibly nested) dict, with groups
+    as sub-dicts and scalars/strings decoded to python.
+    """
+    import h5py
+    def _read(grp):
+        out = {}
+        for k, item in grp.items():
+            if isinstance(item, h5py.Group):
+                out[k] = _read(item)
+            else:
+                v = item[()]
+                if isinstance(v, bytes):
+                    v = v.decode()
+                out[k] = v
+        return out
+    with h5py.File(str(path), 'r') as f:
+        return _read(f)
+
 
 
 ######################################
@@ -559,6 +599,131 @@ class TwoQuadGaussian(Distribution):
 
 
 
+_B = np.sqrt(2.0 / np.pi)
+# Maximum |skewness| attainable by a skew-normal (delta -> 1):
+_GAMMA_MAX = ((4.0 - np.pi) / 2.0) * (2.0 / (np.pi - 2.0)) ** 1.5  # ~0.9952717
+ 
+from numpy.polynomial.legendre import leggauss
+class SkewNormal(Distribution):
+    """Azzalini skew-normal in the *centered* parametrization (mean, std, skew).
+ 
+        density(x) = (2/omega) * phi(z) * Phi(alpha * z),   z = (x - xi)/omega
+ 
+    but parametrized directly by its moments so location/scale are decoupled
+    from shape (no MCMC ridge, unlike the raw (xi, omega, alpha) form):
+ 
+        mean      = E[X]                       (the 'mean' argument)
+        std       = sqrt(Var[X])               (the 'std' argument)
+        skewness  = E[(X-mean)^3]/std^3        (the 'skew' argument)
+ 
+    The mapping (mean, std, skew) -> (xi, omega, alpha) is CLOSED FORM (below),
+    so there is no Gauss-Hermite quadrature anywhere in log_prob -- the field
+    likelihood costs ~2 special-function evals per cell. Full support on R.
+ 
+    A skew-normal can only realize |skew| < _GAMMA_MAX ~= 0.9953; the 'skew'
+    argument is clipped into [-max_skew, max_skew] (default just inside the
+    bound). Beyond that the mean/std are still matched exactly, the skewness
+    saturates. log_cdf uses Owen's T (a small fixed quadrature, only in the cdf,
+    never in log_prob).
+    """
+ 
+    arg_constraints = {"mean": constraints.real,
+                       "std": constraints.positive,
+                       "skew": constraints.real}
+    support = constraints.real
+    reparametrized_params = ["mean", "std", "skew"]
+ 
+    def __init__(self, mean=0.0, std=1.0, skew=0.0, *,
+                 max_skew=_GAMMA_MAX * (1.0 - 1e-6), n_owen=48,
+                 validate_args=None):
+        self.mean_, self.std, self.skew = promote_shapes(mean, std, skew)
+        bs = lax.broadcast_shapes(jnp.shape(mean), jnp.shape(std),
+                                  jnp.shape(skew))
+        self.max_skew = float(min(max_skew, _GAMMA_MAX * (1.0 - 1e-6)))
+        # Gauss-Legendre nodes on [0,1] for Owen's T (cdf only)
+        x, w = leggauss(n_owen)
+        self._gl_t = jnp.asarray(0.5 * (x + 1.0))
+        self._gl_w = jnp.asarray(0.5 * w)
+        # cache the direct parameters
+        self._xi, self._omega, self._alpha, self._delta, self._gamma = \
+            self._cp_to_dp(self.mean_, self.std, self.skew)
+        super().__init__(batch_shape=bs, validate_args=validate_args)
+ 
+    def _cp_to_dp(self, mean, std, skew):
+        g = jnp.clip(skew, -self.max_skew, self.max_skew)
+        A = (2.0 * jnp.abs(g) / (4.0 - np.pi)) ** (2.0 / 3.0)
+        muz = jnp.sign(g) * jnp.sqrt(A / (1.0 + A))         # standardized mean = b*delta
+        muz = jnp.clip(muz, -_B * (1 - 1e-7), _B * (1 - 1e-7))
+        delta = muz / _B
+        delta2 = jnp.clip(delta ** 2, 0.0, 1.0 - 1e-12)
+        alpha = delta / jnp.sqrt(1.0 - delta2)
+        omega = std / jnp.sqrt(1.0 - muz ** 2)
+        xi = mean - omega * muz
+        return xi, omega, alpha, delta, g
+ 
+    @validate_sample
+    def log_prob(self, value):
+        z = (value - self._xi) / self._omega
+        return (np.log(2.0) - jnp.log(self._omega)
+                + norm.logpdf(z) + norm.logcdf(self._alpha * z))
+ 
+    def sample(self, key, sample_shape=()):
+        k0, k1 = jr.split(key)
+        shp = sample_shape + self.batch_shape
+        z0 = jr.normal(k0, shp)
+        z1 = jr.normal(k1, shp)
+        d = self._delta
+        return self._xi + self._omega * (d * jnp.abs(z0)
+                                         + jnp.sqrt(1.0 - d ** 2) * z1)
+ 
+    def _owens_t(self, h, a):
+        # T(h,a) = (1/2pi) int_0^{atan|a|} exp(-0.5 h^2 sec^2 th) dth, odd in a
+        aa = jnp.abs(a)
+        upper = jnp.arctan(aa)
+        th = upper[..., None] * self._gl_t            # (..., n)
+        sec2 = 1.0 / jnp.cos(th) ** 2
+        integrand = jnp.exp(-0.5 * (h[..., None] ** 2) * sec2)
+        integral = upper * jnp.sum(self._gl_w * integrand, axis=-1)
+        return jnp.sign(a) * integral / (2.0 * np.pi)
+ 
+    def cdf(self, value):
+        z = (value - self._xi) / self._omega
+        alpha = jnp.broadcast_to(self._alpha, jnp.shape(z))
+        cdf = norm.cdf(z) - 2.0 * self._owens_t(z, alpha)
+        return jnp.clip(cdf, 0.0, 1.0)
+ 
+    def log_cdf(self, value):
+        return jnp.log(jnp.clip(self.cdf(value), 1e-300, 1.0))
+ 
+    @property
+    def mean(self):
+        return jnp.broadcast_to(self.mean_, self.batch_shape)
+ 
+    @property
+    def variance(self):
+        return jnp.broadcast_to(self.std ** 2, self.batch_shape)
+ 
+    @property
+    def skewness(self):
+        return jnp.broadcast_to(
+            jnp.clip(self.skew, -self.max_skew, self.max_skew),
+            self.batch_shape)
+ 
+ 
+def match_quadratic_gaussian(loc, scale1, scale2):
+    """(mean, std, skew) for a SkewNormal matching the first three moments of
+    loc + scale1*eps + scale2*(eps**2 - 1),  eps ~ N(0,1).
+ 
+        mean = loc
+        std  = sqrt(scale1**2 + 2*scale2**2)
+        skew = 2*scale2*(3*scale1**2 + 4*scale2**2) / std**3   (clipped by SkewNormal)
+    """
+    var = scale1 ** 2 + 2.0 * scale2 ** 2
+    m3 = 2.0 * scale2 * (3.0 * scale1 ** 2 + 4.0 * scale2 ** 2)
+    return loc, jnp.sqrt(var), m3 / var ** 1.5
+
+
+
 
 ##############################
 # Fourier (Memory efficient) #
@@ -965,15 +1130,15 @@ def scale_shape(shape, scale=1.):
     return 2 * np.rint(shape * scale / 2).astype(int)
     
 
-def mesh2masked(mesh, mask=...):
-    if mask is ...:
+def mesh2masked(mesh, mask=None):
+    if mask is None:
         return mesh
     else:
         return mesh[...,mask]
 
 
-def masked2mesh(masked, mask=...):
-    if mask is ...:
+def masked2mesh(masked, mask=None):
+    if mask is None:
         return masked
     else:
         shape = jnp.shape(masked)[:-1] + jnp.shape(mask)
@@ -1040,4 +1205,6 @@ def volume_hypersphere(d, R=1):
 #             s2 = noises[i_t1+1]
 #             return (s2 - s1)*(i_t - i_t1) + s1
 #     return noise_fn
+
+
 

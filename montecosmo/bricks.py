@@ -306,21 +306,30 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
 def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png, 
                        png_type=None, read_order:int=2):
     """
-    Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
+    Return Lagrangian bias expansion weights as in 
+    [Assassi+2015](https://arxiv.org/pdf/1510.03723), 
+    [Abidi+2018](https://arxiv.org/pdf/1802.07622), 
+    [Modi+2020](http://arxiv.org/abs/1910.07097).
     .. math::
         
         w = 1 + b_1 \\delta_L + b_2 \\left(\\delta_L^2 - \\braket{\\delta_L^2}\\right) 
         + b_{s^2} \\left(s^2 - \\braket{s^2}\\right) + b_{\\nabla^2} \\nabla^2 \\delta_L
         + b_{\\phi} f_\\mathrm{NL} \\phi + b_{\\phi \\delta} f_\\mathrm{NL} (\\phi \\delta_L - \\braket{\\phi \\delta_L})
     """    
-    # Smooth field to mitigate negative weights or TODO: use gaussian lagrangian biases?
+    # XXX: Smooth field to mitigate negative weights or use gaussian lagrangian biases?
     init_mesh = init['init_mesh']
-    b1, b2, bs2, bn2, bnpar, b3 = bias['b1'], bias['b2'], bias['bs2'], bias['bn2'], bias['bnpar'], bias['b3']
-    fNL_bp, fNL_bpd, fNL_bn2p = png['fNL_bp'], png['fNL_bpd'], png['fNL_bn2p']
+    b1 = bias['b1'] # 1st
+    b2, bs2 = bias['b2'], bias['bs2'] # 2nd
+    b3, bds2, bs3 = bias['b3'], bias['bds2'], bias['bs3'] # 3rd
+    bn2, bnpar = bias['bn2'], bias['bnpar'] # higher-derivative
+    fNL_bp = png['fNL_bp'] # PNG 1st
+    fNL_bpd = png['fNL_bpd'] # PNG 2nd
+    fNL_bpd2, fNL_bps2 = png['fNL_bpd2'], png['fNL_bps2'] # PNG 3rd
+    fNL_bn2p = bias['fNL_bn2p'] # PNG higher-derivative
 
+    # Compute utils
     delta = jnp.fft.irfftn(init_mesh)
     growths = a2g(cosmo, a)
-
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
@@ -328,9 +337,58 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     # Init weights
     weights = 1.
     
-    # Apply b1, punctual term
+    # Apply b1, local term
     delta_pos = read(pos, delta, read_order) * growths.squeeze()
     weights += b1 * delta_pos
+
+    # Apply b2, local term
+    delta2_pos = delta_pos**2
+    sigma2 = delta2_pos.mean()
+    # delta2_pos -= sigma2 * (1 + 4 * fNL * phi_pos) # if expansion is based on PNGed fields
+    delta2_pos -= sigma2
+    weights += b2 * delta2_pos / 2
+    # debug.print('delta2_pos mean {mean} std {std}', mean=delta2_pos.mean(), std=delta2_pos.std())
+
+    # Employ 5 FFTs to compute shear
+    pot = init_mesh * invlaplace_hat(kvec)
+    shear = {}
+    for i in range(2): # i = 0,1
+        nabi = gradient_hat(kvec, i)
+        shear[(i, i)] = jnp.fft.irfftn(nabi**2 * pot - init_mesh / 3)
+        for j in range(i+1, 3): # j = i+1 to 2
+            nabj = gradient_hat(kvec, j)
+            shear[(i, j)] = jnp.fft.irfftn(nabi * nabj * pot)
+    shear[(2, 2)] = -(shear[(0, 0)] + shear[(1, 1)]) # use traceless condition
+    a, b, c = shear[(0, 0)], shear[(1, 1)], shear[(2, 2)]
+    d, e, f = shear[(0, 1)], shear[(0, 2)], shear[(1, 2)]
+
+    # Apply bshear2, non-local term
+    shear2 = a**2 + b**2 + c**2 + 2*(d**2 + e**2 + f**2)
+    shear2_pos = read(pos, shear2, read_order) * growths.squeeze()**2
+    # shear2_pos -= 2 / 3 * sigma2 * (1 + 4 * fNL * phi_pos) # if expansion is based on PNGed fields
+    shear2_pos -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
+    weights += bs2 * shear2_pos
+
+    # Apply bnabla2, higher-order term
+    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * init_mesh)
+    delta_nab2_pos = read(pos, delta_nab2, read_order) * growths.squeeze()
+    weights += bn2 * delta_nab2_pos
+
+    # Apply b3, local term
+    delta3_pos = delta_pos**3
+    # delta3_pos -= 3 * sigma2 * delta_pos * (1 + 4 * fNL * phi_pos) # if expansion is based on PNGed fields
+    delta3_pos -= 3 * sigma2 * delta_pos
+    weights += b3 * delta3_pos / 6
+
+    # Apply bdeltashear2, non-local term
+    delta_shear2_pos = delta_pos * shear2_pos
+    delta_shear2_pos -= 2 / 3 * sigma2 * delta_pos
+    weights += bds2 * delta_shear2_pos
+
+    # Apply bshear3, non-local term
+    shear3 = 3 * (a*(b*c - f**2) - d*(d*c - e*f) + e*(d*f - b*e)) # = 3 det(shear), using Sarrus rule 3 \diags - 3 /diags
+    shear3_pos = read(pos, shear3, read_order) * growths.squeeze()**3
+    weights += bs3 * shear3_pos
 
     if png_type is not None:
         trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
@@ -342,63 +400,28 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
         
         # Apply bphidelta, primordial term
         phi_delta_pos = phi_pos * delta_pos
-        weights += fNL_bpd * (phi_delta_pos - phi_delta_pos.mean())
+        sigma_pd = phi_delta_pos.mean()
+        phi_delta_pos -= sigma_pd
+        weights += fNL_bpd * phi_delta_pos
 
         # Apply bnabla2phi, primordial higher-order term
         phi_nab2 = jnp.fft.irfftn( - kmesh**2 * safe_div(init_mesh, trans_phi2delta))
         phi_nab2_pos = read(pos, phi_nab2, read_order)
         weights += fNL_bn2p * phi_nab2_pos
+
+        # Apply bphidelta2, primordial term
+        phi_delta2_pos = phi_pos * delta2_pos
+        phi_delta2_pos -= sigma2 * phi_pos + 2 * sigma_pd * delta_pos
+        weights += fNL_bpd2 * phi_delta2_pos
+
+        # Apply bphishear2, primordial term
+        phi_shear2_pos = phi_pos * shear2_pos
+        phi_shear2_pos -= 2 / 3 * sigma2 * phi_pos
+        weights += fNL_bps2 * phi_shear2_pos
     else: 
         phi_pos = 0. ###XXX
 
-
-    # Apply b2, punctual term
-    delta2_pos = delta_pos**2
-    sigma2 = delta2_pos.mean()
-    # Unadvected renormalization  
-    # delta2_pos -= sigma2 * (1 + 4 * fNL * phi_pos)
-    # Advected renormalization
-    delta2_pos -= sigma2
-    weights += b2 * delta2_pos / 2
-    # debug.print('delta2_pos mean {mean} std {std}', mean=delta2_pos.mean(), std=delta2_pos.std())
-
-    # Apply bshear2, non-punctual term
-    pot = init_mesh * invlaplace_hat(kvec)
-    dims = range(len(kvec))
-    shear2 = 0.
-
-    for i in dims:
-        # Add diagonal terms
-        nabi = gradient_hat(kvec, i)
-        shear2 += jnp.fft.irfftn(nabi**2 * pot - init_mesh / 3)**2
-        for j in dims[i+1:]:
-            # Add strict-up-triangle terms (counted twice)
-            nabj = gradient_hat(kvec, j)
-            shear2 += 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
-
-    shear2_pos = read(pos, shear2, read_order) * growths.squeeze()**2
-    # Unadvected renormalization
-    # shear2_pos -= 2 / 3 * sigma2 * (1 + 4 * fNL * phi_pos) # <s^2> = 2/3 <delta^2>
-    # Advected renormalization
-    shear2_pos -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
-    weights += bs2 * shear2_pos
-
-    # Apply bnabla2, higher-order term
-    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * init_mesh)
-
-    delta_nab2_pos = read(pos, delta_nab2, read_order) * growths.squeeze()
-    weights += bn2 * delta_nab2_pos
-
-    # Apply b3, punctual term
-    delta3_pos = delta_pos**3
-    # Unadvected renormalization
-    # delta3_pos -= 3 * sigma2 * delta_pos * (1 + 4 * fNL * phi_pos)
-    # Advected renormalization
-    delta3_pos -= 3 * sigma2 * delta_pos
-    weights += b3 * delta3_pos / 6
-
-
-    # Compute separately bnablapar, velocity bias term
+    # Compute separately bnablapar, velocity bias term ~ (kmu)^2 delta.
     delta_nabpar_pos = jnp.stack([
                 read(pos, jnp.fft.irfftn(gradient_hat(kvec, i) * init_mesh), read_order) 
                 for i in range(len(kvec))], axis=-1) # in h/Mpc 
@@ -500,9 +523,7 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
     # Apply b2, punctual term
     delta2 = delta**2
     sigma2 = delta2.mean()
-    # # Unadvected renormalization
-    # delta2 -= sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh)
-    # Advected renormalization
+    # delta2 -= sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh) # if expansion is based on PNGed fields
     delta2 -= sigma2
     weights += b2 * delta2 / 2
 
@@ -520,9 +541,7 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
             nabj = gradient_hat(kvec, j)
             shear2 += 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
 
-    # # Unadvected renormalization
-    # shear2 -= 2 / 3 * sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh) # <s^2> = 2/3 <delta^2>
-    # Advected renormalization
+    # shear2 -= 2 / 3 * sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh) # if expansion is based on PNGed fields
     shear2 -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
     weights += bs2 * shear2
 
@@ -581,40 +600,40 @@ def sobol_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
     return jnp.array(sampler.random(n=ptcl_shape.prod()) * mesh_shape)
 
 
-def cell2phys_pos(pos, box_center:np.ndarray, box_rot:Rotation, box_size:np.ndarray, mesh_shape:np.ndarray):
+def cell2phys_pos(pos, box_center:tuple, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Cell positions to physical positions.
     """
-    pos *= (box_size / mesh_shape)
-    pos -= box_size / 2
+    pos *= np.divide(box_size, mesh_shape)
+    pos -= np.asarray(box_size) / 2
     pos = box_rot.apply(pos)
-    pos += box_center
+    pos += np.asarray(box_center)
     return pos
 
-def phys2cell_pos(pos, box_center:np.ndarray, box_rot:Rotation, box_size:np.ndarray, mesh_shape:np.ndarray):
+def phys2cell_pos(pos, box_center:tuple, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Physical positions to cell positions.
     """
-    pos -= box_center
+    pos -= np.asarray(box_center)
     pos = box_rot.apply(pos, inverse=True)
-    pos += box_size / 2
-    pos /= (box_size / mesh_shape)
+    pos += np.asarray(box_size) / 2
+    pos /= np.divide(box_size, mesh_shape)
     return pos
 
-def cell2phys_vel(vel, box_rot:Rotation, box_size:np.ndarray, mesh_shape:np.ndarray):
+def cell2phys_vel(vel, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Cell velocities to physical velocities.
     """
-    vel *= (box_size / mesh_shape)
+    vel *= np.divide(box_size, mesh_shape)
     vel = box_rot.apply(vel)
     return vel
 
-def phys2cell_vel(vel, box_rot:Rotation, box_size:np.ndarray, mesh_shape:np.ndarray):
+def phys2cell_vel(vel, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Physical velocities to cell velocities.
     """
     vel = box_rot.apply(vel, inverse=True)
-    vel /= (box_size / mesh_shape)
+    vel /= np.divide(box_size, mesh_shape)
     return vel
 
 
@@ -641,7 +660,7 @@ def radius_mesh(box_center:tuple, box_rot:Rotation, box_size:tuple, mesh_shape:t
         rmesh = jnp.abs(sum(ri for ri in rvec))
     return rmesh
 
-def pos_mesh(box_center, box_rot:Rotation, box_size, mesh_shape):
+def pos_mesh(box_center:tuple, box_rot:Rotation, box_size:tuple, mesh_shape:tuple):
     """
     Return a mesh of the physical positions of the mesh cells.
     """
@@ -693,10 +712,10 @@ def isoap2parperp(alpha_iso, alpha_ap):
 ################################
 # Cell to Physical to Redshift #
 ################################
-def tophysical_pos(pos, box_center, box_rot:Rotation, box_size, mesh_shape, 
+def los_scalefactor_pos(pos, box_center, box_rot:Rotation, box_size, mesh_shape, 
                cosmo:Cosmology, a_obs=None, curved_sky=True):
     """
-    Return physical positions, distances, line-of-sight(s), and scale factor(s)
+    Return line-of-sight(s) and scale factor(s)
     for the different configurations of light-cone and sky.
     """
     pos = cell2phys_pos(pos, box_center, box_rot, box_size, mesh_shape)
@@ -711,12 +730,13 @@ def tophysical_pos(pos, box_center, box_rot:Rotation, box_size, mesh_shape,
         a = chi2a(cosmo, rpos)
     else:
         a = a_obs
-    return pos, rpos, los, a
+    return los, a
 
-def tophysical_mesh(box_center, box_rot:Rotation, box_size, mesh_shape, 
+def los_scalefactor_mesh(box_center, box_rot:Rotation, box_size, mesh_shape, 
                     cosmo:Cosmology, a_obs=None, curved_sky=True):
     """
-    Return scale factor mesh for the different configurations of light-cone and sky.
+    Return line-of-sight and scale factor mesh 
+    for the different configurations of light-cone and sky.
     """
     if curved_sky:
         pos = pos_mesh(box_center, box_rot, box_size, mesh_shape)
@@ -955,7 +975,7 @@ def minmax_box(pos):
     center = (low_corner + high_corner) / 2
     size = high_corner - low_corner
     rotvec = jnp.zeros(jnp.shape(pos)[-1])
-    return center, rotvec, size
+    return size, center, rotvec
 
 def get_mesh_shape(box_size, cell_budget, padding=0.):
     """
@@ -968,22 +988,20 @@ def get_mesh_shape(box_size, cell_budget, padding=0.):
     return mesh_shape, cell_length
 
 
-def catalog2config(data, cosmo:Cosmology, cell_budget:float, padding:float=0.,
-                   box_center:tuple=None, box_rotvec:tuple=None, box_size:tuple=None):
+def cutsky2config(data, cosmo:Cosmology, cell_budget:float, padding:float=0.,
+                   box_size:tuple=None, box_center:tuple=None, box_rotvec:tuple=None):
     # import fitsio
     # data = fitsio.read(path, columns=['RA','DEC','Z','WEIGHT'])
     pos = radecz2cart(cosmo, data)
-    box_center_temp, box_rotvec_temp, box_size_temp = minmax_box(pos)
-
-    box_center = box_center_temp if box_center is None else np.asarray(box_center)
-    box_rotvec = box_rotvec_temp if box_rotvec is None else np.asarray(box_rotvec)
-    box_size = box_size_temp if box_size is None else np.asarray(box_size)
+    computed = minmax_box(pos)
+    provided = [box_size, box_center, box_rotvec]
+    box_size, box_center, box_rotvec = (np.array(prov) if prov is not None else comp for prov, comp in zip(provided, computed))
 
     final_shape, cell_length = get_mesh_shape(box_size, cell_budget, padding)
-    # box_size = final_shape * cell_length # box_size update due to rounding and padding
+    # NOTE: box_size might update due to rounding and padding as box_size = final_shape * cell_length
     return final_shape, cell_length, box_center, box_rotvec
 
-def catalog2selection(data, cosmo:Cosmology, mask_shape:tuple, selec_shape:tuple, paint_shape:tuple|float, 
+def cutsky2selection(data, cosmo:Cosmology, mask_shape:tuple, selec_shape:tuple, paint_shape:tuple|float, 
                       box_size:tuple, box_center:tuple, box_rotvec:tuple,
                       paint_order:int=2, interlace_order:int=2, paint_deconv:bool=True,):
     """
@@ -1009,7 +1027,7 @@ def catalog2selection(data, cosmo:Cosmology, mask_shape:tuple, selec_shape:tuple
     return selec_mesh, mask_mesh
 
 
-def catalog2count(data, mask_mesh, cosmo:Cosmology, paint_shape:tuple|float,
+def cutsky2count(data, cosmo:Cosmology, count_shape:tuple, paint_shape:tuple|float,
                  box_size:tuple, box_center:tuple, box_rotvec:tuple,
                  paint_order:int=2, interlace_order:int=2, paint_deconv:bool=True,):
     """
@@ -1019,13 +1037,45 @@ def catalog2count(data, mask_mesh, cosmo:Cosmology, paint_shape:tuple|float,
     # data = fitsio.read(path, columns=['RA','DEC','Z'])
     pos = radecz2cart(cosmo, data)
     box_rot = Rotation.from_rotvec(box_rotvec)
-    count_shape = np.array(mask_mesh.shape)
 
     pos = phys2cell_pos(pos, box_center, box_rot, box_size, count_shape)
     count_mesh = nufft(pos, count_shape, paint_shape, weights=jnp.array(data['WEIGHT']),
                         paint_order=paint_order, interlace_order=interlace_order, paint_deconv=paint_deconv)
     count_mesh = jnp.fft.irfftn(count_mesh)
-    count_mesh *= np.divide(paint_shape, count_shape).prod()
+    return count_mesh
+
+
+def fullsky2count(data, cosmo:Cosmology, a_obs:float, los:tuple, 
+                box_size:tuple, box_center:tuple, box_rotvec:tuple, 
+                final_shape:tuple, paint_shape:tuple|float,
+                paint_order:int=2, interlace_order:int=2, paint_deconv:bool=True,):
+    """
+    Return painted count mesh @ final_shape and weighted object number from cartesian particle
+    positions (full-sky periodic box). `data` is a dict with a cartesian 'pos' (and optional 'vel',
+    'WEIGHT'), or an iterable of such dicts streamed and accumulated in Fourier space (e.g. the
+    abacus matter field over many files). If 'vel' is present, redshift-space distortion is applied
+    along the box line of sight (box_center direction) using `cosmo` at scale factor `a_obs`.
+    """
+    box_rot = Rotation.from_rotvec(np.asarray(box_rotvec))
+    los = np.asarray(los)
+
+    chunks = [data] if isinstance(data, dict) else data # a dict, or an iterable of dicts
+    count_mesh = jnp.zeros(r2chshape(tuple(int(s) for s in final_shape)), dtype=complex)
+    n_tracers = 0.
+    for chunk in chunks:
+        pos = np.asarray(chunk['pos'], dtype=float)
+        if 'vel' in chunk:
+            E = background.Esqr(cosmo, a_obs)**.5
+            vel = np.asarray(chunk['vel'], dtype=float) / (a_obs * 100 * E) # peculiar vel -> Mpc/h
+            pos = pos + (vel * los).sum(-1, keepdims=True) * los
+        weights = jnp.asarray(chunk['WEIGHT']) if 'WEIGHT' in chunk else 1.
+        pos = phys2cell_pos(pos, box_center, box_rot, box_size, final_shape)
+        count_mesh = count_mesh + nufft(pos, final_shape, paint_shape, weights=weights,
+                        paint_order=paint_order, interlace_order=interlace_order, paint_deconv=paint_deconv)
+        n_tracers += jnp.sum(weights) if 'WEIGHT' in chunk else len(pos)
+    count_mesh = jnp.fft.irfftn(count_mesh)
+    # nufft applies the final->paint units jacobian, so count_mesh.sum() == n_tracers.
+    assert jnp.allclose(count_mesh.sum(), n_tracers), f"Count mesh sum {count_mesh.sum()} does not match number of tracers {n_tracers}."
     return count_mesh
 
 

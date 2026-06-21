@@ -561,11 +561,14 @@ def nufft(pos, final_shape:tuple, paint_shape:tuple|float=None, weights=1.,
     elif isinstance(paint_shape, float):
         paint_oversamp = paint_shape
         paint_shape = scale_shape(final_shape, paint_oversamp)
-    else:
+    elif isinstance(paint_shape, tuple | np.ndarray):
         paint_oversamp = np.exp(np.log(np.divide(final_shape, paint_shape)).mean())
+    else:
+        raise ValueError("paint_shape must be None, a float, or a tuple/ndarray")
 
-    pos *= np.divide(paint_shape, final_shape) # final cell units to paint cell units
+    pos *= np.divide(paint_shape, final_shape) # final units to paint units
     mesh = interlace(pos, paint_shape, weights, paint_order, interlace_order, kernel_type=kernel_type, paint_oversamp=paint_oversamp)
+    mesh *= np.divide(paint_shape, final_shape).prod() # jacobian of final units to paint units
 
     if paint_deconv:
         mesh = deconv_paint(mesh, paint_order, kernel_type=kernel_type, oversamp=paint_oversamp)
@@ -595,7 +598,7 @@ def pm_forces(pos, mesh:tuple|jnp.ndarray, read_order:int=2,
     if kcut != np.inf:
         pot *= gaussian_hat(kvec, kcut)
 
-    # Compute gravitational forces
+    # Employ 3 FFTs
     # NOTE: for regularly spaced positions, reading with paint_order=2 <=> paint_order=1
     return jnp.stack([read(pos, jnp.fft.irfftn(- gradient_hat(kvec, i, grad_fd) * pot), read_order) 
                       for i in range(len(kvec))], axis=-1)
@@ -608,6 +611,7 @@ def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, grad_fd=np.inf, lap_fd=n
     kvec = rfftk(ch2rshape(mesh.shape)) # in cell units
     pot = mesh * invlaplace_hat(kvec, lap_fd)
 
+    # Employ 6 FFTs
     delta2 = 0.
     hesses = 0.
     for i in range(len(kvec)):
@@ -622,6 +626,7 @@ def pm_forces2(pos, mesh:jnp.ndarray, read_order:int=2, grad_fd=np.inf, lap_fd=n
             hess_ij = gradient_hat(kvec, i, grad_fd) * gradient_hat(kvec, j, grad_fd)
             delta2 -= jnp.fft.irfftn(hess_ij * pot)**2
 
+    # Employ 1 + 3 FFTs
     force2 = pm_forces(pos, jnp.fft.rfftn(delta2), read_order, grad_fd=grad_fd, lap_fd=lap_fd)
     return force2
 
@@ -646,10 +651,12 @@ def lpt(
     if jnp.isrealobj(init_mesh):
         init_mesh = jnp.fft.rfftn(init_mesh)
 
+    # Employ 3 FFTs
     force1 = pm_forces(pos, init_mesh, read_order, grad_fd=grad_fd, lap_fd=lap_fd)
     dpos = a2g(cosmo, a) * force1
     vel = force1
 
+    # Employ 10 FFTs
     if lpt_order == 2:
         # NOTE: For 3LPT and more, it can be more efficient to compute force only twice, 
         # for dpos and vel, than to compute it for every term.

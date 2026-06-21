@@ -17,16 +17,16 @@ from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, fNL_bias,
-                               top_hat_selection, gen_gauss_selection, tophysical_mesh, tophysical_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
+                               top_hat_selection, gen_gauss_selection, los_scalefactor_mesh, los_scalefactor_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
-                               catalog2count, catalog2config, catalog2selection, pos_mesh, regular_pos, sobol_pos, set_radial_count, count2delta)
+                               cutsky2count, cutsky2config, cutsky2selection, fullsky2count, get_mesh_shape, pos_mesh, regular_pos, sobol_pos, set_radial_count, count2delta)
 from montecosmo.nbody import (lpt, nbody_bf, nbody_bf_scan, chi2a, a2chi, a2g, g2a, a2f, 
                               nbody_tsit5, 
                               paint, read, deconv_paint, nufft, rfftk, top_hat)
 from montecosmo.metrics import spectrum, powtranscoh, distr_radial, distr_angular, mse_radius, mse_value, mse_wave
-from montecosmo.utils import (ysafe_dump, ysafe_load,
+from montecosmo.utils import (ysafe_dump, ysafe_load, h5save, h5load,
                               cgh2rg, rg2cgh, ch2rshape, r2chshape, chreshape, masked2mesh, mesh2masked, scale_shape,
-                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, SinhArcsinh, SinhArcsinhOld, QuadGaussian, TwoQuadGaussian, rg2cgh2)
+                              nvmap, safe_div, DetruncTruncNorm, DetruncUnif, SinhArcsinh, QuadGaussian, TwoQuadGaussian, rg2cgh2)
 from montecosmo.chains import Chains
 
 
@@ -40,7 +40,6 @@ default_config={
         # 'box_size': 3 * (1280.,), # in Mpc/h
         'k_cut': jnp.inf, # in h/Mpc, if None, k_nyquist
         # Init
-        'register_init':None, # if None, use EH approx, if str or Path, path to initial (wavenumber, power) file
         'png_type': None, # None, 'fNL', 'fNL_bias'
         # Evolution
         'evolution':'lpt', # kaiser, lpt, nbody
@@ -51,19 +50,20 @@ default_config={
         'paint_order':2, # order of interpolation kernel
         'paint_deconv': True, # whether to deconvolve painted field
         'kernel_type':'rectangular', # 'rectangular', 'kaiser_bessel'
-        'init_oversamp':1., # initial mesh 1D oversampling factor
+        'init_oversamp':3/2, # initial mesh 1D oversampling factor
         'evol_oversamp':7/4, # evolution mesh 1D oversampling factor
         'ptcl_oversamp':7/4, # particle cloud 1D oversampling factor
-        'paint_oversamp':3/2, # painted mesh 1D oversampling factor
+        # 'paint_oversamp':3/2, # painted mesh 1D oversampling factor
+        'paint_oversamp':7/4, # painted mesh 1D oversampling factor (7/4 for selection function)
         'interlace_order':2, # interlacing order
         # Observables
         'observable':'field', # 'field', TODO: 'powspec' (with poles), 'bispec'
         'poles':(0,2,4), # multipoles order to compute, if observable is 'powspec'
-        'a_obs':None, # if None, light-cone
+        'a_obs':None, # if None then light-cone
         'curved_sky':True, # curved vs. flat sky
-        'ap_auto': None, # auto AP vs. parametric AP, if None, no AP
-        'register_obs':None, # if float, padded fraction, if str or Path, path to painted meshes file
-        'n_rbins':None, # if None, set to maximum number of radial bins
+        'ap_auto': None, # auto AP vs. parametric AP, if None then no AP
+        'register':None, # if None then no data; if str or Path then path to a register HDF5 file
+        'n_rbins':None, # if None then set to maximum number of radial bins
         'lik_type': 'quad_gauss', # poisson, fourier_gauss, quad_gauss
         'bias_type': 'lagrangian', # lagrangian, eulerian
         # Latents
@@ -120,6 +120,24 @@ default_config={
                             'scale':1e2,
                             'scale_fid':1e-1,
                             },
+                'b3': {'group':'bias',
+                            'label':r'{b}_{3}',
+                            'loc':0.,
+                            'scale':1e2,
+                            'scale_fid':3e-2,
+                            },
+                'bds2': {'group':'bias',
+                            'label':r'{b}_{\delta s^2}',
+                            'loc':0.,
+                            'scale':1e2,
+                            'scale_fid':1e0,
+                            },
+                'bs3': {'group':'bias',
+                            'label':r'{b}_{s^3}',
+                            'loc':0.,
+                            'scale':1e2,
+                            'scale_fid':1e0,
+                            },
                 'bn2': {'group':'bias',
                             'label':r'{b}_{\nabla^2}',
                             'loc':0.,
@@ -132,29 +150,35 @@ default_config={
                             'scale':1e2,
                             'scale_fid':1e0,
                             },
-                'b3': {'group':'bias',
-                            'label':r'{b}_{3}',
-                            'loc':0.,
-                            'scale':1e2,
-                            'scale_fid':3e-2,
-                            },                            
                 'fNL': {'group':'png',
                             'label':r'{f}_\mathrm{NL}',
                             'loc':0.,
-                            'scale':3e3,
+                            'scale':1e4,
                             'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_\phi',
                             'loc':0.,
-                            'scale':3e3,
+                            'scale':1e4,
                             'scale_fid':3e1,
                             },
                 'fNL_bpd': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_{\phi\delta}',
                             'loc':0.,
-                            'scale':3e3,
+                            'scale':1e4,
                             'scale_fid':3e2,
+                            },
+                'fNL_bpd2': {'group':'png',
+                            'label':r'{f}_\mathrm{NL} b_{\phi\delta^2}',
+                            'loc':0.,
+                            'scale':1e8,
+                            'scale_fid':1e4,
+                            },
+                'fNL_bps2': {'group':'png',
+                            'label':r'{f}_\mathrm{NL} b_{\phi s^2}',
+                            'loc':0.,
+                            'scale':1e8,
+                            'scale_fid':1e4,
                             },
                 'fNL_bn2p': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_{\nabla^2\phi}',
@@ -188,7 +212,7 @@ default_config={
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                's_e': {'group':'syst',
+                's_e': {'group':'stoch',
                                 'label':r'{s}_{\epsilon}',
                                 'loc':1.,
                                 # 'scale':1e-1,
@@ -197,38 +221,38 @@ default_config={
                                 'low':0.,
                                 'high':jnp.inf,
                                 },
-                's_k2e': {'group':'syst',
+                's_k2e': {'group':'stoch',
                                 'label':r'{s}_{k^2}',
                                 'loc':0.,
                                 'scale':3e2,
                                 'scale_fid':1e1,
                                 },
-                's_kmu2e': {'group':'syst',
+                's_kmu2e': {'group':'stoch',
                                 'label':r'{s}_{k^2\mu^2}',
                                 'loc':0.,
                                 'scale':3e2,
                                 'scale_fid':1e1,
                                 },
-                's_ed': {'group':'syst',
+                's_ed': {'group':'stoch',
                                 'label':r'{s}_{\epsilon\delta}',
                                 'loc':0.,
                                 'scale':1e1,
                                 'scale_fid':1e-2,
                                 },
-                's_e2': {'group':'syst',
+                's_e2': {'group':'stoch',
                                 'label':r'{s}_{\epsilon^2}',
                                 'loc':0.,
                                 'scale':1e1,
                                 'scale_fid':3e-3,
                                 },
-                # 's_phi': {'group':'syst',
-                #                 'label':'{s}_{\\phi}',
-                #                 'loc':0.,
-                #                 'scale':1e3,
-                #                 'scale_fid':1e2,
-                #                 },
+                's_phi': {'group':'stoch',
+                                'label':r'{s}_{\phi}',
+                                'loc':0.,
+                                'scale':1e3,
+                                'scale_fid':1e2,
+                                },
                 'init_mesh': {'group':'init',
-                                'label':'{\\delta}_\\mathrm{L}',},
+                                'label':r'{\delta}_\mathrm{L}',},
                 },
         }
 
@@ -458,8 +482,7 @@ class FieldLevelModel(Model):
     box_center:np.ndarray
     box_rotvec:np.ndarray
     k_cut:None|float
-    # Init  
-    register_init:None|str|Path
+    # Init
     png_type:None|str
     # Evolution
     evolution:str
@@ -481,7 +504,7 @@ class FieldLevelModel(Model):
     a_obs:None|float
     curved_sky:bool
     ap_auto:bool
-    register_obs:None|float|str|Path
+    register:None|float|Path
     n_rbins:None|int
     lik_type:str
     bias_type:str
@@ -492,46 +515,48 @@ class FieldLevelModel(Model):
     def __post_init__(self):
         super().__post_init__()
 
-        # Initial mesh and power spectrum
-        if self.register_init is None:
+        if isinstance(self.register, (str, Path.__base__)):
+            # Load the register file overriding the corresponding config attributes.
+            self.register = str(self.register) # cast to str to allow yaml saving
+            reg = h5load(self.register)
+
+            # Geometry and shapes (mandatory)
+            for k in (
+                'cell_length', 'box_center', 'box_rotvec',
+                'init_oversamp', 'paint_oversamp', 
+                ):
+                setattr(self, k, reg[k])
+
+            # Sky and painting (optional)
+            for k in (
+                'a_obs', 'curved_sky',
+                'paint_order', 'interlace_order', 'paint_deconv', 'kernel_type'
+                ):
+                if k in reg:
+                    setattr(self, k, reg[k])
+
+            # Meshes
+            self.count_mesh = reg['count_mesh'] # the only mandatory mesh
+            self.final_shape = self.count_mesh.shape
+            self.init_kpow = reg.get('init_kpow', None) # normalized to sigma8=1
+            self.init_mesh = reg.get('init_mesh', reg.get('init_fake', None))
+            self.selec_mesh = reg.get('selec_mesh', np.array(1.))
+            self.mask_mesh = reg.get('mask_mesh', None)
+
+            # Mean density and fiducial cosmology
+            n_cells = self.mask_mesh.sum() if self.mask_mesh is not None else self.count_mesh.size
+            n_tracers = reg.get('n_tracers', self.count_mesh.sum())
+            ngbar = n_tracers / (n_cells * self.cell_length**3) # in galaxy / (Mpc/h)^3
+            self.latents = self.new_latents_from_loc(reg['cosmo_fid'] | {'ngbars': ngbar}, update_prior=True)
+        elif self.register is None:
             self.init_kpow = None
             self.init_mesh = None
-        elif isinstance(self.register_init, (str, Path.__base__)):
-            self.register_init = str(self.register_init) # cast to str to allow yaml saving
-            register_init = np.load(self.register_init)
-            self.init_kpow = register_init.get('init_kpow', None) # normalized to sigma8=1
-            self.init_mesh = register_init.get('init_mesh', register_init.get('init_fake', None))
-        else:
-            raise ValueError("register_init should be None, str, or Path.")
-        
-        # Load data and selection, along with their geometry
-        # TODO: might implement selection in Lagrangian: 
-        # still requires the eulerian selec, to be read and used in likelihood, 
-        # but can use lagrangian for computing the product delta * selec. 
-        # However, can lack consistency with likelihood
-        if self.register_obs is None:
+            self.count_mesh = None
             self.selec_mesh = np.array(1.)
-            self.mask_mesh = ...
-            self.selec_fid = np.array(1.)
-        elif isinstance(self.register_obs, float):
-            # TODO: to fix shapes
-            self.selec_mesh = top_hat_selection(self.evol_shape, self.register_obs, norm_order=np.inf, pow_order=np.inf)
-            self.selec_mesh *= gen_gauss_selection(self.box_center, self.box_rot, self.box_size, 
-                                self.evol_shape, None, None, order=4.)
-            self.mask_mesh = self.selec_mesh > 0
-            self.selec_mesh /= self.selec_mesh[self.mask_mesh].mean()
-            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
-        elif isinstance(self.register_obs, (str, Path.__base__)):
-            self.register_obs = str(self.register_obs) # cast to str to allow yaml saving
-            register_obs = np.load(self.register_obs)
-            self.selec_mesh = register_obs['selec_mesh']
-            self.mask_mesh = register_obs['mask_mesh']
-            self.count_mesh = register_obs['count_mesh']
-            self.latents['ngbars']['loc'] = register_obs['ngbars'] # before _validate_rbins
-            self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
+            self.mask_mesh = None
         else:
-            raise ValueError("register_obs should be None, float, str, or Path.")
-        
+            raise ValueError("register should be None, str, or Path.")
+
         # Geometry
         self.cell_length = float(self.cell_length)
         self.box_center = np.asarray(self.box_center)
@@ -574,7 +599,7 @@ class FieldLevelModel(Model):
         self.loc_fid = self._loc_fid()
         self.count_fid = self.loc_fid['ngbars'].mean() * self.cell_length**3
         self.cosmo_fid = get_cosmology(**self.loc_fid)
-        _, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape,
+        _, a = los_scalefactor_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape,
                                 self.cosmo_fid, self.a_obs, self.curved_sky)
         self.a_fid = g2a(self.cosmo_fid, jnp.mean(a2g(self.cosmo_fid, a)))
         los = safe_div(self.box_center, np.linalg.norm(self.box_center))
@@ -618,11 +643,11 @@ class FieldLevelModel(Model):
         """
         # Sample, reparametrize, and register cosmology and biases
         tup = ()
-        for g in ['cosmo', 'bias', 'png', 'ap', 'syst']:
+        for g in ['cosmo', 'bias', 'png', 'stoch', 'ap', 'syst']:
             dic = self._sample(self.groups[g]) # sample               
             dic = samp2base(dic, self.latents, inv=False, temp=temp) # reparametrize
             tup += ({k: deterministic(k, v) for k, v in dic.items()},) # register base params
-        cosmo, bias, png, ap, syst = tup
+        cosmo, bias, png, stoch, ap, syst = tup
         cosmology = get_cosmology(**cosmo)
 
         # if 'b1' in bias:
@@ -636,7 +661,7 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_'
-        scale, transfer = self._precond_scale_and_transfer(cosmology, bias, syst)
+        scale, transfer = self._precond_scale_and_transfer(cosmology, bias, stoch)
 
         if self.cut_mask is not None:       
             samp = sample(name_, dist.Normal(0., scale[self.cut_mask])) # sample
@@ -647,12 +672,12 @@ class FieldLevelModel(Model):
         init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
-        return cosmology, bias, png, ap, syst, init
+        return cosmology, bias, png, stoch, ap, syst, init
 
 
 
     def evolve(self, params:tuple):
-        cosmology, bias, png, ap, syst, init = params
+        cosmology, bias, png, stoch, ap, syst, init = params
         
         init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
         png = fNL_bias(png, bias, p=1., png_type=self.png_type)
@@ -667,7 +692,7 @@ class FieldLevelModel(Model):
                 init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
                 init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
 
-            los, a = tophysical_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
+            los, a = los_scalefactor_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
             gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
@@ -715,7 +740,7 @@ class FieldLevelModel(Model):
         else:
             # Create regular grid of particles, and get their scale factors
             pos = regular_pos(self.evol_shape, self.ptcl_shape)
-            _, _, _, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
+            _, a = los_scalefactor_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights (based on initial particules positions)
@@ -746,8 +771,9 @@ class FieldLevelModel(Model):
                 pos, vel = deterministic('nbody_ptcl', jnp.array((pos, vel)))
                 pos, vel = tree.map(lambda x: x[-1], (pos, vel))
 
-            pos, rpos, los, a = tophysical_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape,
-                                        cosmology, self.a_obs, self.curved_sky)        
+            los, a = los_scalefactor_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape,
+                                        cosmology, self.a_obs, self.curved_sky)
+            pos = cell2phys_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape)      
 
             # RSD and Alcock-Paczynski effects
             dpos = rsd(cosmology, vel, los, a, self.box_rot, self.box_size, self.evol_shape, dvel)
@@ -763,39 +789,46 @@ class FieldLevelModel(Model):
 
             # Paint weighted by Lagrangian bias expansion weights
             if self.bias_type == 'lagrangian':
+                # pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.final_shape)
                 pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.init_shape)
+                # NOTE: final deconvolution can amplify AP-induced high-frequencies.
+                # gxy_mesh = nufft(pos, self.final_shape, self.paint_shape, weights=lbe_weights, 
                 gxy_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=lbe_weights, 
-                                paint_order=self.paint_order, interlace_order=self.interlace_order, kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                                paint_order=self.paint_order, interlace_order=self.interlace_order, 
+                                kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                # gxy_mesh *= np.divide(self.final_shape, self.ptcl_shape).prod() # jacobian of ptcl units to final units
+                gxy_mesh *= np.divide(self.init_shape, self.ptcl_shape).prod()
+
+                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.paint_shape))
+                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
+
                 # gxy_mesh = jnp.fft.rfftn(jnp.fft.irfftn(gxy_mesh) * (1 + bias['b1'] * jnp.fft.irfftn(init['init_mesh']))) ###XXX
                 # gxy_mesh = jnp.fft.rfftn(1 + (jnp.fft.irfftn(gxy_mesh) - 1) * (1 + bias['b1'])) ###XXX
-                
-                # NOTE: final deconvolution can amplify AP-induced high-frequencies.
-                gxy_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-                gxy_mesh = chreshape(gxy_mesh, r2chshape(self.evol_shape))
-                gxy_mesh = jnp.fft.irfftn(gxy_mesh)
                 # gxy_mesh = 1 + (gxy_mesh - 1) * (1 + bias['b1']) ###XXX
 
             elif self.bias_type == 'eulerian':
                 pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.init_shape)
-                cdm_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=1., 
-                                paint_order=self.paint_order, interlace_order=self.interlace_order, kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
-                cdm_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-                cdm_mesh = chreshape(cdm_mesh, r2chshape(self.evol_shape))
-                print(jnp.fft.irfftn(cdm_mesh).mean(), jnp.fft.irfftn(cdm_mesh).std())
+                matter_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=1., 
+                                paint_order=self.paint_order, interlace_order=self.interlace_order, 
+                                kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                matter_mesh *= (self.paint_shape / self.ptcl_shape).prod()
+                matter_mesh = chreshape(matter_mesh, r2chshape(self.paint_shape))
+                print(jnp.fft.irfftn(matter_mesh).mean(), jnp.fft.irfftn(matter_mesh).std())
 
                 phi_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=phi_pos, 
-                                paint_order=self.paint_order, interlace_order=self.interlace_order, kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                                paint_order=self.paint_order, interlace_order=self.interlace_order, 
+                                kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
                 phi_mesh *= (self.paint_shape / self.ptcl_shape).prod()
-                phi_mesh = chreshape(phi_mesh, r2chshape(self.evol_shape))
+                phi_mesh = chreshape(phi_mesh, r2chshape(self.paint_shape))
                 print(jnp.fft.irfftn(phi_mesh).mean(), jnp.fft.irfftn(phi_mesh).std())
 
-                gxy_mesh = eulerian_bias(cdm_mesh, phi_mesh, self.box_size, bias, png, png_type=self.png_type)
+                gxy_mesh = eulerian_bias(matter_mesh, phi_mesh, self.box_size, bias, png, png_type=self.png_type)
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
-        return gxy_mesh, syst # NOTE: mesh is 1+delta_obs
+        return gxy_mesh, stoch, syst # NOTE: mesh is 1+delta_obs
 
 
     def likelihood(self, params:tuple, temp=1.):
@@ -804,7 +837,7 @@ class FieldLevelModel(Model):
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-        gxy_mesh, syst = params
+        gxy_mesh, stoch, syst = params
 
         if self.observable == 'field':
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
@@ -837,7 +870,7 @@ class FieldLevelModel(Model):
                 mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
                 mumesh = safe_div(mumesh, kmesh)
                 
-                scale = posit_fn(syst['s_e'] + syst['s_k2e'] * kmesh**2 + syst['s_kmu2e'] * (kmesh * mumesh)**2)
+                scale = posit_fn(stoch['s_e'] + stoch['s_k2e'] * kmesh**2 + stoch['s_kmu2e'] * (kmesh * mumesh)**2)
                 scale *= selec_mesh**.5 * temp**.5
                 scale = cgh2rg(scale, norm="amp")
                 count_mesh = cgh2rg(jnp.fft.rfftn(count_mesh))
@@ -848,9 +881,9 @@ class FieldLevelModel(Model):
                 # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
                 
-                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta) + 1e-9
+                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
-                scale2 = syst['s_e2']
+                scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5
 
                 # NOTE: QuadGaussian has a variable-dependent bounded support
@@ -859,9 +892,9 @@ class FieldLevelModel(Model):
 
             elif self.lik_type == 'two_quad_gauss':
                 delta = count_mesh / selec_mesh - 1
-                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta) + 1e-9
+                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
-                scale2 = syst['s_e2']
+                scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5
                 obs = sample("obs", TwoQuadGaussian(count_mesh, scale1, scale2))
                 
@@ -870,9 +903,9 @@ class FieldLevelModel(Model):
                 # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
                       
-                scale1 = posit_fn(syst['s_e'] + syst['s_ed'] * delta) + 1e-9
+                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
-                scale2 = syst['s_e2']
+                scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5 
             
                 # NOTE: Local moment-match to QuadGaussian(count_mesh, scale1, scale2) 
@@ -917,12 +950,13 @@ class FieldLevelModel(Model):
         groups = ['cosmo','bias','png','ap','syst','init']
         key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
         params_ = Chains(params_, self.groups | self.groups_).get(key) # use chain querying
-        cosmo_, bias_, png_, ap_, syst_, init, rest = (q.data for q in params_)
+        cosmo_, bias_, png_, stoch_, ap_, syst_, init, rest = (q.data for q in params_)
 
-        # Cosmology and Biases
+        # All params except init
         cosmo = samp2base(cosmo_, self.latents, inv=inv, temp=temp)
         bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
         png = samp2base(png_, self.latents, inv=inv, temp=temp)
+        stoch = samp2base(stoch_, self.latents, inv=inv, temp=temp)
         ap = samp2base(ap_, self.latents, inv=inv, temp=temp)
         syst = samp2base(syst_, self.latents, inv=inv, temp=temp)
 
@@ -931,7 +965,7 @@ class FieldLevelModel(Model):
             cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
             _, transfer = self._precond_scale_and_transfer(cosmology, 
                                                            bias_ if inv else bias, 
-                                                           syst_ if inv else syst)
+                                                           stoch_ if inv else stoch)
 
             if inv and not fourier:
                 init = tree.map(jnp.fft.rfftn, init)
@@ -945,7 +979,7 @@ class FieldLevelModel(Model):
             if not inv and not fourier:
                 init = tree.map(jnp.fft.irfftn, init)
 
-        out = cosmo | bias | png | ap | syst | init
+        out = cosmo | bias | png | stoch | ap | syst | init
         out = {k:v for k,v in out.items() if (k[:-1] if inv else k+'_') in params}
         rest = {k:v for k,v in rest.items() if k in params} # do not return data
         out = rest | out # possibly update rest
@@ -1081,7 +1115,7 @@ class FieldLevelModel(Model):
             dic[name+'_'] = samp
         return dic  
 
-    def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, syst):
+    def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, stoch):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
@@ -1107,9 +1141,8 @@ class FieldLevelModel(Model):
         
         elif self.precond=='kaiser_dyn':
             b1E = b1_L2E(bias['b1'])
-            count = syst['ngbars'].mean() * self.cell_length**3
             boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
-            var = syst['s_e'] / (count * self.selec_fid)
+            var = stoch['s_e'] / (self.count_fid * self.selec_fid)
 
             scale = (1 + boost**2 / var * pmesh)**.5
             transfer = pmesh**.5 / scale
@@ -1203,81 +1236,82 @@ class FieldLevelModel(Model):
             selec_mesh = np.asarray(self.selec_mesh)
         return count2delta(mesh, selec_mesh)
     
-    def register_catalog(self, data, random, save_path:str|Path, 
-                        cell_budget:float, padding:float=0., 
-                      box_size=None, box_center=None, box_rotvec=None):
+    @classmethod
+    def register_catalog(cls, cell_budget:float, cosmo_fid:Cosmology, data, random=None,
+                         box_size=None, box_center=None, box_rotvec=None, a_obs=None,
+                         padding:float=0., init_oversamp:float=3/2, paint_oversamp:float=7/4,
+                         paint_order:int=2, interlace_order:int=2, paint_deconv:bool=True, kernel_type:str='rectangular'):
         """
-        Compute and save painted selection, mask, and count meshes
-        from a (RA, DEC, Z, WEIGHT) random catalog, given budget and padding.
-        Optionally enforce box geometry. Then update model accordingly.
-        """
-        # Get geometry from random, budget, and padding 
-        final_shape, cell_length, box_center, box_rotvec = catalog2config(random, self.cosmo_fid, cell_budget, padding, 
-                                                                          box_size=box_size, box_center=box_center, box_rotvec=box_rotvec)
-        self.final_shape = final_shape
-        self.cell_length = cell_length
-        self.box_center = box_center
-        self.box_rotvec = box_rotvec
+        Register a particle catalog into the meshes and metadata an inference-ready model needs,
+        handling both sky and box catalogs (no model instance required):
 
+        * cut-sky  (`random` given): `data` and `random` are (RA, DEC, Z, WEIGHT) dict-likes; the
+          geometry is fit to the randoms, a selection and footprint mask are painted from the
+          randoms, and the count is painted from the data. 
+          `a_obs=None` (light-cone), `los=None` (curved-sky).
+        * full-sky (`random` None): `data` is cartesian 'pos' (and optional 'vel',
+          'WEIGHT') dict-like, or an iterable of such dicts (streamed, e.g. abacus matter over many files);
+          `box_size` gives the periodic box, and there is no selection/mask. If 'vel' is present,
+          RSD is applied at `a_obs` along the line of sight `los=(0,0,1)`.
+
+        Return a register dict (geometry, meshes, weighted counts, fiducial cosmology, painting
+        params) ready to be saved -- together with init data -- into a register HDF5 file via
+        `montecosmo.utils.h5save` (None values are dropped, signaling "absent" to the loader).
+        """
+        cut_sky = random is not None
+        # Geometry: fit to the randoms (cut-sky) or set the periodic box (full-sky)
+        if cut_sky:
+            assert a_obs is None, "For cut-sky catalog, a_obs must be None (light-cone)"
+            curved_sky = True
+            final_shape, cell_length, box_center, box_rotvec = cutsky2config(
+                random, cosmo_fid, cell_budget, padding, box_size=box_size, box_center=box_center, box_rotvec=box_rotvec)
+        else:
+            assert a_obs is not None and box_size is not None and box_center is not None,\
+            "For full-sky catalog, a_obs, los, box_size, and box_center must be provided"
+            box_rotvec = np.zeros(3) if box_rotvec is None else np.asarray(box_rotvec)
+            final_shape, cell_length = get_mesh_shape(box_size, cell_budget, padding=0.)
+            curved_sky = False
+        paint = dict(paint_order=paint_order, interlace_order=interlace_order, paint_deconv=paint_deconv)
         box_size = final_shape * cell_length # box_size update due to rounding and padding
-        evol_shape = scale_shape(final_shape, self.evol_oversamp)
-        init_shape = scale_shape(final_shape, self.init_oversamp)
-        
-        # Paint selection and mask from random catalog
-        selec_mesh, mask_mesh = catalog2selection(random, self.cosmo_fid, mask_shape=final_shape, selec_shape=init_shape, paint_shape=evol_shape,
-                                                box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
-                                                paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
-        selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(selec_mesh), r2chshape(evol_shape)))
+        init_shape = scale_shape(final_shape, init_oversamp)
+        paint_shape = scale_shape(final_shape, paint_oversamp)
 
-        # Paint count from data catalog, compute mean density within support
-        count_mesh = catalog2count(data, mask_mesh, self.cosmo_fid, evol_shape,
-                                          box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
-                                          paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
+        # Selection, mask, and count
+        if cut_sky:
+            selec_mesh, mask_mesh = cutsky2selection(
+                random, cosmo_fid, mask_shape=final_shape, selec_shape=init_shape, paint_shape=paint_shape,
+                box_size=box_size, box_center=box_center, box_rotvec=box_rotvec, **paint)
+            selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(selec_mesh), r2chshape(paint_shape)))
+            selec_mesh, mask_mesh = np.asarray(selec_mesh), np.asarray(mask_mesh)
 
-        # Weighted tracer and random counts
-        n_tracers = jnp.sum(data['WEIGHT'])
-        n_randoms = jnp.sum(random['WEIGHT'])
+            count_mesh = cutsky2count(
+                data, cosmo_fid, final_shape, paint_shape,
+                box_size=box_size, box_center=box_center, box_rotvec=box_rotvec, **paint)
+            n_tracers, n_randoms = float(np.sum(data['WEIGHT'])), float(np.sum(random['WEIGHT']))
+        else:
+            count_mesh = fullsky2count(
+                data, cosmo_fid, a_obs, los=(0,0,1),
+                box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
+                final_shape=final_shape, paint_shape=paint_shape, **paint)
+            n_tracers = float(count_mesh.sum())
+            selec_mesh = mask_mesh = n_randoms = None
 
-        # Save meshes and update model
-        save_path = str(save_path) # cast to str to allow yaml to save path
-        np.savez(save_path, selec_mesh=selec_mesh, mask_mesh=mask_mesh,
-                count_mesh=count_mesh, n_tracers=n_tracers, n_randoms=n_randoms,
-                final_shape=final_shape, cell_length=cell_length, box_center=box_center, box_rotvec=box_rotvec)
-        self.register_obs = save_path
-        self.__post_init__() # update potential other model attributes accordingly
+        return {
+            # Geometry and painting (mandatory)
+            'cell_length': float(cell_length), 'box_center': np.asarray(box_center), 'box_rotvec': np.asarray(box_rotvec),
+            'init_oversamp': float(init_oversamp), 'paint_oversamp': float(paint_oversamp),
+            'cosmo_fid': {'Omega_m': float(cosmo_fid.Omega_m), 'sigma8': float(cosmo_fid.sigma8)},
+            'count_mesh': np.asarray(count_mesh),
+            # Optional (None entries are dropped by h5save, signaling "absent")
+            'selec_mesh': None if selec_mesh is None else np.asarray(selec_mesh),
+            'mask_mesh': None if mask_mesh is None else np.asarray(mask_mesh),
+            'n_tracers': n_tracers, 'n_randoms': n_randoms,
+            'a_obs': a_obs, 'curved_sky': curved_sky,
+            'paint_order': int(paint_order), 'interlace_order': int(interlace_order),
+            'paint_deconv': bool(paint_deconv), 'kernel_type': kernel_type,
+            'cell_budget': float(cell_budget), 'padding': float(padding),
+        }
 
-
-
-
-    # def add_selection(self, load_path:str|Path, cell_budget:float, padding:float=0., 
-    #                     box_size=None, box_center=None, box_rotvec=None,
-    #                     save_path:str|Path=None):
-    #     """
-    #     Compute and save a painted selection mesh from a RA, DEC, Z .fits catalog, then update model accordingly.
-    #     """
-    #     final_shape, cell_length, box_center, box_rotvec = catalog2config(load_path, self.cosmo_fid, cell_budget, padding, 
-    #                                                                         box_size=box_size, box_center=box_center, box_rotvec=box_rotvec)
-    #     self.final_shape = final_shape
-    #     self.cell_length = cell_length
-    #     self.box_center = box_center
-    #     self.box_rotvec = box_rotvec
-
-    #     box_size = final_shape * cell_length # box_size update due to rounding and padding
-    #     evol_shape = scale_shape(final_shape, self.evol_oversamp)
-    #     init_shape = scale_shape(final_shape, self.init_oversamp)
-        
-    #     selec_mesh, mask_mesh = catalog2selection(load_path, self.cosmo_fid, mask_shape=final_shape, selec_shape=init_shape, paint_shape=evol_shape,
-    #                                             box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
-    #                                             paint_order=self.paint_order, interlace_order=self.interlace_order, paint_deconv=self.paint_deconv)
-    #     selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(selec_mesh), r2chshape(evol_shape)))
-
-    #     if save_path is None:
-    #         save_path = Path(load_path).with_suffix('.npz')
-    #     save_path = str(save_path) # cast to str to allow yaml to save path
-    #     np.savez(save_path, selec_mesh=selec_mesh, mask_mesh=mask_mesh)
-
-    #     self.meshes = save_path
-    #     self.__post_init__() # update other model attributes
 
 
 
@@ -1285,7 +1319,7 @@ class FieldLevelModel(Model):
     # Metrics #
     ###########
     def spectrum(self, mesh0, mesh1=None, ells:int|list=0, kedges:int|float|list=None, include_corners=True):
-        return spectrum(mesh0, mesh1=mesh1, box_size=self.box_size, box_center=self.box_center, 
+        return spectrum(mesh0, mesh1=mesh1, box_size=self.box_size, box_center=self.box_center,
                         ells=ells, kedges=kedges, include_corners=include_corners)
 
     def powtranscoh(self, mesh0, mesh1, kedges:int|float|list=None, include_corners=True):

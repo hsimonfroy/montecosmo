@@ -96,23 +96,6 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     register_obs = None
     z_obs = 1.
 
-    oversamp_config = {
-        'init_oversamp':1.,
-        'evol_oversamp':2.,
-        'ptcl_oversamp':2.,
-        'paint_oversamp':2.,
-        # 'evol_oversamp':7/4,
-        # 'ptcl_oversamp':7/4,
-        # 'paint_oversamp':3/2,
-        'k_cut':jnp.inf,    
-        } if oversamp==1 else {
-        'init_oversamp':1.5,
-        'evol_oversamp':2.,
-        'ptcl_oversamp':2.,
-        'paint_oversamp':2.,
-        'k_cut':jnp.inf,
-        } if oversamp==2 else {}
-
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
                             'cell_length': box_size[0] / mesh_length, # in Mpc/h
@@ -130,21 +113,21 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
                             'paint_deconv': True, # whether to deconvolve painted field
                             'kernel_type':'rectangular', # 'rectangular', 'kaiser_bessel'
 
-                            'init_oversamp':1., # initial mesh 1D oversampling factor
-                            'evol_oversamp':1., # evolution mesh 1D oversampling factor
-                            'ptcl_oversamp':1., # particle cloud 1D oversampling factor
-                            'paint_oversamp':1., # painted mesh 1D oversampling factor
+                            'init_oversamp':3/2, # initial mesh 1D oversampling factor
+                            'evol_oversamp':7/4, # evolution mesh 1D oversampling factor
+                            'ptcl_oversamp':7/4, # particle cloud 1D oversampling factor
+                            'paint_oversamp':7/4, # painted mesh 1D oversampling factor
 
                             'interlace_order':2, # interlacing order
                             'n_rbins': 1,
                             'k_cut': np.inf,
-                            'register_init': load_dir / f'register_init.npz' if not eh_approx else None,
-                            # 'register_init': None,
+                            'register': load_dir / f'register_init.npz' if not eh_approx else None,
+                            # 'register': None,
                             # 'lik_type': 'fourier_gauss' if fourier else 'two_quad_gauss',
                             # 'lik_type': 'fourier_gauss' if fourier else 'quad_gauss',
                             'lik_type': 'fourier_gauss' if fourier else 'shash',
                             'png_type': png_type,
-                            } | oversamp_config)
+                            })
 
     truth = {
         'Omega_m': 0.3137721, 
@@ -153,12 +136,16 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         'b1': 0.7,
         'b2': 0.,
         'bs2': 0.,
+        'b3': 0.,
+        'bds2': 0.,
+        'bs3': 0.,
         'bn2': 0.,
         'bnpar': 0.,
-        'b3': 0.,
         'fNL': fNL_true/2,
         'fNL_bp':fNL_true/2,
         'fNL_bpd':0.,
+        'fNL_bpd2':0.,
+        'fNL_bps':0.,
         'fNL_bn2p':0.,
         'alpha_iso': 1.,
         'alpha_ap': 1.,
@@ -330,8 +317,9 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         # 'fNL_bp', 'fNL_bpd',
         'fNL_bn2p',
         # 'b1',
-        # 'b2','bs2','bn2', 'bnpar',
-        #   'b3',
+        # 'b2','bs2',
+        # 'b3','bds2','bs3',
+        # 'bn2', 'bnpar',
         # 'ngbars', 
         's_e',
         # 's_k2e', 's_kmu2e',
