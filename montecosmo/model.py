@@ -535,19 +535,22 @@ class FieldLevelModel(Model):
                 if k in reg:
                     setattr(self, k, reg[k])
 
-            # Meshes
-            self.count_mesh = reg['count_mesh'] # the only mandatory mesh
-            self.final_shape = self.count_mesh.shape
+            # Meshes (optionals except count_mesh)
             self.init_kpow = reg.get('init_kpow', None) # normalized to sigma8=1
             self.init_mesh = reg.get('init_mesh', reg.get('init_fake', None))
             self.selec_mesh = reg.get('selec_mesh', np.array(1.))
             self.mask_mesh = reg.get('mask_mesh', None)
+            if self.lik_type=='fourier_gauss': 
+                self.count_mesh = cgh2rg(jnp.fft.rfftn(reg['count_mesh']))
+            else:
+                self.count_mesh = mesh2masked(reg['count_mesh'], self.mask_mesh)
+            self.final_shape = self.count_mesh.shape
 
             # Mean density and fiducial cosmology
             n_cells = self.mask_mesh.sum() if self.mask_mesh is not None else self.count_mesh.size
             n_tracers = reg.get('n_tracers', self.count_mesh.sum())
             ngbar = n_tracers / (n_cells * self.cell_length**3) # in galaxy / (Mpc/h)^3
-            self.latents = self.new_latents_from_loc(reg['cosmo_fid'] | {'ngbars': ngbar}, update_prior=True)
+            self.latents = self.new_latents_from_loc(self.latents, reg['cosmo_fid'] | {'ngbars': ngbar}, update_prior=True)
         elif self.register is None:
             self.init_kpow = None
             self.init_mesh = None
@@ -946,8 +949,9 @@ class FieldLevelModel(Model):
         params_ = self.data | params
 
         # Extract groups from params
-        groups = ['cosmo','bias','png','ap','syst','init']
-        key = tuple([k if inv else k+'_'] for k in groups) + tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
+        # groups = ['cosmo','bias','png','stoch','ap','syst','init']
+        key = tuple([k if inv else k+'_'] for k in self.groups) 
+        key += tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in self.groups]])
         params_ = Chains(params_, self.groups | self.groups_).get(key) # use chain querying
         cosmo_, bias_, png_, stoch_, ap_, syst_, init, rest = (q.data for q in params_)
 
@@ -1187,13 +1191,14 @@ class FieldLevelModel(Model):
     #     rmesh = np.array(radius_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape, self.curved_sky))
     #     return mesh2masked(rmesh, self.mask)
     
-    def new_latents_from_loc(self, loc:dict, update_prior:bool=False):
+    @classmethod
+    def new_latents_from_loc(cls, latents, loc:dict, update_prior:bool=False):
         """
         Return a new latents config wih updated fiducial location based on given location dict.
         If `update_prior` is True, also update prior location (if it exists).
         """
         new = {}
-        for name, conf in self.latents.items():
+        for name, conf in latents.items():
             new[name] = conf.copy()
             if name in loc:
                 new[name]['loc_fid'] = loc[name]
@@ -1221,11 +1226,13 @@ class FieldLevelModel(Model):
     def masked2mesh(self, mesh):
         return masked2mesh(mesh, self.mask_mesh)
 
-    def count2delta(self, mesh, from_masked=True):
+    def count2delta(self, mesh):
         """
         Count mesh to delta mesh, by imposing global integral constraint.
         """
-        if from_masked:
+        if self.lik_type == 'fourier_gauss':
+            mesh = jnp.fft.irfftn(rg2cgh(mesh))
+        else:
             mesh = self.masked2mesh(mesh)
 
         if self.selec_mesh.ndim == 3 and self.selec_mesh.shape != mesh.shape:

@@ -289,7 +289,7 @@ class Chains(Samples):
     @classmethod
     def load_runs(cls, path:str|Path, start:int, end:int, transforms=None, groups=None, labels=None, batch_ndim=2) -> Self:
         """
-        Load and append runs saved in different files with names of the form `run_{i}.npz`.
+        Load and append runs saved in different files with names of the form `run_{i}.h5`.
 
         Both runs `start` and `end` are included.
         Runs are concatenated along last batch dimension.
@@ -297,7 +297,7 @@ class Chains(Samples):
         path = Path(path)
         print(f"Loading: {path}, from run {start} to run {end} (included)")
         for i_run in range(start, end + 1):
-            run_path = path / f"run_{i_run}.npz"
+            run_path = path / f"run_{i_run}.h5"
             if not os.path.exists(run_path):
                 if i_run == start:
                     raise FileNotFoundError(f"File {run_path} does not exist")
@@ -305,7 +305,7 @@ class Chains(Samples):
                     print(f"File {run_path} does not exist, stopping at run {i_run-1}")
                     end = i_run - 1
                     break
-            
+
         if transforms is None:
             transforms = []
         transforms = np.atleast_1d(transforms)
@@ -319,8 +319,8 @@ class Chains(Samples):
 
         for i_run in range(start, end + 1):
             # Load
-            run_path = path / f"run_{i_run}.npz"
-            part = dict(jnp.load(run_path)) # better than pickle for dict of array-like
+            run_path = path / f"run_{i_run}.h5"
+            part = h5load(run_path)
             part = cls(part, groups=groups, labels=labels)
             part = transform(part)
 

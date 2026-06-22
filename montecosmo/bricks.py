@@ -325,7 +325,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     fNL_bp = png['fNL_bp'] # PNG 1st
     fNL_bpd = png['fNL_bpd'] # PNG 2nd
     fNL_bpd2, fNL_bps2 = png['fNL_bpd2'], png['fNL_bps2'] # PNG 3rd
-    fNL_bn2p = bias['fNL_bn2p'] # PNG higher-derivative
+    fNL_bn2p = png['fNL_bn2p'] # PNG higher-derivative
 
     # Compute utils
     delta = jnp.fft.irfftn(init_mesh)
