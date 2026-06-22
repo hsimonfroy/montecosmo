@@ -362,9 +362,9 @@ class Model():
     def force(self, params={}):
         return grad(self.logpdf)(params) # force = - grad potential = grad logpdf
 
-    def logdf_mesh(self, params={}, site='obs'):
+    def logdf_mesh(self, params={}, site='count_mesh'):
         """
-        Element-wise likelihood and cumulative likelihood for ``site`` (default 'obs').
+        Element-wise likelihood and cumulative likelihood for ``site`` (default 'count_mesh').
         Return a tuple (logp(y_i | x), log F(y_i | x)), evaluated at latents x and observables y.
 
         For the per-voxel score d/dtheta (few theta, many voxels), use forward-mode:
@@ -863,7 +863,7 @@ class FieldLevelModel(Model):
 
 
             if self.lik_type == 'poisson':
-                obs = sample('obs', dist.Poisson(posit_fn(count_mesh)**(1 / temp)))
+                count_mesh = sample('count_mesh', dist.Poisson(posit_fn(count_mesh)**(1 / temp)))
 
             elif self.lik_type == 'fourier_gauss':
                 assert self.mask_mesh is ..., "Fourier likelihood not implemented for cut-sky."
@@ -876,7 +876,7 @@ class FieldLevelModel(Model):
                 scale *= selec_mesh**.5 * temp**.5
                 scale = cgh2rg(scale, norm="amp")
                 count_mesh = cgh2rg(jnp.fft.rfftn(count_mesh))
-                obs = sample('obs', dist.Normal(count_mesh, scale))
+                count_mesh = sample('count_mesh', dist.Normal(count_mesh, scale))
             
             elif self.lik_type == 'quad_gauss':
                 delta = count_mesh / selec_mesh - 1
@@ -890,7 +890,7 @@ class FieldLevelModel(Model):
 
                 # NOTE: QuadGaussian has a variable-dependent bounded support
                 # that can make evaluations venture outside easily. 
-                obs = sample("obs", QuadGaussian(count_mesh, scale1, scale2))
+                count_mesh = sample("count_mesh", QuadGaussian(count_mesh, scale1, scale2))
 
             elif self.lik_type == 'two_quad_gauss':
                 delta = count_mesh / selec_mesh - 1
@@ -898,7 +898,7 @@ class FieldLevelModel(Model):
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5
-                obs = sample("obs", TwoQuadGaussian(count_mesh, scale1, scale2))
+                count_mesh = sample("count_mesh", TwoQuadGaussian(count_mesh, scale1, scale2))
                 
             elif self.lik_type == 'shash':
                 delta = count_mesh / selec_mesh - 1
@@ -917,11 +917,11 @@ class FieldLevelModel(Model):
                 #   skewness   = 3.540 * (scale2/scale1)         (first-order skew match)
                 #   tailweight = 1 + 5.884 * (scale2/scale1)**2  (first-order excess-kurtosis match)
                 ratio = scale2 / scale1
-                obs = sample("obs", SinhArcsinh(count_mesh,
+                count_mesh = sample("count_mesh", SinhArcsinh(count_mesh,
                                                 (scale1**2 + 2 * scale2**2)**.5,
                                                 3.540 * ratio,
                                                 1 + 5.884 * ratio**2))
-            return obs 
+            return count_mesh 
 
         # elif self.obs == 'pk':
         #     # Anisotropic power spectrum covariance, cf. [Grieb+2016](http://arxiv.org/abs/1509.04293)

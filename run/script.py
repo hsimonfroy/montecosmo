@@ -36,7 +36,7 @@ def field_warmup(model, loc_fid, chains_dir, n_steps, desired_energy_var, n_chai
     # Fix every latent except the initial field, and condition on the observed counts.
     obs_mesh = loc_fid['count_mesh']
     model.reset()
-    model.substitute({'obs': obs_mesh} | model.loc_fid, from_base=True)
+    model.substitute({'count_mesh': obs_mesh} | model.loc_fid, from_base=True)
     model.block()
 
     params_start = jit(vmap(partial(model.kaiser_post, delta_obs=model.count2delta(obs_mesh),
@@ -97,8 +97,8 @@ def plot_field_warmup(model, loc_fid, params_start, state, save_dir, prob=(0.68,
 def full_warmup(model, loc_fid, obs, state_field, chains_dir, n_steps, desired_energy_var,
                 n_chains, tune_mass, eval_per_ess=1e3, seed=43, overwrite=False):
     """
-    Full warmup: fix the `obs` params (dict of base values, incl. the observed 'obs' mesh) and
-    sample every other latent, seeding the field from the field-warmup `state_field`. The tuned
+    Full warmup: fix the `obs` params (dict of base values, incl. the observed 'count_mesh' field)
+    and sample every other latent, seeding the field from the field-warmup `state_field`. The tuned
     config is collapsed to a single (median) config shared across chains, with trajectory length
     L set from the step size and the target `eval_per_ess`. Leaves the model conditioned on `obs`.
     """

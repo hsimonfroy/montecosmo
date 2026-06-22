@@ -99,8 +99,13 @@ def numpy_array_representer(dumper, data):
 def numpy_array_constructor(loader, node):
     return np.array(loader.construct_sequence(node))
 
+def numpy_scalar_representer(dumper, data):
+    # numpy scalars (np.float64/int64/bool_, e.g. from h5load when registering) -> native python
+    return dumper.represent_data(data.item())
+
 yaml.add_representer(np.ndarray, numpy_array_representer, Dumper=yaml.SafeDumper)
 yaml.add_constructor(np.ndarray, numpy_array_constructor, Loader=yaml.SafeLoader)
+yaml.SafeDumper.add_multi_representer(np.generic, numpy_scalar_representer)
 
 def ysave(obj, path):
     """YAML safe dump"""
@@ -148,10 +153,36 @@ def h5load(path):
                     v = v.decode()
                 elif isinstance(v, np.ndarray) and v.dtype.kind in ('S', 'O'):
                     v = [x.decode() if isinstance(x, bytes) else x for x in v] # string array -> list of str
+                elif isinstance(v, np.generic):
+                    v = v.item() # 0-d scalar (np.float64/int64/bool_) -> native python (clean repr/yaml)
                 out[k] = v
         return out
     with h5py.File(str(path), 'r') as f:
         return _read(f)
+
+
+def h5save_tree(path, tree):
+    """
+    Save a pytree of arrays (e.g. a BlackJAX sampler state or adaptation config) to HDF5.
+    NamedTuples and dicts become nested groups, leaves become arrays. Reload with `h5load_tree`,
+    passing the NamedTuple class (e.g. `IntegratorState`, `MCLMCAdaptationState`) to rebuild it.
+    """
+    def to_dict(x):
+        if hasattr(x, '_asdict'): # NamedTuple (e.g. IntegratorState, MCLMCAdaptationState)
+            return {k: to_dict(v) for k, v in x._asdict().items()}
+        if isinstance(x, dict):
+            return {k: to_dict(v) for k, v in x.items()}
+        return np.asarray(x)
+    h5save(path, to_dict(tree))
+
+
+def h5load_tree(path, cls=None):
+    """
+    Load a pytree saved by `h5save_tree`. If `cls` is a NamedTuple type, rebuild it from the
+    top-level fields (nested dicts, e.g. `position`, are left as dicts); else return the dict.
+    """
+    d = h5load(path)
+    return d if cls is None else cls(**d)
 
 
 
@@ -331,12 +362,19 @@ def analyt_log_abs_det_jac(x, loc, scale, low, high):
 
 
 
+
+
+
+
+
+
+
+
 def _log1mexp(x):
     """Numerically stable log(1 - exp(x)) for x <= 0."""
     return jnp.where(x > -jnp.log(2.0),
                      jnp.log(-jnp.expm1(x)),
                      jnp.log1p(-jnp.exp(x)))
-
 
 def _log_diff_cdf(hi, lo):
     """log(Phi(hi) - Phi(lo)) for hi >= lo, evaluated on the more accurate tail."""
@@ -345,13 +383,11 @@ def _log_diff_cdf(hi, lo):
     upper = norm.logcdf(-lo) + _log1mexp(norm.logcdf(-hi) - norm.logcdf(-lo))
     return jnp.where(use_upper, upper, lower)
 
-
 _SHASH_QUAD_DEG = 20
 _shash_x, _shash_w = hermegauss(_SHASH_QUAD_DEG)
 _shash_x = jnp.asarray(_shash_x)
 _shash_w = jnp.asarray(_shash_w / np.sqrt(2 * np.pi))   # E_{N(0,1)}[f] = sum_i w_i f(x_i)
 _shash_asinh_x = jnp.arcsinh(_shash_x)
-
 
 class SinhArcsinh(Distribution):
     """Sinh-Arcsinh of Normal distribution, standardized so loc/scale ARE the mean/std.

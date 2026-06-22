@@ -1,35 +1,35 @@
 
-# from desipipe import Queue, Environment, TaskManager, spawn
-# from desipipe.environment import BaseEnvironment
+from desipipe import Queue, Environment, TaskManager, spawn
+from desipipe.environment import BaseEnvironment
 
-# queue = Queue('test', base_dir='_test1')
-# queue.clear(kill=False)
+queue = Queue('test', base_dir='_test1')
+queue.clear(kill=False)
 
-# # environ = Environment("nersc-cosmodesi")  # or your environnment, see https://github.com/cosmodesi/desipipe/blob/f0e8cafe63f5aa4ca80cc5e40c6b2efa61bcbcb5/desipipe/environment.py#L196
+# environ = Environment("nersc-cosmodesi")  # or your environnment, see https://github.com/cosmodesi/desipipe/blob/f0e8cafe63f5aa4ca80cc5e40c6b2efa61bcbcb5/desipipe/environment.py#L196
 
-# # class MontEnv(BaseEnvironment):
-# #     name = 'montenv'
-# #     _defaults = dict(DESICFS='/global/cfs/cdirs/desi')
-# #     _command = 'export CRAY_ACCEL_TARGET=nvidia80 ; ' \
-# #                 'export MPICC="cc -shared" ; ' \
-# #                 'export SLURM_CPU_BIND="cores" ; ' \
-# #                 'source activate montenv'
+# class MontEnv(BaseEnvironment):
+#     name = 'montenv'
+#     _defaults = dict(DESICFS='/global/cfs/cdirs/desi')
+#     _command = 'export CRAY_ACCEL_TARGET=nvidia80 ; ' \
+#                 'export MPICC="cc -shared" ; ' \
+#                 'export SLURM_CPU_BIND="cores" ; ' \
+#                 'source activate montenv'
 
-# environ = BaseEnvironment(command='source /global/homes/h/hsimfroy/miniforge3/bin/activate montenv')
+environ = BaseEnvironment(command='source /global/homes/h/hsimfroy/miniforge3/bin/activate montenv')
 
-# output, error = './outs/slurm-%j.out', './outs/slurm-%j.err'
-# tm = TaskManager(queue=queue, environ=environ, 
-#                  scheduler=dict(max_workers=12), 
-#                  provider=dict(provider='nersc', time='04:00:00', 
-#                                mpiprocs_per_worker=1, nodes_per_worker=1, 
-#                                output=output, error=output, 
-#                                constraint='gpu', 
-#                             #    qos='debug',
-#                             #    qos='shared',
-#                                qos='regular',
-#                             #    qos='interactive', # can not sbatch, must do salloc
-#                             #    qos='premium',
-#                                ))
+output, error = './outs/slurm-%j.out', './outs/slurm-%j.err'
+tm = TaskManager(queue=queue, environ=environ, 
+                 scheduler=dict(max_workers=12), 
+                 provider=dict(provider='nersc', time='04:00:00', 
+                               mpiprocs_per_worker=1, nodes_per_worker=1, 
+                               output=output, error=output, 
+                               constraint='gpu', 
+                            #    qos='debug',
+                            #    qos='shared',
+                               qos='regular',
+                            #    qos='interactive', # can not sbatch, must do salloc
+                            #    qos='premium',
+                               ))
 
 
 
@@ -96,22 +96,22 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
     register_obs = None
     z_obs = 1.
 
-    oversamp_config = {
-        'init_oversamp':1.,
-        'evol_oversamp':2.,
-        'ptcl_oversamp':2.,
-        'paint_oversamp':2.,
-        # 'evol_oversamp':7/4,
-        # 'ptcl_oversamp':7/4,
-        # 'paint_oversamp':3/2,
-        'k_cut':jnp.inf,    
-        } if oversamp==1 else {
-        'init_oversamp':1.5,
-        'evol_oversamp':2.,
-        'ptcl_oversamp':2.,
-        'paint_oversamp':2.,
-        'k_cut':jnp.inf,
-        } if oversamp==2 else {}
+    # oversamp_config = {
+    #     'init_oversamp':1.,
+    #     'evol_oversamp':2.,
+    #     'ptcl_oversamp':2.,
+    #     'paint_oversamp':2.,
+    #     # 'evol_oversamp':7/4,
+    #     # 'ptcl_oversamp':7/4,
+    #     # 'paint_oversamp':3/2,
+    #     'k_cut':jnp.inf,    
+    #     } if oversamp==1 else {
+    #     'init_oversamp':1.5,
+    #     'evol_oversamp':2.,
+    #     'ptcl_oversamp':2.,
+    #     'paint_oversamp':2.,
+    #     'k_cut':jnp.inf,
+    #     } if oversamp==2 else {}
 
     model = FieldLevelModel(**default_config | 
                             {'final_shape': 3*(mesh_length,), 
@@ -144,7 +144,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
                             # 'lik_type': 'fourier_gauss' if fourier else 'quad_gauss',
                             'lik_type': 'fourier_gauss' if fourier else 'shash',
                             'png_type': png_type,
-                            } | oversamp_config)
+                            })
 
     truth = {
         'Omega_m': 0.3137721, 
@@ -286,7 +286,6 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         kpow_true = model.spectrum(init_mesh)
         kptcs_start = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(params_start)
         kptcs_warm = vmap(lambda x: model.powtranscoh(init_mesh, model.reparam(x)['init_mesh']))(state.position)
-        del init_mesh # We won't need it anymore
         kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid)(kptcs_warm[0][0])
         prob = (0.68, 0.95)
 
@@ -421,7 +420,7 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         jnp.savez(chains_dir / f"run_{i_run}.npz", **samples)
         psave(state, chains_dir / "last_state.p")
 
-    make_chains(save_dir, start=1, end=100, reparb=False)
+    make_chains(save_dir, start=1, end=100)
     print(f"Finished running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
     sys.stdout.flush()
 
