@@ -68,6 +68,7 @@ default_config={
         'bias_type': 'lagrangian', # lagrangian, eulerian
         # Latents
         'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
+        'init_type': 'init_kpow', # 'eh', 'eb', 'init_kpow' # Einstein-Hu, Eisenstein-Boltzmann, or tabulated init_kpow
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':r'{\Omega}_m', 
@@ -484,6 +485,7 @@ class FieldLevelModel(Model):
     k_cut:None|float
     # Init
     png_type:None|str
+    init_type:str
     # Evolution
     evolution:str
     nbody_a_start:float
@@ -544,10 +546,10 @@ class FieldLevelModel(Model):
                 self.count_mesh = cgh2rg(jnp.fft.rfftn(reg['count_mesh']))
             else:
                 self.count_mesh = mesh2masked(reg['count_mesh'], self.mask_mesh)
-            self.final_shape = self.count_mesh.shape
+            self.final_shape = reg['count_mesh'].shape # original shape
 
             # Mean density and fiducial cosmology
-            n_cells = self.mask_mesh.sum() if self.mask_mesh is not None else self.count_mesh.size
+            n_cells = self.count_mesh.size # works whether fourier or masked
             n_tracers = reg.get('n_tracers', self.count_mesh.sum())
             ngbar = n_tracers / (n_cells * self.cell_length**3) # in galaxy / (Mpc/h)^3
             self.latents = self.new_latents_from_loc(self.latents, reg['cosmo_fid'] | {'ngbars': ngbar}, update_prior=True)
@@ -598,9 +600,9 @@ class FieldLevelModel(Model):
         self.labels = self._labels()
 
         # Fiducial quantities
-        self.loc_fid = self._loc_fid()
-        self.count_fid = self.loc_fid['ngbars'].mean() * self.cell_length**3
-        self.cosmo_fid = get_cosmology(**self.loc_fid)
+        self.fiduc = self._fiduc()
+        self.count_fid = self.fiduc['ngbars'].mean() * self.cell_length**3
+        self.cosmo_fid = get_cosmology(**self.fiduc)
         _, a = los_scalefactor_mesh(self.box_center, self.box_rot, self.box_size, self.final_shape,
                                 self.cosmo_fid, self.a_obs, self.curved_sky)
         self.a_fid = g2a(self.cosmo_fid, jnp.mean(a2g(self.cosmo_fid, a)))
@@ -662,10 +664,10 @@ class FieldLevelModel(Model):
 
         # Sample, reparametrize, and register initial conditions
         init = {}
-        name_ = self.groups['init'][0]+'_'
+        name_ = self.groups['init'][0]+'_' # 'init_mesh_'
         scale, transfer = self._precond_scale_and_transfer(cosmology, bias, stoch)
 
-        if self.cut_mask is not None:       
+        if self.cut_mask is not None:
             samp = sample(name_, dist.Normal(0., scale[self.cut_mask])) # sample
             init[name_] = masked2mesh(samp, self.cut_mask)
         else:
@@ -949,9 +951,9 @@ class FieldLevelModel(Model):
         params_ = self.data | params
 
         # Extract groups from params
-        # groups = ['cosmo','bias','png','stoch','ap','syst','init']
-        key = tuple([k if inv else k+'_'] for k in self.groups) 
-        key += tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in self.groups]])
+        groups = ['cosmo','bias','png','stoch','ap','syst','init'] # fixed order
+        key = tuple([k if inv else k+'_'] for k in groups) 
+        key += tuple([['*'] + ['~'+k if inv else '~'+k+'_' for k in groups]])
         params_ = Chains(params_, self.groups | self.groups_).get(key) # use chain querying
         cosmo_, bias_, png_, stoch_, ap_, syst_, init, rest = (q.data for q in params_)
 
@@ -993,7 +995,7 @@ class FieldLevelModel(Model):
         """
         Transform sigma8-scaled b1 parameter into unscaled b1 parameter.
         """
-        alpha = sigma8 / self.loc_fid['sigma8']
+        alpha = sigma8 / self.fiduc['sigma8']
 
         if not eulerian:
             b1 = b1_L2E(b1)
@@ -1009,7 +1011,7 @@ class FieldLevelModel(Model):
         """
         Transform sigma8-scaled b2 parameter into unscaled b2 parameter.
         """
-        alpha = sigma8 / self.loc_fid['sigma8']
+        alpha = sigma8 / self.fiduc['sigma8']
 
         if not eulerian:
             b2 = b2_L2E(b2, b1L)
@@ -1122,21 +1124,23 @@ class FieldLevelModel(Model):
         """
         Return scale and transfer fields for linear matter field preconditioning.
         """
-        if self.init_kpow is None:
+        if self.init_type == 'eh':
             pmesh = lin_power_mesh(cosmo, self.init_shape, self.box_size)
-        else:
+        elif self.init_type == 'init_kpow':
             pmesh = kpower_mesh(self.init_kpow, self.init_shape, self.box_size, transfer=cosmo.sigma8)
             # NOTE: init_kpow normalized to sigma8=1, so scale by current sigma8
-
+        else:
+            raise ValueError(f"Unknown initial condition type: {self.init_type}")
+        
         if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.init_shape)
             transfer = pmesh**.5
 
         elif self.precond=='kaiser':
-            b1E_fid = b1_L2E(self.loc_fid['b1'])
+            b1E_fid = b1_L2E(self.fiduc['b1'])
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
-            var_fid = self.loc_fid['s_e'] / (self.count_fid * self.selec_fid)
+            var_fid = self.fiduc['s_e'] / (self.count_fid * self.selec_fid)
 
             scale = (1 + boost_fid**2 / var_fid * pmesh_fid)**.5
             transfer = pmesh**.5 / scale
@@ -1180,11 +1184,16 @@ class FieldLevelModel(Model):
             labs[name+'_'] = "\\tilde"+lab
         return labs
     
-    def _loc_fid(self):
+    def _fiduc(self):
         """
-        Return fiducial location values from latents config.
+        Return fiducial location values from latents config and meshes.
         """
-        return {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
+        fiduc = {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
+        if self.init_mesh is not None:
+            fiduc['init_mesh'] = self.init_mesh
+        if self.count_mesh is not None:
+            fiduc['count_mesh'] = self.count_mesh
+        return fiduc
     
     # @property
     # def rmasked(self):
@@ -1409,8 +1418,8 @@ class FieldLevelModel(Model):
         # Reshape in Fourier domain in case observed field shape != initial field shape
         delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
 
-        b1E_fid = b1_L2E(self.loc_fid['b1'])
-        var_fid = self.loc_fid['s_e'] / (self.count_fid * self.selec_fid)
+        b1E_fid = b1_L2E(self.fiduc['b1'])
+        var_fid = self.fiduc['s_e'] / (self.count_fid * self.selec_fid)
         means, stds = kaiser_posterior(delta_obs, self.cosmo_fid, self.a_fid, self.box_size, 
                                        var_noise=var_fid, b1E=b1E_fid, los=self.los_fid)
         
@@ -1423,7 +1432,7 @@ class FieldLevelModel(Model):
         post_mesh *= scale_field 
 
         # Return starting values for all latent parameters except those in data
-        start_params = {k: self.loc_fid[k] for k in self.loc_fid.keys() - self.data.keys()}
+        start_params = {k: self.fiduc[k] for k in self.fiduc.keys() - self.data.keys()}
         start_params |= {k: post_mesh for k in {'init_mesh'} - self.data.keys()}
         if base:
             return start_params

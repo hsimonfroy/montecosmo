@@ -97,6 +97,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
         'evolution': evolution,
         'lik_type': lik_type,
         'png_type': png_type,
+        'init_type': 'init_kpow',
         'register': register, # overrides geometry/painting/cosmo/ngbars + loads the meshes
         'latents': latents,
         'n_rbins': 1,
@@ -150,7 +151,13 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     model.save(save_dir / "model.yaml")
     h5save(save_dir / "loc_fid.h5", loc_fid)
     print("Setup done.")
+    logpdf_fid = model.logpdf(model.reparam(loc_fid, inv=True))
+    print("logpdf of loc_fid:", logpdf_fid)
+    if logpdf_fid == -jnp.inf or jnp.isnan(logpdf_fid):
+        sys.exit(1)
     sys.stdout.flush()
+
+
 
     #############
     # Inference #
@@ -176,7 +183,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     obs_names += ['s_ed', 's_e2'] if fourier else ['s_k2e', 's_kmu2e']
     obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else [] # universal mass relation: infer fNL, fix fNL_bp/fNL_bpd, otherwise infer all three
     obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
-    obs = {k: loc_fid[k] for k in obs_names if k in loc_fid}
+    obs = {k: loc_fid[k] for k in obs_names}
 
     if n_samples is None:
         n_samples = 128 * 64 // mesh_length
