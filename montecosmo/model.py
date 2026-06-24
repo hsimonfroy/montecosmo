@@ -14,7 +14,7 @@ from jax import numpy as jnp, random as jr, vmap, tree, grad, debug, lax
 from jax.scipy.spatial.transform import Rotation
 
 from jax_cosmo import Cosmology
-from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, kpower_mesh, add_png,
+from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, white2lin, lin2white, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
                                lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, fNL_bias,
                                top_hat_selection, gen_gauss_selection, los_scalefactor_mesh, los_scalefactor_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
@@ -67,8 +67,7 @@ default_config={
         'lik_type': 'quad_gauss', # poisson, fourier_gauss, quad_gauss
         'bias_type': 'lagrangian', # lagrangian, eulerian
         # Latents
-        'precond':'kaiser', # real, fourier, kaiser, kaiser_dyn
-        'init_type': 'init_kpow', # 'eh', 'eb', 'init_kpow' # Einstein-Hu, Eisenstein-Boltzmann, or tabulated init_kpow
+        'precond':'kaiser', # real, fourier, kaiser
         'latents': {
                 'Omega_m': {'group':'cosmo', 
                             'label':r'{\Omega}_m', 
@@ -252,8 +251,8 @@ default_config={
                                 'scale':1e3,
                                 'scale_fid':1e2,
                                 },
-                'init_mesh': {'group':'init',
-                                'label':r'{\delta}_\mathrm{L}',},
+                'white_mesh': {'group':'init',
+                                'label':r'{\delta}_\mathrm{w}',},
                 },
         }
 
@@ -373,13 +372,13 @@ class Model():
 
         NOTE: logcdf requires the site distribution to implement cdf/log_cdf
         """
-        logpdfs, trace = compute_log_probs(self.model, (), {}, params, sum_log_prob=False)
-        logpdf = logpdfs[site] # == d.log_prob(value)
+        logpdfs_mesh, trace = compute_log_probs(self.model, (), {}, params, sum_log_prob=False)
+        logpdf_mesh = logpdfs_mesh[site] # == d.log_prob(value)
 
         node = trace[site]
         d, value = node['fn'], node['value']
-        logcdf = d.log_cdf(value) if hasattr(d, 'log_cdf') else jnp.log(d.cdf(value))
-        return logpdf, logcdf
+        logcdf_mesh = d.log_cdf(value) if hasattr(d, 'log_cdf') else jnp.log(d.cdf(value))
+        return logpdf_mesh, logcdf_mesh
 
     def trace(self, seed):
         return handlers.trace(handlers.seed(self.model, rng_seed=seed)).get_trace()
@@ -473,7 +472,7 @@ class FieldLevelModel(Model):
         Power spectrum poles to compute.
         Only used for 'powspec' observable.
     precond : str
-        Preconditioning method: 'real', 'fourier', 'kaiser', 'kaiser_dyn'.
+        Preconditioning method: 'real', 'fourier', 'kaiser'.
     latents : dict
         Latent variables configuration.
     """
@@ -485,7 +484,6 @@ class FieldLevelModel(Model):
     k_cut:None|float
     # Init
     png_type:None|str
-    init_type:str
     # Evolution
     evolution:str
     nbody_a_start:float
@@ -538,8 +536,8 @@ class FieldLevelModel(Model):
                     setattr(self, k, reg[k])
 
             # Meshes (optionals except count_mesh)
-            self.init_kpow = reg.get('init_kpow', None) # normalized to sigma8=1
-            self.init_mesh = reg.get('init_mesh', reg.get('init_fake', None))
+            self.lin_kpow = reg.get('lin_kpow', None) # normalized to sigma8=1
+            self.white_mesh = reg.get('white_mesh', reg.get('white_fake', None))
             self.selec_mesh = reg.get('selec_mesh', np.array(1.))
             self.mask_mesh = reg.get('mask_mesh', None)
             if self.lik_type=='fourier_gauss': 
@@ -554,8 +552,8 @@ class FieldLevelModel(Model):
             ngbar = n_tracers / (n_cells * self.cell_length**3) # in galaxy / (Mpc/h)^3
             self.latents = self.new_latents_from_loc(self.latents, reg['cosmo_fid'] | {'ngbars': ngbar}, update_prior=True)
         elif self.register is None:
-            self.init_kpow = None
-            self.init_mesh = None
+            self.lin_kpow = None
+            self.white_mesh = None
             self.count_mesh = None
             self.selec_mesh = np.array(1.)
             self.mask_mesh = None
@@ -664,16 +662,18 @@ class FieldLevelModel(Model):
 
         # Sample, reparametrize, and register initial conditions
         init = {}
-        name_ = self.groups['init'][0]+'_' # 'init_mesh_'
-        scale, transfer = self._precond_scale_and_transfer(cosmology, bias, stoch)
+        name_ = self.groups['init'][0]+'_' # 'white_mesh_'
+        scale = self._precond_scale()
 
         if self.cut_mask is not None:
-            samp = sample(name_, dist.Normal(0., scale[self.cut_mask])) # sample
+            samp = sample(name_, dist.Normal(0., cgh2rg(scale, norm='amp')[self.cut_mask])) # sample
             init[name_] = masked2mesh(samp, self.cut_mask)
         else:
-            init[name_] = sample(name_, dist.Normal(0., scale)) # sample
+            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scale, norm='amp'))) # sample
         
-        init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
+        init = samp2base_mesh(init, self.precond, transfer=1/scale, inv=False, temp=temp) # reparametrize
+        # Limit fixed IC constant-folding through the model, which otherwise blows up GPU compilation.
+        # init = {k: lax.optimization_barrier(v) for k, v in init.items()}
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
         return cosmology, bias, png, stoch, ap, syst, init
@@ -682,25 +682,17 @@ class FieldLevelModel(Model):
 
     def evolve(self, params:tuple):
         cosmology, bias, png, stoch, ap, syst, init = params
-        
-        init['init_mesh'] = chreshape(init['init_mesh'], r2chshape(self.evol_shape))
+
+        init_mesh = white2lin(cosmology, init['white_mesh'], self.init_shape, self.box_size, self.lin_kpow)
+        init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
         png = fNL_bias(png, bias, p=1., png_type=self.png_type)
 
-        # if self.png_type is not None:
-        #     init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-        #     init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
-
         if self.evolution=='kaiser':
-         
-            if self.png_type is not None:
-                init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-                init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
-
             los, a = los_scalefactor_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
                                 cosmology, self.a_obs, self.curved_sky)
             cell_los = self.box_rot.apply(los, inverse=True) # cell los
-            gxy_mesh = kaiser_model(cosmology, a, **init, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
-                                    fNL_bp=png['fNL_bp'], png_type=self.png_type, los=cell_los)
+            gxy_mesh = kaiser_model(cosmology, a, init_mesh, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
+                                    fNL_bp=png['fNL_bp'], png_type=self.png_type, los=cell_los, kpow=self.lin_kpow)
             # NOTE: Kaiser model does not need any oversampling, even for curved-sky
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
@@ -748,17 +740,17 @@ class FieldLevelModel(Model):
                                     cosmology, self.a_obs, self.curved_sky)
 
             # Lagrangian bias expansion weights (based on initial particules positions)
-            lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, init, bias, png,
+            lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
                                                 png_type=self.png_type, read_order=1)
             
             if self.png_type is not None:
-                init['init_mesh'] = add_png(cosmology, png['fNL'], init['init_mesh'], self.box_size)
-                init['init_mesh'] = chreshape(chreshape(init['init_mesh'], r2chshape(self.init_shape)), r2chshape(self.evol_shape))
+                init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
+                init_mesh = chreshape(chreshape(init_mesh, r2chshape(self.init_shape)), r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
                 # NOTE: lpt assumes given mesh is at a=1
                 cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
-                dpos, vel = lpt(cosmology, **init, pos=pos, a=a, lpt_order=self.lpt_order, 
+                dpos, vel = lpt(cosmology, init_mesh, pos=pos, a=a, lpt_order=self.lpt_order, 
                                 read_order=1, grad_fd=np.inf, lap_fd=np.inf)
                 pos += dpos
                 pos, vel = deterministic('lpt_ptcl', jnp.array((pos, vel)))
@@ -766,10 +758,10 @@ class FieldLevelModel(Model):
             elif self.evolution=='nbody':
                 cosmology._workspace = {} # HACK: force recompute by jaxpm cosmo to get g2, f2 => TODO: add g2, f2 to jaxcosmo
                 assert jnp.ndim(a) == 0, "N-body light-cone not implemented yet"
-                pos, vel = nbody_bf(cosmology, **init, pos=pos, a0=self.nbody_a_start, a1=a, n_steps=self.nbody_n_steps, 
+                pos, vel = nbody_bf(cosmology, init_mesh, pos=pos, a0=self.nbody_a_start, a1=a, n_steps=self.nbody_n_steps, 
                                     paint_order=self.paint_order, lpt_order=self.lpt_order, paint_deconv=False,
                                     grad_fd=np.inf, lap_fd=np.inf, snapshots=self.nbody_snapshots)
-                # pos, vel = nbody_tsit5(cosmology, **init, pos=pos, a0=self.nbody_a_start, a1=a,
+                # pos, vel = nbody_tsit5(cosmology, init_mesh, pos=pos, a0=self.nbody_a_start, a1=a,
                 #                        grad_fd=np.inf, lap_fd=np.inf)
 
                 pos, vel = deterministic('nbody_ptcl', jnp.array((pos, vel)))
@@ -853,7 +845,7 @@ class FieldLevelModel(Model):
             count_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
             count_mesh = mesh2masked(count_mesh, self.mask_mesh)
             count_mesh = set_radial_count(count_mesh, self.rmasked, self.redges, rcounts)
-            count_mesh = posit_fn(count_mesh)
+            # count_mesh = posit_fn(count_mesh)
 
             if self.selec_mesh.ndim == 3:
                 selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(self.selec_mesh), r2chshape(self.final_shape)))
@@ -967,17 +959,14 @@ class FieldLevelModel(Model):
 
         # Initial conditions
         if len(init) > 0:
-            cosmology = get_cosmology(**(cosmo_ if inv else cosmo))
-            _, transfer = self._precond_scale_and_transfer(cosmology, 
-                                                           bias_ if inv else bias, 
-                                                           stoch_ if inv else stoch)
+            scale = self._precond_scale()
 
             if inv and not fourier:
                 init = tree.map(jnp.fft.rfftn, init)
             if not inv and self.cut_mask is not None:       
                 init = tree.map(lambda x: masked2mesh(x, self.cut_mask), init)
 
-            init = samp2base_mesh(init, self.precond, transfer=transfer, inv=inv, temp=temp)
+            init = samp2base_mesh(init, self.precond, transfer=1/scale, inv=inv, temp=temp)
             
             if inv and self.cut_mask is not None:       
                 init = tree.map(lambda x: mesh2masked(x, self.cut_mask), init)
@@ -1118,23 +1107,14 @@ class FieldLevelModel(Model):
             else:
                 samp = sample(name+'_', DetruncUnif(low, high, loc_fid, scale_fid))
             dic[name+'_'] = samp
-        return dic  
+        return dic
 
-    def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, stoch):
+    def _precond_scale(self):
         """
-        Return scale and transfer fields for linear matter field preconditioning.
+        Return the scale field for linear matter field preconditioning.
         """
-        if self.init_type == 'eh':
-            pmesh = lin_power_mesh(cosmo, self.init_shape, self.box_size)
-        elif self.init_type == 'init_kpow':
-            pmesh = kpower_mesh(self.init_kpow, self.init_shape, self.box_size, transfer=cosmo.sigma8)
-            # NOTE: init_kpow normalized to sigma8=1, so scale by current sigma8
-        else:
-            raise ValueError(f"Unknown initial condition type: {self.init_type}")
-        
         if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.init_shape)
-            transfer = pmesh**.5
 
         elif self.precond=='kaiser':
             b1E_fid = b1_L2E(self.fiduc['b1'])
@@ -1143,22 +1123,50 @@ class FieldLevelModel(Model):
             var_fid = self.fiduc['s_e'] / (self.count_fid * self.selec_fid)
 
             scale = (1 + boost_fid**2 / var_fid * pmesh_fid)**.5
-            transfer = pmesh**.5 / scale
-            scale = cgh2rg(scale, norm="amp")
-        
-        elif self.precond=='kaiser_dyn':
-            b1E = b1_L2E(bias['b1'])
-            boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
-            var = stoch['s_e'] / (self.count_fid * self.selec_fid)
-
-            scale = (1 + boost**2 / var * pmesh)**.5
-            transfer = pmesh**.5 / scale
-            scale = cgh2rg(scale, norm="amp")
-
         else:
             raise ValueError(f"Unknown preconditioning type: {self.precond}")
         
-        return scale, transfer
+        return scale
+
+    # def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, stoch):
+    #     """
+    #     Return scale and transfer fields for linear matter field preconditioning.
+    #     """
+    #     if self.init_type == 'eh':
+    #         pmesh = lin_power_mesh(cosmo, self.init_shape, self.box_size, kpow=None)
+    #     elif self.init_type == 'init_kpow':
+    #         pmesh = lin_power_mesh(cosmo, self.init_shape, self.box_size, kpow=self.init_kpow)
+    #         # NOTE: init_kpow is normalized to sigma8=1, and scaled by cosmo sigma8**2
+    #     else:
+    #         raise ValueError(f"Unknown initial condition type: {self.init_type}")
+        
+    #     if self.precond in ['real', 'fourier']:
+    #         scale = jnp.ones(self.init_shape)
+    #         transfer = pmesh**.5
+
+    #     elif self.precond=='kaiser':
+    #         b1E_fid = b1_L2E(self.fiduc['b1'])
+    #         boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
+    #         pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
+    #         var_fid = self.fiduc['s_e'] / (self.count_fid * self.selec_fid)
+
+    #         scale = (1 + boost_fid**2 / var_fid * pmesh_fid)**.5
+    #         transfer = pmesh**.5 / scale
+    #         scale = cgh2rg(scale, norm="amp")
+        
+    #     elif self.precond=='kaiser_dyn':
+    #         b1E = b1_L2E(bias['b1'])
+    #         boost = kaiser_boost(cosmo, self.a_fid, self.init_shape, self.box_size, b1E, los=self.los_fid)
+    #         var = stoch['s_e'] / (self.count_fid * self.selec_fid)
+
+    #         scale = (1 + boost**2 / var * pmesh)**.5
+    #         transfer = pmesh**.5 / scale
+    #         scale = cgh2rg(scale, norm="amp")
+
+    #     else:
+    #         raise ValueError(f"Unknown preconditioning type: {self.precond}")
+        
+    #     return scale, transfer
     
     def _groups(self, base=True):
         """
@@ -1189,10 +1197,10 @@ class FieldLevelModel(Model):
         Return fiducial location values from latents config and meshes.
         """
         fiduc = {k:v['loc_fid'] for k,v in self.latents.items() if 'loc_fid' in v}
-        if self.init_mesh is not None:
-            fiduc['init_mesh'] = self.init_mesh
-        if self.count_mesh is not None:
-            fiduc['count_mesh'] = self.count_mesh
+        # if self.white_mesh is not None:
+        #     fiduc['white_mesh'] = self.white_mesh
+        # if self.count_mesh is not None:
+        #     fiduc['count_mesh'] = self.count_mesh
         return fiduc
     
     # @property
@@ -1234,6 +1242,12 @@ class FieldLevelModel(Model):
     
     def masked2mesh(self, mesh):
         return masked2mesh(mesh, self.mask_mesh)
+
+    def white2lin(self, cosmo:Cosmology, mesh):
+        return white2lin(cosmo, mesh, self.init_shape, self.box_size, self.lin_kpow)
+
+    def lin2white(self, cosmo:Cosmology, mesh):
+        return lin2white(cosmo, mesh, self.init_shape, self.box_size, self.lin_kpow)
 
     def count2delta(self, mesh):
         """
@@ -1392,7 +1406,7 @@ class FieldLevelModel(Model):
     #                                hide_base=hide_base, hide_det=hide_det, hide_samp=hide_samp, from_base=from_base)
     #     return chains
     
-    def powtranscoh_chains(self, chains:Chains, mesh0, name:str='init_mesh', 
+    def powtranscoh_chains(self, chains:Chains, mesh0, names:str|list=[], 
                            kedges:int|float|list=None, batch_ndim=2) -> Chains:
         """
         Return wavenumber, power spectrum, transfer function, and coherence 
@@ -1401,19 +1415,21 @@ class FieldLevelModel(Model):
         (k, pow1, (pow1 / pow0)^.5, pow01 / (pow0 * pow1)^.5).
         """
         chains = chains.copy()
+        names = np.atleast_1d(names)
         fn = nvmap(lambda x: self.powtranscoh(mesh0, x, kedges=kedges), batch_ndim)
-        chains.data['kptc'] = fn(chains.data[name])
+        for name in names:
+            chains.data[f'kptc_{name}'] = fn(chains.data[name])
         return chains
     
-    def kaiser_post(self, seed, delta_obs, base=False, temp=1., scale_field=1.):
+    def kaiser_post(self, seed, base=False, temp=1., scale_field=1.):
         """
         Return posterior on init field given obs field, 
         as well as latent parameters fiducial values that are not in data.
         For MCMC initilization purposes.
         Assume a Kaiser linear Gaussian model.
         """
-        if jnp.isrealobj(delta_obs):
-            delta_obs = jnp.fft.rfftn(delta_obs)
+        delta_obs = self.count2delta(self.count_mesh)
+        delta_obs = jnp.fft.rfftn(delta_obs)
         
         # Reshape in Fourier domain in case observed field shape != initial field shape
         delta_obs = chreshape(delta_obs, r2chshape(self.init_shape))
@@ -1433,7 +1449,7 @@ class FieldLevelModel(Model):
 
         # Return starting values for all latent parameters except those in data
         start_params = {k: self.fiduc[k] for k in self.fiduc.keys() - self.data.keys()}
-        start_params |= {k: post_mesh for k in {'init_mesh'} - self.data.keys()}
+        start_params |= {k: post_mesh for k in {'white_mesh'} - self.data.keys()}
         if base:
             return start_params
         else:

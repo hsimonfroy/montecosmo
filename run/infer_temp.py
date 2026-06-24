@@ -52,7 +52,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
           n_chains=4, tune_mass=True,
           n_steps_field=2**12, dev_field=1e-5,
           n_steps_full=2**13, dev_full=1e-7,
-          n_samples=None, n_runs=8, thinning=64):
+          n_samples=None, n_runs=8, thinning=64,
+          scale_fid_fac=None):
     """
     Run inference for the mock registered in `<REGISTERED_DIR>/<register_name>`.
 
@@ -92,6 +93,10 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
         'alpha_iso': 1., 'alpha_ap': 1.,
         }
     latents = FieldLevelModel.new_latents_from_loc(default_config['latents'], fiduc, update_prior=True)
+    # Enlarge fiducial (posterior) scale of given latents, e.g. {'b1': 30, 'fNL_bp': 30} when
+    # constraints are weak, so the warmup mass matrix / step size is not under-dispersed.
+    for nm, fac in (scale_fid_fac or {}).items():
+        latents[nm] = latents[nm] | {'scale_fid': latents[nm]['scale_fid'] * fac}
 
     register = REGISTERED_DIR / register_name
     model = FieldLevelModel(**default_config | {
@@ -198,40 +203,49 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
 
 if __name__ == '__main__':
+    import sys
     print("Demat")
     # infer = tm.python_app(infer) # uncomment to submit with desipipe
 
-    png_type = None
+    # Dispatch the two kaiser-32 fNL_bias experiments (cosmology fixed):
+    #   'self'    : infer b1, fNL_bp, white_mesh        (expe='')
+    #   'fixedic' : infer b1, fNL_bp only, fix white_mesh (expe='fixedic')
+    which = sys.argv[1] if len(sys.argv) > 1 else 'self'
+    if which not in ('self', 'fixedic'):
+        raise SystemExit(f"usage: python infer_temp.py [self|fixedic]; got {which!r}")
+
+    png_type = 'fNL_bias'   # fNL_bp/fNL_bpd are free biases (fNL fixed)
     lik_type = 'quad_gauss'
-    
-    # Manually select the observed parameters
-    obs_names = ['count_mesh',
-                #  'white_mesh',
-                'alpha_iso', 'alpha_ap',
-                'Omega_m', 'sigma8',
-                #  'b1', # 1st order
-                #  'b2', 'bs2', # 2nd order
-                'b3', 'bds2', 'bs3', # 3rd order
-                'bn2', 'bnpar', # higher-derivative
-                # 'fNL', 'fNL_bp', 'fNL_bpd' # PNG 1st and 2nd order
-                'fNL_bpd2', 'fNL_bps2', # PNG 3rd order
-                'fNL_bn2p', # PNG higher-derivative 
-                's_e',
-                 's_ed', 's_e2',
-                's_phi',
-                #  'ngbars',
-                ]
-    # Some automatic handling just in case
-    obs_names += ['s_k2e', 's_kmu2e'] if lik_type == 'fourier_gauss' else ['s_ed', 's_e2']
-    obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else [] # universal mass relation: fNL determines fNL_bp and fNL_bpd
-    obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
+
+    # Infer ONLY these (+ white_mesh in 'self'); observe everything else (cosmology fixed).
+    infer_names = {'b1', 'fNL_bp'}
+
+    # Full set of base latents for this config; observe the complement of `infer_names` so
+    # nothing leaks into the inferred set by omission.
+    ALL_BASE = ['Omega_m', 'sigma8',                                  # cosmo (fixed)
+                'b1', 'b2', 'bs2', 'b3', 'bds2', 'bs3', 'bn2', 'bnpar', # bias
+                'fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p', # png
+                'ngbars',                                            # syst
+                's_e', 's_e2', 's_ed', 's_k2e', 's_kmu2e', 's_phi',  # stoch
+                'alpha_iso', 'alpha_ap']                             # AP
+    obs_names = ['count_mesh'] + [n for n in ALL_BASE if n not in infer_names]
+
+    expe = '' if which == 'self' else 'fixedic'
+    if which == 'fixedic':
+        obs_names += ['white_mesh'] # also fix the initial field
+
+    obs_names = sorted(set(obs_names))
+    inferred = sorted(set(ALL_BASE + ['white_mesh']) - set(obs_names))
+    print(f"Run '{which}' (expe={expe!r}); inferring {inferred}")
 
     # abacus c0 ph0 z0.800 LRG, 32^3, redshift-space, self-predicted data, kaiser evolution,
-    # quad_gauss likelihood, no PNG, EH ICs; infer Omega_m, sigma8, b1 only.
+    # quad_gauss likelihood, fNL_bias PNG, cosmology fixed; infer b1, fNL_bp (+ white_mesh in 'self').
+    # Constraints are weak here -> widen the fiducial scale of b1 and fNL_bp by 30x.
     infer(register_name='register_abacus_c0_ph0_z0.800_LRG_redshiftspace_b32_p0.h5',
-        png_type=None, lik_type='quad_gauss', evolution='kaiser',
+        png_type=png_type, lik_type=lik_type, evolution='kaiser',
         self_data=True, fnl=0., overwrite=False,
-        obs_names=obs_names, expe='')
+        obs_names=obs_names, expe=expe,
+        scale_fid_fac={'b1': 30, 'fNL_bp': 30})
 
     # spawn(queue, spawn=True) # uncomment to submit with desipipe
     print("Kenavo")

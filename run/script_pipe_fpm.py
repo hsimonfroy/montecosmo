@@ -254,9 +254,9 @@ def infer_model(mesh_length, eh_approx=True, oversamp=0, s8=False, select=None, 
         print("\nWarming up...")
         model.reset()
         if fourier:
-            model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.loc_fid, from_base=True)
+            model.substitute({'obs': cgh2rg(jnp.fft.rfftn(truth['obs']))} | model.fiduc, from_base=True)
         else:
-            model.substitute({'obs': truth['obs']} | model.loc_fid, from_base=True)
+            model.substitute({'obs': truth['obs']} | model.fiduc, from_base=True)
 
         print('data params:', model.data.keys())
         model.block()

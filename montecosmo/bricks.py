@@ -65,57 +65,57 @@ def get_cosmology(**cosmo) -> Cosmology:
 #########
 # Power #
 #########
-def lin_power_interp(cosmo=Cosmology, a=1., n_interp=256):
+def lin_power(cosmo=Cosmology, a=1., kpow=None, n_interp=256):
     """
-    Return a light Eiseinstein&Hu emulation of the linear matter power spectrum.
+    Return the linear matter power spectrum.
     """
-    ks = jnp.logspace(-4, 1, n_interp)
-    
+    if kpow is None:
+        ks = jnp.logspace(-4, 1, n_interp)
+        pows = power.linear_matter_power(cosmo, ks, a=a)
+    else:
+        ks, pows = kpow
+        pows = pows * cosmo.sigma8**2
+    return ks, pows
+
+def lin_power_interp(cosmo=Cosmology, a=1., kpow=None, n_interp=256):
+    """
+    Return a light emulation of the linear matter power spectrum.
+    The interpolation is either based on `kpow` tabulation (k, pow) normalized to sigma8=1,
+    or on Eiseinstein&Hu emulation if `kpow` is None.
+    """
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
     # as interpolation in loglog space can produce nan gradients
     # logpows = jnp.log(power.linear_matter_power(cosmo, ks, a=a))
     # pow_fn = lambda x: jnp.exp(jnp.interp(x.reshape(-1), ks, logpows, left=-jnp.inf, right=-jnp.inf)).reshape(x.shape)
 
     # Interpolate in linlin space with logspaced k values, correctly handles k==0,
-    pows = power.linear_matter_power(cosmo, ks, a=a)
+    ks, pows = lin_power(cosmo, a=a, kpow=kpow, n_interp=n_interp)
     pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
     return pow_fn
 
-def lin_power_mesh(cosmo:Cosmology, mesh_shape:tuple, box_size, a=1., n_interp=256):
+def lin_power_mesh(cosmo:Cosmology, mesh_shape:tuple, box_size, a=1., kpow=None, n_interp=256):
     """
     Return linear matter power spectrum field.
+    Based on `kpow` tabulation (k, pow) normalized to sigma8=1,
+    or on Eiseinstein&Hu emulation if `kpow` is None.
     """
-    pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
+    pow_fn = lin_power_interp(cosmo, a=a, kpow=kpow, n_interp=n_interp)
 
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
     return pow_fn(kmesh) * np.divide(mesh_shape, box_size).prod() # from [Mpc/h]^3 to cell units
 
-def kpower_mesh(kpow, mesh_shape:tuple, box_size, transfer=1.):
-    """
-    Return power spectrum field from given (wavenumber, power).
-    power can be scaled by transfer^2.
-    """
-    ks, pows = kpow
-    pows = pows * transfer**2 # NOTE: ensure not inplace multiplication
-    pow_fn = lambda x: jnp.interp(x.reshape(-1), ks, pows, left=0., right=0.).reshape(x.shape)
-
-    kvec = rfftk(mesh_shape, box_size) # in h/Mpc
-    kmesh = sum(ki**2 for ki in kvec)**.5
-    return pow_fn(kmesh) * np.divide(mesh_shape, box_size).prod() # from [Mpc/h]^3 to cell units
-
-def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
+def trans_phi2delta_interp(cosmo:Cosmology, a=1., kpow=None, n_interp=256):
     """
     Return a light emulation of the transfer function from primordial potential to linear matter density field.
+    The interpolation is either based on `kpow` tabulation (k, pow) normalized to sigma8=1,
+    or on Eiseinstein&Hu emulation if `kpow` is None.
     """
     # NOTE: we could do as in
     # https://github.com/cosmodesi/desilike/blob/52f52698f7d901881724cd10f3bdd446e79a19f3/desilike/theories/galaxy_clustering/primordial_non_gaussianity.py#L84
     # but jax_cosmo has no A_s, so fallback on https://arxiv.org/pdf/1904.08859
-
-    pow_fn = lin_power_interp(cosmo, a, n_interp=n_interp)
-    ks = jnp.logspace(-4, 1, n_interp)
+    ks, pow_lin = lin_power(cosmo, a=a, kpow=kpow, n_interp=n_interp)
     pow_large = ks**cosmo.n_s # primordial power spectrum on large scales
-    pow_lin = pow_fn(ks)
     trans_lin = (pow_lin / pow_large / (pow_lin[0] / pow_large[0]))**.5
 
     z_norm = 10. # in matter-dominated era
@@ -125,29 +125,40 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., n_interp=256):
     trans_fn = lambda x: jnp.interp(x.reshape(-1), ks, trans, left=0., right=0.).reshape(x.shape)
     return trans_fn
 
-
-def add_png(cosmo:Cosmology, fNL, init_mesh, box_size):
+def add_png(cosmo:Cosmology, fNL, lin_mesh, box_size, kpow=None):
     """
     Add Primordial Non-Gaussianity (PNG) to the linear matter density field.
     """
-    mesh_shape = ch2rshape(init_mesh.shape)
+    mesh_shape = ch2rshape(lin_mesh.shape)
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
-    trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+    trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
 
-    phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+    phi = jnp.fft.irfftn(safe_div(lin_mesh, trans_phi2delta))
     phi2 = phi**2
     phi += fNL * (phi2 - phi2.mean())
-    init_mesh = trans_phi2delta * jnp.fft.rfftn(phi)
+    lin_mesh = trans_phi2delta * jnp.fft.rfftn(phi)
+    return lin_mesh
 
-    return init_mesh
-
+def white2lin(cosmo:Cosmology, white_mesh, init_shape, box_size, kpow=None):
+    """
+    Transform a white noise mesh into a linear matter mesh.
+    """
+    pmesh = lin_power_mesh(cosmo, init_shape, box_size, kpow=kpow)
+    return white_mesh * pmesh**.5
+    
+def lin2white(cosmo:Cosmology, lin_mesh, init_shape, box_size, kpow=None):
+    """
+    Transform a linear matter mesh into a white noise mesh.
+    """
+    pmesh = lin_power_mesh(cosmo, init_shape, box_size, kpow=kpow)
+    return safe_div(lin_mesh, pmesh**.5)
 
 
 ##########
 # Kaiser #
 ##########
-def kaiser_boost(cosmo:Cosmology, a, mesh_shape, box_size, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.)):
+def kaiser_boost(cosmo:Cosmology, a, mesh_shape, box_size, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.), kpow=None):
     """
     Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, RSD, and PNG.
     """
@@ -159,21 +170,23 @@ def kaiser_boost(cosmo:Cosmology, a, mesh_shape, box_size, b1E, fNL_bp=0., png_t
     boost = b1E + a2f(cosmo, a) * mumesh**2
     boost = a2g(cosmo, a) * boost
     if png_type is not None:
-        trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+        trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
         boost += safe_div(fNL_bp, trans_phi2delta)
     return boost
 
-def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.)):
+def kaiser_model(cosmo:Cosmology, a, lin_mesh, box_size, b1E, fNL_bp=0., png_type=None, los=(0.,0.,0.), kpow=None):
     """
     Kaiser model, i.e. growth, Eulerian bias, RSD, and PNG are linear.
     For flat-sky with no light-cone, this linear model is moreover diagonal in Fourier space.
     """
-    mesh_shape = ch2rshape(init_mesh.shape)
+    mesh_shape = ch2rshape(lin_mesh.shape)
     los = jnp.asarray(los)
 
     if los.shape == (3,) and jnp.shape(a) == (): # flat-sky, no light-cone
-        init_mesh *= kaiser_boost(cosmo, a, mesh_shape, box_size, b1E, fNL_bp, png_type, los)
-        delta = jnp.fft.irfftn(init_mesh)
+        lin_mesh *= kaiser_boost(cosmo, a, mesh_shape, box_size, 
+                                  b1E=b1E, fNL_bp=fNL_bp, png_type=png_type, 
+                                  los=los, kpow=kpow)
+        delta = jnp.fft.irfftn(lin_mesh)
     
     elif los.shape == (3,): # flat-sky, light-cone
         kvec = rfftk(mesh_shape, box_size) # in h/Mpc
@@ -181,20 +194,20 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
         mumesh = sum(ki * losi for ki, losi in zip(kvec, los))
         mumesh = safe_div(mumesh, kmesh)
 
-        delta = b1E * jnp.fft.irfftn(init_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * init_mesh)
+        delta = b1E * jnp.fft.irfftn(lin_mesh) + a2f(cosmo, a) * jnp.fft.irfftn(mumesh**2 * lin_mesh)
         delta = a2g(cosmo, a) * delta
         if png_type is not None:
-            trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
-            phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+            trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
+            phi = jnp.fft.irfftn(safe_div(lin_mesh, trans_phi2delta))
             delta += fNL_bp * phi # TODO: fNL_bp(a)?
 
     else: # curved-sky
         # # 8 FFTs
-        # mu2_delta = naive_mu2_delta(init_mesh, los)
-        # delta = jnp.fft.irfftn(init_mesh)
+        # mu2_delta = naive_mu2_delta(lin_mesh, los)
+        # delta = jnp.fft.irfftn(lin_mesh)
 
         # 6 FFTs
-        delta, mu2_delta = optim_mu2_delta(init_mesh, los)
+        delta, mu2_delta = optim_mu2_delta(lin_mesh, los)
 
         delta = b1E * delta + a2f(cosmo, a) * mu2_delta
         delta = a2g(cosmo, a) * delta
@@ -202,8 +215,8 @@ def kaiser_model(cosmo:Cosmology, a, init_mesh, box_size, b1E, fNL_bp=0., png_ty
             kvec = rfftk(mesh_shape, box_size) # in h/Mpc
             kmesh = sum(ki**2 for ki in kvec)**.5
 
-            trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
-            phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+            trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
+            phi = jnp.fft.irfftn(safe_div(lin_mesh, trans_phi2delta))
             delta += fNL_bp * phi # TODO: fNL_bp(a)
 
     return 1 + delta
@@ -213,8 +226,6 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, a, box_size, var_noise, b1E, lo
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
-    
-    selec_fid is typically (selec**2).mean()**.5 / selec.mean().
     """
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
@@ -281,7 +292,7 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
                 # Sample in real space
                 mesh = jnp.fft.rfftn(mesh)
 
-            elif precond in ['fourier','kaiser','kaiser_dyn']:
+            elif precond in ['fourier','kaiser']:
                 # Sample in fourier space
                 mesh = rg2cgh(mesh)
 
@@ -292,7 +303,7 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
             if precond=='real':
                 mesh = jnp.fft.irfftn(mesh)
 
-            elif precond in ['fourier','kaiser','kaiser_dyn']:
+            elif precond in ['fourier','kaiser']:
                 mesh = cgh2rg(mesh)
 
         return {out_name:mesh}
@@ -303,8 +314,8 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
 ########
 # Bias #
 ########
-def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png, 
-                       png_type=None, read_order:int=2):
+def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png, 
+                       png_type=None, kpow=None, read_order:int=2):
     """
     Return Lagrangian bias expansion weights as in 
     [Assassi+2015](https://arxiv.org/pdf/1510.03723), 
@@ -317,7 +328,6 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
         + b_{\\phi} f_\\mathrm{NL} \\phi + b_{\\phi \\delta} f_\\mathrm{NL} (\\phi \\delta_L - \\braket{\\phi \\delta_L})
     """    
     # XXX: Smooth field to mitigate negative weights or use gaussian lagrangian biases?
-    init_mesh = init['init_mesh']
     b1 = bias['b1'] # 1st
     b2, bs2 = bias['b2'], bias['bs2'] # 2nd
     b3, bds2, bs3 = bias['b3'], bias['bds2'], bias['bs3'] # 3rd
@@ -328,7 +338,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     fNL_bn2p = png['fNL_bn2p'] # PNG higher-derivative
 
     # Compute utils
-    delta = jnp.fft.irfftn(init_mesh)
+    delta = jnp.fft.irfftn(lin_mesh)
     growths = a2g(cosmo, a)
     mesh_shape = delta.shape
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
@@ -350,11 +360,11 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     # debug.print('delta2_pos mean {mean} std {std}', mean=delta2_pos.mean(), std=delta2_pos.std())
 
     # Employ 5 FFTs to compute shear
-    pot = init_mesh * invlaplace_hat(kvec)
+    pot = lin_mesh * invlaplace_hat(kvec)
     shear = {}
     for i in range(2): # i = 0,1
         nabi = gradient_hat(kvec, i)
-        shear[(i, i)] = jnp.fft.irfftn(nabi**2 * pot - init_mesh / 3)
+        shear[(i, i)] = jnp.fft.irfftn(nabi**2 * pot - lin_mesh / 3)
         for j in range(i+1, 3): # j = i+1 to 2
             nabj = gradient_hat(kvec, j)
             shear[(i, j)] = jnp.fft.irfftn(nabi * nabj * pot)
@@ -370,7 +380,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     weights += bs2 * shear2_pos
 
     # Apply bnabla2, higher-order term
-    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * init_mesh)
+    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * lin_mesh)
     delta_nab2_pos = read(pos, delta_nab2, read_order) * growths.squeeze()
     weights += bn2 * delta_nab2_pos
 
@@ -391,8 +401,8 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
     weights += bs3 * shear3_pos
 
     if png_type is not None:
-        trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
-        phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
+        trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
+        phi = jnp.fft.irfftn(safe_div(lin_mesh, trans_phi2delta))
 
         # Apply bphi, primordial term
         phi_pos = read(pos, phi, read_order)
@@ -405,7 +415,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
         weights += fNL_bpd * phi_delta_pos
 
         # Apply bnabla2phi, primordial higher-order term
-        phi_nab2 = jnp.fft.irfftn( - kmesh**2 * safe_div(init_mesh, trans_phi2delta))
+        phi_nab2 = jnp.fft.irfftn( - kmesh**2 * safe_div(lin_mesh, trans_phi2delta))
         phi_nab2_pos = read(pos, phi_nab2, read_order)
         weights += fNL_bn2p * phi_nab2_pos
 
@@ -423,7 +433,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, init, bias, png,
 
     # Compute separately bnablapar, velocity bias term ~ (kmu)^2 delta.
     delta_nabpar_pos = jnp.stack([
-                read(pos, jnp.fft.irfftn(gradient_hat(kvec, i) * init_mesh), read_order) 
+                read(pos, jnp.fft.irfftn(gradient_hat(kvec, i) * lin_mesh), read_order) 
                 for i in range(len(kvec))], axis=-1) # in h/Mpc 
     dvel = bnpar * delta_nabpar_pos * growths
 
@@ -485,7 +495,7 @@ def fNL_bias(png, bias, p=1., png_type=None):
 
 
 
-def eulerian_bias(cdm_mesh, phi_mesh, box_size, 
+def eulerian_bias(matter_mesh, phi_mesh, box_size, 
                     bias, png, png_type=None):
     """
     Renormalization of Eulerian operators in eq. 3.38, 7.10, 7.11
@@ -496,8 +506,8 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
     fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
     
 
-    cdm_mesh = cdm_mesh.at[0,0,0].set(0.) # ensure zero mean
-    delta = jnp.fft.irfftn(cdm_mesh)
+    matter_mesh = matter_mesh.at[0,0,0].set(0.) # ensure zero mean
+    delta = jnp.fft.irfftn(matter_mesh)
     phi_mesh = jnp.fft.irfftn(phi_mesh)
     print(delta.mean(), delta.std())
 
@@ -528,14 +538,14 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
     weights += b2 * delta2 / 2
 
     # Apply bshear2, non-punctual term
-    pot = cdm_mesh * invlaplace_hat(kvec)
+    pot = matter_mesh * invlaplace_hat(kvec)
     dims = range(len(kvec))
     shear2 = 0.
 
     for i in dims:
         # Add diagonal terms
         nabi = gradient_hat(kvec, i)
-        shear2 += jnp.fft.irfftn(nabi**2 * pot - cdm_mesh / 3)**2
+        shear2 += jnp.fft.irfftn(nabi**2 * pot - matter_mesh / 3)**2
         for j in dims[i+1:]:
             # Add strict-up-triangle terms (counted twice)
             nabj = gradient_hat(kvec, j)
@@ -546,7 +556,7 @@ def eulerian_bias(cdm_mesh, phi_mesh, box_size,
     weights += bs2 * shear2
 
     # Apply bnabla2, higher-order term
-    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * cdm_mesh)
+    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * matter_mesh)
     weights += bn2 * delta_nab2
 
     # # Compute separately bnablapar, velocity bias term

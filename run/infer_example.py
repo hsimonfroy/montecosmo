@@ -134,7 +134,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
     # Fiducial location: model.loc_fid (bias/png/stoch from `loc`, cosmo + ngbars from register)
     # plus the true initial field and the observed counts. Optionally self-predict synthetic data.
-    loc_fid = dict(model.loc_fid)
+    loc_fid = dict(model.fiduc)
     if self_data:
         print("\nSelf-predicting synthetic data from the fiducial loc and true ICs...")
         pred = model.predict(samples=loc_fid | {'init_mesh': model.init_mesh},
@@ -187,7 +187,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
     if n_samples is None:
         n_samples = 128 * 64 // mesh_length
-    print(f"Inferring: {sorted(set(model.loc_fid) | {'init_mesh'} - set(obs))}")
+    print(f"Inferring: {sorted(set(model.fiduc) | {'init_mesh'} - set(obs))}")
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}, tune_mass: {tune_mass}")
     sys.stdout.flush()
 

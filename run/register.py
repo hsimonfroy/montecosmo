@@ -14,8 +14,8 @@ HDF5 file in ``png/registered`` (loadable via the model's ``register`` config):
     n_tracers, n_randoms                                # weighted catalog sizes (n_randoms cut-sky only)
     a_obs, curved_sky                                   # full-sky: 1/(1+z), False; cut-sky: None, True (light-cone, curved)
     paint_order, interlace_order, paint_deconv, kernel_type, cell_budget, padding
-    init_kpow                                           # (2,N) k, P(k)/sigma8^2 from cosmoprimo (sigma8=1 normalized)
-    init_mesh  OR  init_fake                            # complex rfft @ r2chshape(init_shape); fake only if no real ICs
+    lin_kpow                                            # (2,N) k, P(k)/sigma8^2 from cosmoprimo (sigma8=1 normalized)
+    white_mesh  OR  white_fake                          # whitened ICs, complex rfft @ r2chshape(init_shape); fake if no real ICs
 
 `FieldLevelModel(register=path)` then overrides geometry/painting params, loads the meshes,
 and sets the cosmology + ngbars latent locs (ngbars from n_tracers / footprint volume).
@@ -44,7 +44,7 @@ from jax import numpy as jnp, random as jr, config as jconfig
 jconfig.update("jax_enable_x64", True)
 
 from montecosmo.model import FieldLevelModel
-from montecosmo.bricks import lin_power_mesh, get_cosmology
+from montecosmo.bricks import lin_power_mesh, lin2white, get_cosmology
 from montecosmo.utils import scale_shape, chreshape, r2chshape, h5save
 
 
@@ -92,9 +92,9 @@ def cosmo2loc(cosmo):
             'sigma8': float(cosmo.get_fourier().sigma8_m)}
 
 
-def compute_init_kpow(cosmo, n_interp: int = 256, kmin: float = 1e-4, kmax: float = 1e1):
+def compute_lin_kpow(cosmo, n_interp: int = 256, kmin: float = 1e-4, kmax: float = 1e1):
     """
-    Return (k, P(k)/sigma8_m^2) at z=0 as a (2, n_interp) array: the prior power spectrum
+    Return (k, P(k)/sigma8_m^2) at z=0 as a (2, n_interp) array: the prior linear power spectrum
     normalized to sigma8=1, so the model recovers P(k) by scaling with the sampled sigma8.
     `cosmo` is a cosmoprimo cosmology.
     """
@@ -142,15 +142,21 @@ def synth_ic(cosmo, init_shape, box_size, a=1., seed=0):
 
 def build_init(spec, init_shape, cosmo_jax, box_size):
     """
-    Return the init dict: init_kpow (always, from the cosmoprimo `cosmo_fid`) + init_mesh (real
-    ICs, abacus) or, when no real ICs exist (fastpm, pngunit), a synthetic Gaussian init_fake
-    drawn at the mock cosmology `cosmo_jax` (z=0 linear field). To be replaced by real ICs later.
+    Return the init dict: lin_kpow (always, from the cosmoprimo `cosmo_fid`) + the whitened initial
+    conditions. The linear ICs (real abacus field, or a synthetic Gaussian drawn at the mock
+    cosmology `cosmo_jax` when no real ICs exist -> `white_fake`) are whitened with `lin2white` at
+    the fiducial cosmology + lin_kpow, so the model recovers them via `white2lin` (white_mesh).
     """
-    init = {'init_kpow': compute_init_kpow(spec['cosmo_fid'])}
+    lin_kpow = compute_lin_kpow(spec['cosmo_fid'])
+    init = {'lin_kpow': lin_kpow}
+    init_shape, box_size = np.asarray(init_shape), np.asarray(box_size)
+    # whiten, zeroing modes with no power (e.g. k=0, where pmesh=0 -> lin2white divides by 0);
+    # these carry no information and white2lin maps them back to 0 anyway.
+    whiten = lambda lin: np.asarray(lin2white(cosmo_jax, lin, init_shape, box_size, kpow=lin_kpow))
     if spec.get('ic_fn'):
-        init['init_mesh'] = downsample_ic(read_abacus_ic(spec['ic_fn']), init_shape)
+        init['white_mesh'] = whiten(downsample_ic(read_abacus_ic(spec['ic_fn']), init_shape))
     else:
-        init['init_fake'] = downsample_ic(synth_ic(cosmo_jax, init_shape, box_size, a=1.), init_shape)
+        init['white_fake'] = whiten(downsample_ic(synth_ic(cosmo_jax, init_shape, box_size, a=1.), init_shape))
     return init
 
 
@@ -240,7 +246,7 @@ def register(spec, cell_budget, padding=0.):
     print(f"registered {path.name}: final={final_shape} "
           f"cell={obs['cell_length']:.1f} Mpc/h n_tracers={obs['n_tracers']:.3e} "
           f"count.sum()={float(obs['count_mesh'].sum()):.3e} "
-          f"init={'init_mesh' if 'init_mesh' in init else 'init_fake'}")
+          f"init={'white_mesh' if 'white_mesh' in init else 'white_fake'}")
     return path
 
 
