@@ -9,7 +9,7 @@ Pipeline (per call to `infer`):
      to run.out, print host/job/time. The load dir is the `registered` folder; results are saved in
      png/<folder1>/<folder2> where folder1 = mock tag (+ png suffix) and folder2 = experiment.
   2. Fiducial: set bias/png/stoch locs, build the model from its register file (which fixes the
-     fiducial cosmology + ngbars), optionally self-predict synthetic data.
+     fiducial cosmology + ngbars), optionally self-predict synthetic data, and save obs.h5.
   3. Inference, in three phases (run/script.py): field-only warmup, full warmup, full run -- each
      skipped/loaded if already done unless `overwrite`. States/configs/runs are saved as HDF5.
   4. Post-process the chains (make_chains).
@@ -52,7 +52,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
           n_chains=4, tune_mass=True,
           n_steps_field=2**12, dev_field=1e-5,
           n_steps_full=2**13, dev_full=1e-7,
-          n_samples=None, n_runs=8, thinning=64):
+          n_samples=None, n_runs=8, thinning=64,
+          scale_fid_fac=1.):
     """
     Run inference for the mock registered in `<REGISTERED_DIR>/<register_name>`.
 
@@ -92,6 +93,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
         'alpha_iso': 1., 'alpha_ap': 1.,
         }
     latents = FieldLevelModel.new_latents_from_loc(default_config['latents'], fiduc, update_prior=True)
+    for name in fiduc:
+        latents[name] |= {'scale_fid': latents[name]['scale_fid'] * scale_fid_fac}
 
     register = REGISTERED_DIR / register_name
     model = FieldLevelModel(**default_config | {
@@ -123,13 +126,13 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')}")
     print(f"Job id: {os.environ.get('SLURM_JOB_ID')}")
     print(f"SAVE DIR: {save_dir}")
-    print('\n', jdevices())
-
     import shutil, subprocess
     shutil.copy(__file__, save_dir / Path(__file__).name) # snapshot the exact driver next to outputs
     commit = subprocess.run(['git', '-C', str(Path(__file__).resolve().parent), 'rev-parse', 'HEAD'],
                             capture_output=True, text=True).stdout.strip()
     print(f"montecosmo commit: {commit}")
+    print('\n', jdevices())
+
 
     jconfig.update("jax_compilation_cache_dir", str(save_dir / "jax_cache/"))
     jconfig.update("jax_persistent_cache_min_entry_size_bytes", -1)
@@ -153,7 +156,6 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     print("logpdf of fiduc:", logpdf_fid, "\n")
     if jnp.isinf(logpdf_fid) or jnp.isnan(logpdf_fid):
         raise ValueError("fiducial logpdf is infinite or nan")
-    sys.stdout.flush()
 
 
 
@@ -167,7 +169,6 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     if n_samples is None:
         n_samples = 128 * 64 // mesh_length
     print(f"n_samples: {n_samples}, n_runs: {n_runs}, n_chains: {n_chains}, tune_mass: {tune_mass}")
-    sys.stdout.flush()
 
     # 1. Field-only warmup (skipped if the init field is observed -> straight to full warmup)
     if 'white_mesh' not in obs:
@@ -177,24 +178,20 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
         plot_field_warmup(model, params_start, state, save_dir)
     else:
         state = None
-    sys.stdout.flush()
 
     # 2. Full warmup
     state, config = full_warmup(
         model, obs, state, chains_dir, n_steps=n_steps_full, desired_energy_var=dev_full,
         n_chains=n_chains, tune_mass=tune_mass, overwrite=overwrite)
-    sys.stdout.flush()
 
     # 3. Full run
     full_run(model, state, config, chains_dir, n_samples=n_samples, n_runs=n_runs,
              n_chains=n_chains, thinning=thinning, overwrite=overwrite)
-    sys.stdout.flush()
 
     make_chains(save_dir, start=1, end=100)
-    # Per-voxel logpdf/logcdf of the counts over the chains -> chains/logdf_mesh.h5 (thinned).
-    make_logdf_mesh(save_dir, start=1, end=100, thinning=64)
+    # make_logdf_mesh(save_dir, start=1, end=100, thinning=4)
     print(f"Finished running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
-    sys.stdout.flush()
+    # sys.stdout.flush()
 
 
 if __name__ == '__main__':
@@ -206,16 +203,16 @@ if __name__ == '__main__':
     
     # Manually select the observed parameters
     obs_names = ['count_mesh',
-                #  'white_mesh',
+                #  'white_mesh', # fixIC vs. freeIC 
                 'alpha_iso', 'alpha_ap',
                 'Omega_m', 'sigma8',
                 #  'b1', # 1st order
                 #  'b2', 'bs2', # 2nd order
                 'b3', 'bds2', 'bs3', # 3rd order
-                'bn2', 'bnpar', # higher-derivative
-                # 'fNL', 'fNL_bp', 'fNL_bpd' # PNG 1st and 2nd order
+                'bn2', 'bnpar', # higher-derivative (any order)
+                # 'fNL', 'fNL_bp', 'fNL_bpd' # PNG 1st and 2nd order (all 3 if png_type='fNL_bias', fNL only if png_type='fNL')
                 'fNL_bpd2', 'fNL_bps2', # PNG 3rd order
-                'fNL_bn2p', # PNG higher-derivative 
+                'fNL_bn2p', # PNG higher-derivative (any order)
                 's_e',
                  's_ed', 's_e2',
                 's_phi',

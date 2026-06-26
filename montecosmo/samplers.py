@@ -5,7 +5,7 @@ from functools import partial
 import blackjax
 from blackjax.progress_bar import gen_scan_fn # XXX: blackjax >= 1.2.3
 from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
-from blackjax.util import run_inference_algorithm
+from blackjax.util import run_inference_algorithm, thin_algorithm
 from blackjax.mcmc.integrators import isokinetic_mclachlan, isokinetic_velocity_verlet, isokinetic_yoshida, isokinetic_omelyan
 from numpyro.infer import MCMC
 

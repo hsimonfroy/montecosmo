@@ -1,6 +1,6 @@
 from functools import partial
 import numpy as np
-from jax import numpy as jnp, grad, vmap, lax
+from jax import numpy as jnp, random as jr, grad, vmap, lax
 from jax.scipy.spatial.transform import Rotation
 
 from jax_cosmo import Cosmology, background, constants, power
@@ -95,17 +95,17 @@ def lin_power_interp(cosmo=Cosmology, a=1., kpow=None, n_interp=256):
 
 def lin_power_mesh(cosmo:Cosmology, mesh_shape:tuple, box_size, a=1., kpow=None, n_interp=256):
     """
-    Return linear matter power spectrum field.
+    Return linear matter power spectrum mesh.
     Based on `kpow` tabulation (k, pow) normalized to sigma8=1,
     or on Eiseinstein&Hu emulation if `kpow` is None.
     """
     pow_fn = lin_power_interp(cosmo, a=a, kpow=kpow, n_interp=n_interp)
-
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
-    return pow_fn(kmesh) * np.divide(mesh_shape, box_size).prod() # from [Mpc/h]^3 to cell units
+    # return pow_fn(kmesh) * np.divide(mesh_shape, box_size).prod() # from [Mpc/h]^3 to cell units
+    return pow_fn(kmesh)
 
-def trans_phi2delta_interp(cosmo:Cosmology, a=1., kpow=None, n_interp=256):
+def trans_phi2delta_interp(cosmo:Cosmology, a=1.,kpow=None, n_interp=256):
     """
     Return a light emulation of the transfer function from primordial potential to linear matter density field.
     The interpolation is either based on `kpow` tabulation (k, pow) normalized to sigma8=1,
@@ -114,14 +114,15 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1., kpow=None, n_interp=256):
     # NOTE: we could do as in
     # https://github.com/cosmodesi/desilike/blob/52f52698f7d901881724cd10f3bdd446e79a19f3/desilike/theories/galaxy_clustering/primordial_non_gaussianity.py#L84
     # but jax_cosmo has no A_s, so fallback on https://arxiv.org/pdf/1904.08859
-    ks, pow_lin = lin_power(cosmo, a=a, kpow=kpow, n_interp=n_interp)
+    ks, pow_lin = lin_power(cosmo, kpow=kpow, n_interp=n_interp)
     pow_large = ks**cosmo.n_s # primordial power spectrum on large scales
-    trans_lin = (pow_lin / pow_large / (pow_lin[0] / pow_large[0]))**.5
+    lin_trans = (pow_lin / pow_large / (pow_lin[0] / pow_large[0]))**.5
 
-    z_norm = 10. # in matter-dominated era
-    a_norm = 1. / (1. + z_norm)
-    normalized_growth_factor = a2g(cosmo, a) / a2g(cosmo, a_norm) * a_norm
-    trans = 2. * constants.rh**2 * ks**2 * trans_lin * normalized_growth_factor / (3. * cosmo.Omega_m)
+    z_md = 10. # in matter-dominated era
+    a_md = 1. / (1. + z_md)
+    growth_factor_md = a2g(cosmo, a_md) / a_md # constant during matter-dominated era
+    normalized_growth_factor = a2g(cosmo, a) / growth_factor_md
+    trans = 2. * constants.rh**2 * ks**2 * lin_trans * normalized_growth_factor / (3. * cosmo.Omega_m)
     trans_fn = lambda x: jnp.interp(x.reshape(-1), ks, trans, left=0., right=0.).reshape(x.shape)
     return trans_fn
 
@@ -139,6 +140,15 @@ def add_png(cosmo:Cosmology, fNL, lin_mesh, box_size, kpow=None):
     phi += fNL * (phi2 - phi2.mean())
     lin_mesh = trans_phi2delta * jnp.fft.rfftn(phi)
     return lin_mesh
+
+def white_noise(seed, mesh_shape, box_size):
+    """
+    Generate a white noise field, in fourier space, in physical units.
+    """
+    if isinstance(seed, int):
+        seed = jr.key(seed)
+    white_mesh = rg2cgh(jr.normal(seed, mesh_shape))
+    return white_mesh * np.divide(mesh_shape, box_size).prod() 
 
 def white2lin(cosmo:Cosmology, white_mesh, init_shape, box_size, kpow=None):
     """
@@ -279,7 +289,7 @@ def samp2base(params:dict, config, inv=False, temp=1.) -> dict:
 
 def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
     """
-    Transform sample mesh into base mesh, i.e. initial wavevector coefficients at a=1.
+    Transform sample mesh into base mesh, i.e. inital wavevector coefficients.
     """
     assert len(init) <= 1, "init dict should only have one or zero key"
     for in_name, mesh in init.items():
@@ -296,7 +306,7 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
                 # Sample in fourier space
                 mesh = rg2cgh(mesh)
 
-            mesh *= transfer # ~ CN(0, P)
+            mesh *= transfer # ~ CN(0, Vcell^-1), white noise
         else:
             mesh = safe_div(mesh, transfer)
             
@@ -379,11 +389,6 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png,
     shear2_pos -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
     weights += bs2 * shear2_pos
 
-    # Apply bnabla2, higher-order term
-    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * lin_mesh)
-    delta_nab2_pos = read(pos, delta_nab2, read_order) * growths.squeeze()
-    weights += bn2 * delta_nab2_pos
-
     # Apply b3, local term
     delta3_pos = delta_pos**3
     # delta3_pos -= 3 * sigma2 * delta_pos * (1 + 4 * fNL * phi_pos) # if expansion is based on PNGed fields
@@ -392,7 +397,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png,
 
     # Apply bdeltashear2, non-local term
     delta_shear2_pos = delta_pos * shear2_pos
-    delta_shear2_pos -= 2 / 3 * sigma2 * delta_pos
+    # delta_shear2_pos -= 2 / 3 * sigma2 * delta_pos # if shear2_pos not already renormalized
     weights += bds2 * delta_shear2_pos
 
     # Apply bshear3, non-local term
@@ -400,38 +405,44 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png,
     shear3_pos = read(pos, shear3, read_order) * growths.squeeze()**3
     weights += bs3 * shear3_pos
 
+    # Apply bnabla2, higher-derivative term
+    delta_nab2 = jnp.fft.irfftn( - kmesh**2 * lin_mesh)
+    delta_nab2_pos = read(pos, delta_nab2, read_order) * growths.squeeze()
+    weights += bn2 * delta_nab2_pos
+
     if png_type is not None:
         trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
         phi = jnp.fft.irfftn(safe_div(lin_mesh, trans_phi2delta))
 
-        # Apply bphi, primordial term
+        # Apply bphi, primordial local term
         phi_pos = read(pos, phi, read_order)
         weights += fNL_bp * phi_pos
         
-        # Apply bphidelta, primordial term
+        # Apply bphidelta, primordial local term
         phi_delta_pos = phi_pos * delta_pos
         sigma_pd = phi_delta_pos.mean()
         phi_delta_pos -= sigma_pd
         weights += fNL_bpd * phi_delta_pos
 
-        # Apply bnabla2phi, primordial higher-order term
-        phi_nab2 = jnp.fft.irfftn( - kmesh**2 * safe_div(lin_mesh, trans_phi2delta))
-        phi_nab2_pos = read(pos, phi_nab2, read_order)
-        weights += fNL_bn2p * phi_nab2_pos
-
-        # Apply bphidelta2, primordial term
+        # Apply bphidelta2, primordial local term
         phi_delta2_pos = phi_pos * delta2_pos
         phi_delta2_pos -= sigma2 * phi_pos + 2 * sigma_pd * delta_pos
         weights += fNL_bpd2 * phi_delta2_pos
 
-        # Apply bphishear2, primordial term
+        # Apply bphishear2, primordial non-local term
         phi_shear2_pos = phi_pos * shear2_pos
-        phi_shear2_pos -= 2 / 3 * sigma2 * phi_pos
+        # phi_shear2_pos -= 2 / 3 * sigma2 * phi_pos # if shear2_pos not already renormalized
         weights += fNL_bps2 * phi_shear2_pos
+
+        # Apply bnabla2phi, primordial higher-derivative term
+        phi_nab2 = jnp.fft.irfftn( - kmesh**2 * safe_div(lin_mesh, trans_phi2delta))
+        phi_nab2_pos = read(pos, phi_nab2, read_order)
+        weights += fNL_bn2p * phi_nab2_pos
     else: 
         phi_pos = 0. ###XXX
 
-    # Compute separately bnablapar, velocity bias term ~ (kmu)^2 delta.
+    # Compute separately bnablapar, higher-derivative velocity term 
+    # similar but better than a (kmu)^2 delta higher-derivative term.
     delta_nabpar_pos = jnp.stack([
                 read(pos, jnp.fft.irfftn(gradient_hat(kvec, i) * lin_mesh), read_order) 
                 for i in range(len(kvec))], axis=-1) # in h/Mpc 
@@ -592,7 +603,6 @@ def unif_pos(mesh_shape:tuple, ptcl_shape:tuple=None, seed=42):
     if ptcl_shape is None:
         ptcl_shape = mesh_shape
 
-    from jax import random as jr
     if isinstance(seed, int):
         seed = jr.key(seed)
     pos = jr.uniform(seed, shape=(np.prod(ptcl_shape), 3), minval=0., maxval=np.array(mesh_shape))

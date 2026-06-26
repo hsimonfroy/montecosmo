@@ -367,10 +367,10 @@ class Model():
         Element-wise likelihood and cumulative likelihood for ``site`` (default 'count_mesh').
         Return a tuple (logp(y_i | x), log F(y_i | x)), evaluated at latents x and observables y.
 
-        For the per-voxel score d/dtheta (few theta, many voxels), use forward-mode:
-            jax.jacfwd(lambda th: self.logp_field({**params, **th})[0])(theta_dict)
+        For the per-voxel differentiation with respect to latent x (large y, possibly small x), use forward-mode:
+            jax.jacfwd(lambda x: self.logdf_mesh({**y, **x})[0])(x)
 
-        NOTE: logcdf requires the site distribution to implement cdf/log_cdf
+        NOTE: logcdf requires the site distribution to implement log_cdf or cdf.
         """
         logpdfs_mesh, trace = compute_log_probs(self.model, (), {}, params, sum_log_prob=False)
         logpdf_mesh = logpdfs_mesh[site] # == d.log_prob(value)
@@ -663,17 +663,17 @@ class FieldLevelModel(Model):
         # Sample, reparametrize, and register initial conditions
         init = {}
         name_ = self.groups['init'][0]+'_' # 'white_mesh_'
-        scale = self._precond_scale()
+        scale, transfer = self._precond_scale_and_transfer()
 
         if self.cut_mask is not None:
-            samp = sample(name_, dist.Normal(0., cgh2rg(scale, norm='amp')[self.cut_mask])) # sample
+            samp = sample(name_, dist.Normal(0., scale[self.cut_mask])) # sample
             init[name_] = masked2mesh(samp, self.cut_mask)
         else:
-            init[name_] = sample(name_, dist.Normal(0., cgh2rg(scale, norm='amp'))) # sample
+            init[name_] = sample(name_, dist.Normal(0., scale)) # sample
         
-        init = samp2base_mesh(init, self.precond, transfer=1/scale, inv=False, temp=temp) # reparametrize
+        init = samp2base_mesh(init, self.precond, transfer=transfer, inv=False, temp=temp) # reparametrize
         # Limit fixed IC constant-folding through the model, which otherwise blows up GPU compilation.
-        # init = {k: lax.optimization_barrier(v) for k, v in init.items()}
+        init = {k: lax.optimization_barrier(v) for k, v in init.items()}
         init = {k: deterministic(k, v) for k, v in init.items()} # register base params
 
         return cosmology, bias, png, stoch, ap, syst, init
@@ -959,14 +959,14 @@ class FieldLevelModel(Model):
 
         # Initial conditions
         if len(init) > 0:
-            scale = self._precond_scale()
+            _, transfer = self._precond_scale_and_transfer()
 
             if inv and not fourier:
                 init = tree.map(jnp.fft.rfftn, init)
             if not inv and self.cut_mask is not None:       
                 init = tree.map(lambda x: masked2mesh(x, self.cut_mask), init)
 
-            init = samp2base_mesh(init, self.precond, transfer=1/scale, inv=inv, temp=temp)
+            init = samp2base_mesh(init, self.precond, transfer=transfer, inv=inv, temp=temp)
             
             if inv and self.cut_mask is not None:       
                 init = tree.map(lambda x: mesh2masked(x, self.cut_mask), init)
@@ -1109,9 +1109,9 @@ class FieldLevelModel(Model):
             dic[name+'_'] = samp
         return dic
 
-    def _precond_scale(self):
+    def _precond_scale_and_transfer(self):
         """
-        Return the scale field for linear matter field preconditioning.
+        Return scale and transfer fields for linear matter field preconditioning.
         """
         if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.init_shape)
@@ -1121,12 +1121,14 @@ class FieldLevelModel(Model):
             boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
             var_fid = self.fiduc['s_e'] / (self.count_fid * self.selec_fid)
-
             scale = (1 + boost_fid**2 / var_fid * pmesh_fid)**.5
+
         else:
             raise ValueError(f"Unknown preconditioning type: {self.precond}")
         
-        return scale
+        transfer = np.divide(self.init_shape, self.box_size).prod() / scale # cell to physical units
+        scale = cgh2rg(scale, norm="amp")
+        return scale, transfer
 
     # def _precond_scale_and_transfer(self, cosmo:Cosmology, bias, stoch):
     #     """
@@ -1443,6 +1445,7 @@ class FieldLevelModel(Model):
         # post_mesh = rg2cgh2(jr.normal(seed, ch2rshape(means.shape)))
         post_mesh = rg2cgh(jr.normal(seed, ch2rshape(means.shape)))
         post_mesh = temp**.5 * stds * post_mesh + means 
+        post_mesh = lin2white(self.cosmo_fid, post_mesh, self.init_shape, self.box_size)
         # NOTE: scaling down the field is recommended when the Kaiser posterior approximation becomes less valid
         # because many high-wavevector amplitudes can be set to high.
         post_mesh *= scale_field 

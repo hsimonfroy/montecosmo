@@ -2,12 +2,22 @@
 import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
-from jax import numpy as jnp, random as jr, jit, vmap, tree
+from jax import numpy as jnp, random as jr, jit, vmap, pmap, tree, local_device_count
 from pathlib import Path
 import os
 
 from montecosmo.model import FieldLevelModel
 from montecosmo.utils import h5save, h5load, h5save_tree, h5load_tree
+
+
+def map_chains(fn, n_chains):
+    """
+    Map `fn` over the `n_chains` leading axis. When the node has >= n_chains GPUs, use `pmap`
+    to run one chain per GPU (a NERSC GPU node has 4 -> set n_chains=4 and salloc --gpus 4 to
+    get a ~n_chains speedup on the heavy chains); otherwise fall back to jit+vmap (all chains
+    batched on a single device), so the same script still runs on a 1-GPU allocation.
+    """
+    return pmap(fn) if local_device_count() >= n_chains else jit(vmap(fn))
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +55,9 @@ def field_warmup(model, chains_dir, n_steps, desired_energy_var, n_chains,
 
     if not state_path.exists() or overwrite:
         print("Field warmup...")
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None,
-                                              desired_energy_var=desired_energy_var,
-                                              diagonal_preconditioning=False)))
+        warmup_fn = map_chains(get_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None,
+                                                desired_energy_var=desired_energy_var,
+                                                diagonal_preconditioning=False), n_chains)
         state, config = warmup_fn(jr.split(jr.key(seed), n_chains), params_start)
         h5save_tree(state_path, state)
         h5save_tree(conf_path, config)
@@ -123,9 +133,9 @@ def full_warmup(model, obs, state_field, chains_dir, n_steps, desired_energy_var
         params_warm |= state_field.position if 'white_mesh' not in model.data else {}
         print('Full warmup params:', list(params_warm))
 
-        warmup_fn = jit(vmap(get_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None,
-                                              desired_energy_var=desired_energy_var,
-                                              diagonal_preconditioning=tune_mass)))
+        warmup_fn = map_chains(get_mclmc_warmup(model.logpdf, n_steps=n_steps, config=None,
+                                                desired_energy_var=desired_energy_var,
+                                                diagonal_preconditioning=tune_mass), n_chains)
         state, config = warmup_fn(jr.split(jr.key(seed), n_chains), params_warm)
         print_mclmc_config(config, state)
 
@@ -166,7 +176,7 @@ def full_run(model, state, config, chains_dir, n_samples, n_runs, n_chains,
         print(f"Resuming at run {start}...")
 
     print("Running...")
-    run_fn = jit(vmap(get_mclmc_run(model.logpdf, n_samples, thinning=thinning, progress_bar=False)))
+    run_fn = map_chains(get_mclmc_run(model.logpdf, n_samples, thinning=thinning, progress_bar=False), n_chains)
     key = jr.key(seed)
     for _ in range(1, start): # advance key so resumed runs use fresh randomness
         key, _ = jr.split(key, 2)
@@ -298,7 +308,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
 
 
 
-def make_logdf_mesh(save_dir, start=1, end=100, thinning=64, prefix="", site='count_mesh'):
+def make_logdf_mesh(save_dir, start=1, end=100, thinning=1, prefix="", site='count_mesh'):
     """
     Per-voxel likelihood of the observed `site` (default 'count_mesh') over the chains.
 

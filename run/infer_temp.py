@@ -230,7 +230,7 @@ if __name__ == '__main__':
                 'alpha_iso', 'alpha_ap']                             # AP
     obs_names = ['count_mesh'] + [n for n in ALL_BASE if n not in infer_names]
 
-    expe = '' if which == 'self' else 'fixedic'
+    expe = 'ov0.5' if which == 'self' else 'fixedic_ov0.5'  # init_oversamp=1/2 (16^3 low-res ICs)
     if which == 'fixedic':
         obs_names += ['white_mesh'] # also fix the initial field
 
@@ -239,9 +239,10 @@ if __name__ == '__main__':
     print(f"Run '{which}' (expe={expe!r}); inferring {inferred}")
 
     # abacus c0 ph0 z0.800 LRG, 32^3, redshift-space, self-predicted data, kaiser evolution,
-    # quad_gauss likelihood, fNL_bias PNG, cosmology fixed; infer b1, fNL_bp (+ white_mesh in 'self').
+    # quad_gauss lik, fNL_bias PNG, cosmology fixed, init_oversamp=1/2 (16^3 ICs < 32^3 counts, so
+    # fewer inferred init values than observations -- for the LOO-PSIS test). Infer b1, fNL_bp (+ white_mesh).
     # Constraints are weak here -> widen the fiducial scale of b1 and fNL_bp by 30x.
-    infer(register_name='register_abacus_c0_ph0_z0.800_LRG_redshiftspace_b32_p0.h5',
+    infer(register_name='register_abacus_c0_ph0_z0.800_LRG_redshiftspace_b32_p0_ov0.5.h5',
         png_type=png_type, lik_type=lik_type, evolution='kaiser',
         self_data=True, fnl=0., overwrite=False,
         obs_names=obs_names, expe=expe,
