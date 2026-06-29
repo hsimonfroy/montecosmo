@@ -143,12 +143,12 @@ def add_png(cosmo:Cosmology, fNL, lin_mesh, box_size, kpow=None):
 
 def white_noise(seed, mesh_shape, box_size):
     """
-    Generate a white noise field, in fourier space, in physical units.
+    Generate a unit-power white noise field, in fourier space, in physical units.
     """
     if isinstance(seed, int):
         seed = jr.key(seed)
     white_mesh = rg2cgh(jr.normal(seed, mesh_shape))
-    return white_mesh * np.divide(mesh_shape, box_size).prod() 
+    return white_mesh * np.divide(mesh_shape, box_size).prod()**.5
 
 def white2lin(cosmo:Cosmology, white_mesh, init_shape, box_size, kpow=None):
     """
@@ -240,6 +240,7 @@ def kaiser_posterior(delta_obs, cosmo:Cosmology, a, box_size, var_noise, b1E, lo
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
     pmesh = lin_power_mesh(cosmo, mesh_shape, box_size)
+    pmesh *= np.divide(mesh_shape, box_size).prod() # power in cell units
     boost = kaiser_boost(cosmo, a, mesh_shape, box_size, b1E, los=los)
 
     stds = (pmesh / (1 + boost**2 / var_noise * pmesh))**.5
@@ -306,7 +307,7 @@ def samp2base_mesh(init:dict, precond, transfer, inv=False, temp=1.) -> dict:
                 # Sample in fourier space
                 mesh = rg2cgh(mesh)
 
-            mesh *= transfer # ~ CN(0, Vcell^-1), white noise
+            mesh *= transfer # ~ CN(0, Vcell^-1), unit-power white noise
         else:
             mesh = safe_div(mesh, transfer)
             
@@ -426,7 +427,8 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png,
 
         # Apply bphidelta2, primordial local term
         phi_delta2_pos = phi_pos * delta2_pos
-        phi_delta2_pos -= sigma2 * phi_pos + 2 * sigma_pd * delta_pos
+        # phi_delta2_pos -= sigma2 * phi_pos + 2 * sigma_pd * delta_pos # if delta2_pos not already renormalized
+        phi_delta2_pos -= 2 * sigma_pd * delta_pos
         weights += fNL_bpd2 * phi_delta2_pos
 
         # Apply bphishear2, primordial non-local term
@@ -800,13 +802,12 @@ def ap_auto(pos, los, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky=True):
     
     if curved_sky:
         rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
-        alpha = alpha_fn(rpos)
-        pos *= alpha
+        alpha = alpha_fn(rpos) # curved remains curved
     else:
         rpos = jnp.abs((pos * los).sum(-1, keepdims=True))
-        alpha = alpha_fn(rpos)
-        pos = scale_pos(pos, los, alpha, 1)
-    return pos
+        alpha = alpha_fn(rpos) # flat remains flat
+        # pos = scale_pos(pos, los, alpha, 1)
+    return pos * alpha
 
 def ap_auto_absdetjac(pos, los, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky=True):
     """
@@ -822,12 +823,12 @@ def ap_auto_absdetjac(pos, los, cosmo:Cosmology, cosmo_fid:Cosmology, curved_sky
     
     if curved_sky:
         rpos = jnp.linalg.norm(pos, axis=-1, keepdims=True)
-        alpha = alpha_fn(rpos)
-        pos *= alpha
+        alpha = alpha_fn(rpos) # curved remains curved
     else:
         rpos = jnp.abs((pos * los).sum(-1, keepdims=True))
-        alpha = alpha_fn(rpos)
-        pos = scale_pos(pos, los, alpha, 1)
+        alpha = alpha_fn(rpos) # flat remains flat
+        # pos = scale_pos(pos, los, alpha, 1)
+    pos = pos * alpha
 
     def absdetjac_fn(rpos):
         # NOTE: jac(alpha(r) * q) = alpha I + alpha' / r * q q^T

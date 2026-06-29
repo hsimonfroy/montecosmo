@@ -124,7 +124,7 @@ default_config={
                             'label':r'{b}_{3}',
                             'loc':0.,
                             'scale':1e2,
-                            'scale_fid':3e-2,
+                            'scale_fid':1e0,
                             },
                 'bds2': {'group':'bias',
                             'label':r'{b}_{\delta s^2}',
@@ -172,7 +172,7 @@ default_config={
                             'label':r'{f}_\mathrm{NL} b_{\phi\delta^2}',
                             'loc':0.,
                             'scale':1e8,
-                            'scale_fid':1e4,
+                            'scale_fid':1e3,
                             },
                 'fNL_bps2': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_{\phi s^2}',
@@ -1111,22 +1111,24 @@ class FieldLevelModel(Model):
 
     def _precond_scale_and_transfer(self):
         """
-        Return scale and transfer fields for linear matter field preconditioning.
+        Return scale and transfer fields for white field preconditioning.
         """
         if self.precond in ['real', 'fourier']:
             scale = jnp.ones(self.init_shape)
 
         elif self.precond=='kaiser':
             b1E_fid = b1_L2E(self.fiduc['b1'])
-            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, b1E_fid, los=self.los_fid)
+            boost_fid = kaiser_boost(self.cosmo_fid, self.a_fid, self.init_shape, self.box_size, 
+                                     b1E_fid, los=self.los_fid)
             pmesh_fid = lin_power_mesh(self.cosmo_fid, self.init_shape, self.box_size)
+            pmesh_fid *= np.divide(self.init_shape, self.box_size).prod() # power in cell units
             var_fid = self.fiduc['s_e'] / (self.count_fid * self.selec_fid)
             scale = (1 + boost_fid**2 / var_fid * pmesh_fid)**.5
 
         else:
             raise ValueError(f"Unknown preconditioning type: {self.precond}")
         
-        transfer = np.divide(self.init_shape, self.box_size).prod() / scale # cell to physical units
+        transfer = np.divide(self.init_shape, self.box_size).prod()**.5 / scale # transfer to unit-power white noise
         scale = cgh2rg(scale, norm="amp")
         return scale, transfer
 
@@ -1269,7 +1271,7 @@ class FieldLevelModel(Model):
     
     @classmethod
     def register_catalog(cls, cell_budget:float, cosmo_fid:Cosmology, data, random=None,
-                         box_size=None, box_center=None, box_rotvec=None, a_obs=None,
+                         box_size=None, box_center=None, box_rotvec=None, a_obs=None, los=None,
                          padding:float=0., init_oversamp:float=3/2, paint_oversamp:float=7/4,
                          paint_order:int=2, interlace_order:int=2, paint_deconv:bool=True, kernel_type:str='rectangular'):
         """
@@ -1292,12 +1294,12 @@ class FieldLevelModel(Model):
         cut_sky = random is not None
         # Geometry: fit to the randoms (cut-sky) or set the periodic box (full-sky)
         if cut_sky:
-            assert a_obs is None, "For cut-sky catalog, a_obs must be None (light-cone)"
+            assert a_obs is None and los is None, "For cut-sky catalog, a_obs and los must be None (light-cone, curved-sky)"
             curved_sky = True
             final_shape, cell_length, box_center, box_rotvec = cutsky2config(
                 random, cosmo_fid, cell_budget, padding, box_size=box_size, box_center=box_center, box_rotvec=box_rotvec)
         else:
-            assert a_obs is not None and box_size is not None and box_center is not None,\
+            assert a_obs is not None and los is not None and box_size is not None and box_center is not None,\
             "For full-sky catalog, a_obs, los, box_size, and box_center must be provided"
             box_rotvec = np.zeros(3) if box_rotvec is None else np.asarray(box_rotvec)
             final_shape, cell_length = get_mesh_shape(box_size, cell_budget, padding=0.)
@@ -1321,9 +1323,10 @@ class FieldLevelModel(Model):
             n_tracers, n_randoms = float(np.sum(data['WEIGHT'])), float(np.sum(random['WEIGHT']))
         else:
             count_mesh = fullsky2count(
-                data, cosmo_fid, a_obs, los=(0,0,1),
+                data, cosmo_fid, a_obs, los=los,
                 box_size=box_size, box_center=box_center, box_rotvec=box_rotvec,
                 final_shape=final_shape, paint_shape=paint_shape, **paint)
+            box_center = np.multiply(los, a2chi(cosmo_fid, a_obs)) # real box_center, coherent with the los
             n_tracers = float(count_mesh.sum())
             selec_mesh = mask_mesh = n_randoms = None
 

@@ -67,7 +67,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     overwrite     : redo phases whose files already exist (else they are loaded/resumed).
     obs_names     : base latents to observe; every other base latent is fixed to its fiducial value.
     """
-    import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '1.' # NOTE: jax preallocates GPU (default 75%)
+    import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.99' # NOTE: jax preallocates GPU (default 75%)
     import re
     import sys
     from datetime import datetime
@@ -77,8 +77,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
     from montecosmo.model import FieldLevelModel, default_config
     from montecosmo.utils import h5save
-    sys.path.insert(0, str(Path(__file__).resolve().parent)) # run/ dir, to import sibling script.py
-    from script import (field_warmup, plot_field_warmup, full_warmup, full_run, make_chains, make_logdf_mesh)
+    from montecosmo.script import field_warmup, plot_field_warmup, full_warmup, full_run, make_chains, make_logdf_mesh
 
     ###############################################
     # Fiducial location and model (from register) #
@@ -86,8 +85,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     # Fiducial location of the inferred bias/png/stoch/AP params (cosmology + ngbars come from
     # the register file). Update prior locs too, so the model is centered on these values.
     fiduc = {
-        'b1': 0.7, 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
-        'fNL': fnl, 'fNL_bp': fnl, 'fNL_bpd': 0., 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
+        'b1': 1., 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
+        'fNL': 0, 'fNL_bp': 0, 'fNL_bpd': 0., 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
         's_e': 1., 's_k2e': 0., 's_kmu2e': 0.,
         's_ed': 0., 's_e2': 0.,
         'alpha_iso': 1., 'alpha_ap': 1.,
@@ -111,6 +110,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     ############
     mesh_length = int(round(np.prod(model.final_shape)**(1/3)))
     tag = re.match(r"register_(.+)_b\d+_p[\d.]+", Path(register_name).stem).group(1)
+    # tag = re.sub(r"_fNL-?\d+", "", tag) # remove fNL from tag
     png_suffix = {'fNL': '_fNL', 'fNL_bias': '_fNLb'}.get(png_type, '')
     folder1 = tag + png_suffix
     folder2 = (f"{evolution}_{mesh_length}_fNL{fnl:.0f}"
@@ -219,7 +219,7 @@ if __name__ == '__main__':
                 #  'ngbars',
                 ]
     # Some automatic handling just in case
-    obs_names += ['s_k2e', 's_kmu2e'] if lik_type == 'fourier_gauss' else ['s_ed', 's_e2']
+    obs_names += ['s_ed', 's_e2'] if lik_type == 'fourier_gauss' else ['s_k2e', 's_kmu2e']
     obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else [] # universal mass relation: fNL determines fNL_bp and fNL_bpd
     obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
 

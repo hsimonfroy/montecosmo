@@ -44,7 +44,7 @@ from jax import numpy as jnp, random as jr, config as jconfig
 jconfig.update("jax_enable_x64", True)
 
 from montecosmo.model import FieldLevelModel
-from montecosmo.bricks import lin_power_mesh, lin2white, get_cosmology
+from montecosmo.bricks import lin_power_mesh, lin2white, white_noise, get_cosmology
 from montecosmo.utils import scale_shape, chreshape, r2chshape, h5save
 
 
@@ -130,14 +130,7 @@ def read_abacus_lagr_pos(fn):
 def downsample_ic(real_mesh, init_shape):
     """rfft a real-space initial mesh and Fourier-downsample to r2chshape(init_shape)."""
     fmesh = jnp.fft.rfftn(jnp.asarray(real_mesh))
-    return np.asarray(chreshape(fmesh, r2chshape(tuple(int(s) for s in np.asarray(init_shape)))))
-
-
-def synth_ic(cosmo, init_shape, box_size, a=1., seed=0):
-    """Synthetic Gaussian linear field @ init_shape (random phases, physical P(k)), jax_cosmo `cosmo`."""
-    init_shape = tuple(int(s) for s in np.asarray(init_shape))
-    pmesh = lin_power_mesh(cosmo, np.asarray(init_shape), np.asarray(box_size), a=a)
-    return jnp.fft.irfftn(jnp.fft.rfftn(jr.normal(jr.key(seed), init_shape)) * pmesh**.5)
+    return np.asarray(chreshape(fmesh, r2chshape(init_shape)))
 
 
 def build_init(spec, init_shape, cosmo_jax, box_size):
@@ -149,14 +142,11 @@ def build_init(spec, init_shape, cosmo_jax, box_size):
     """
     lin_kpow = compute_lin_kpow(spec['cosmo_fid'])
     init = {'lin_kpow': lin_kpow}
-    init_shape, box_size = np.asarray(init_shape), np.asarray(box_size)
-    # whiten, zeroing modes with no power (e.g. k=0, where pmesh=0 -> lin2white divides by 0);
-    # these carry no information and white2lin maps them back to 0 anyway.
-    whiten = lambda lin: np.asarray(lin2white(cosmo_jax, lin, init_shape, box_size, kpow=lin_kpow))
     if spec.get('ic_fn'):
+        whiten = lambda lin: np.asarray(lin2white(cosmo_jax, lin, init_shape, box_size, kpow=lin_kpow))
         init['white_mesh'] = whiten(downsample_ic(read_abacus_ic(spec['ic_fn']), init_shape))
     else:
-        init['white_fake'] = whiten(downsample_ic(synth_ic(cosmo_jax, init_shape, box_size, a=1.), init_shape))
+        init['white_fake'] = np.asarray(white_noise(42, init_shape, box_size))
     return init
 
 
@@ -176,6 +166,7 @@ def get_abacus(cosmo=0, ic=0, z_obs=0.8, tracer='LRG', field='redshiftspace'):
             [glob.glob(f"/dvs_ro/cfs/cdirs/desi/public/cosmosim/AbacusSummit/{base}/"
                        f"halos/z{z_obs:.3f}/{t}_rv_A/{t}_rv_A_*.asdf") for t in ['field', 'halo']], []))
         spec['data'] = ({'pos': read_abacus_pos(fn)} for fn in fns)
+        spec['los'] = (0, 0, 0)
         return spec
 
     import fitsio
@@ -184,7 +175,10 @@ def get_abacus(cosmo=0, ic=0, z_obs=0.8, tracer='LRG', field='redshiftspace'):
     data = {'pos': np.column_stack([fits[c] for c in ['x', 'y', 'z']]).astype(float)}
     if field == 'redshiftspace':  # RSD applied in register_catalog from the peculiar velocity
         data['vel'] = np.column_stack([fits[c] for c in ['vx', 'vy', 'vz']]).astype(float)
-    elif field != 'realspace':
+        spec['los'] = (0, 0, 1)
+    elif field == 'realspace':
+        spec['los'] = (0, 0, 1)
+    else:
         raise ValueError(f"unknown abacus field {field!r}")
     spec['data'] = data
     return spec
@@ -197,7 +191,7 @@ def get_fastpm(fNL=0, z_obs=1.0, tracer='LRG'):
               f"run-knl-fnl-{fNL}-a0.5000/catalog_mcut2.25e+12_nbar1.00e-04_los-z.fits")
     pos = np.asarray(fitsio.read(cat_fn)['Position']).astype(float)
     return dict(data={'pos': pos}, cosmo_fid=abacus_cosmo(0),
-                a_obs=1 / (1 + z_obs),
+                a_obs=1 / (1 + z_obs), los=(0, 0, 1), # RSD baked in along z
                 box_size=np.full(3, FASTPM_BOX), box_center=FASTPM_CENTER,
                 tag=f"fastpm_fNL{fNL}_z{z_obs:.3f}_{tracer}")
 
@@ -213,7 +207,8 @@ def get_pngunit(fNL=0, tracer='LRG', region='NGC'):
                            f"{tracer}_complete_{region}_clustering.dat.fits"), columns=cols)
     rand = fitsio.read(str(cat_dir / "randoms" /
                            f"{tracer}_complete_{region}_0_clustering.ran.fits"), columns=cols)
-    return dict(data={c: data[c] for c in cols}, random={c: rand[c] for c in cols},
+    # fitsio returns big-endian (>f8) columns; cast to native float so jnp.array accepts them
+    return dict(data={c: data[c].astype(float) for c in cols}, random={c: rand[c].astype(float) for c in cols},
                 cosmo_fid=unit_cosmo(),  # UNIT simulation cosmology (PNGUNIT fiducial)
                 tag=f"pngunit_fNL{fNL}_{tracer}_{region}")
 

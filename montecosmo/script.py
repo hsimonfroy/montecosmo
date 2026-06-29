@@ -83,9 +83,8 @@ def plot_field_warmup(model, params_start, state, save_dir, prob=(0.68, 0.95)):
     kptcs_start = vmap(lambda x: model.powtranscoh(white_mesh, model.reparam(x)['white_mesh']))(params_start)
     kptcs_warm = vmap(lambda x: model.powtranscoh(white_mesh, model.reparam(x)['white_mesh']))(state.position)
     # ICs are whitened -> theoretical reference is white noise: flat power = cell volume
-    pow_white = np.divide(model.box_size, model.init_shape).prod()
-    kpow_fid = kptcs_warm[0][0], pow_white * jnp.ones_like(kptcs_warm[0][0])
-# kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid, kpow=model.lin_kpow)(kptcs_warm[0][0])
+    kpow_fid = kptcs_warm[0][0], jnp.ones_like(kptcs_warm[0][0])
+    # kpow_fid = kptcs_warm[0][0], lin_power_interp(model.cosmo_fid, kpow=model.lin_kpow)(kptcs_warm[0][0])
 
     plt.figure(figsize=(12, 4), layout='constrained')
     def plot_kptcs(kptcs, label=None):
@@ -142,7 +141,7 @@ def full_warmup(model, obs, state_field, chains_dir, n_steps, desired_energy_var
         ss = jnp.median(config.step_size)
         config = MCLMCAdaptationState(L=0.4 * eval_per_ess / 2 * ss, step_size=ss,
                                       inverse_mass_matrix=jnp.median(config.inverse_mass_matrix, 0))
-        config = tree.map(lambda x: jnp.broadcast_to(x, (n_chains, *jnp.shape(x))), config)
+        config = tree.map(lambda x: np.broadcast_to(x, (n_chains, *np.shape(x))), config)
         print_mclmc_config(config, state)
 
         h5save_tree(state_path, state)
@@ -250,8 +249,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
 
         kpow_ref = model.spectrum(white_mesh)
         # ICs are whitened -> theoretical reference is white noise: flat power = cell volume
-        pow_white = np.divide(model.box_size, model.init_shape).prod()
-        kpow_fid = kptc_obs[0], pow_white * jnp.ones_like(kptc_obs[0])
+        kpow_fid = kptc_obs[0], jnp.ones_like(kptc_obs[0])
         # kpow_fid = kptc_obs[0], lin_power_interp(model.cosmo_fid, kpow=model.lin_kpow)(kptc_obs[0])
         plt.figure(figsize=(12, 4), layout='constrained')
         def plot_kptcs(kptcs, label=None, i_color=0):
