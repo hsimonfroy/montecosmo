@@ -27,9 +27,11 @@ handles two cases (distinguished by whether a `random` catalog is given):
   * cut-sky  (randoms):    'RA', 'DEC', 'Z', 'WEIGHT', light-cone (a_obs=None), curved sky.
 
 Sources, each via a getter returning a uniform spec:
-  * 'abacus'  : cubic box, choose cosmo, ic, z_obs, tracer, field in {matter, realspace, redshiftspace}.
-  * 'fastpm'  : cubic box, redshift-space only (RSD baked in), choose fNL in {0, -100, 100}.
-  * 'pngunit' : cut-sky catalog, choose fNL in {0, 20, -20}, tracer, region.
+  * 'abacus'    : cubic box, choose cosmo, ic, z_obs, tracer, field in {matter, realspace, redshiftspace}.
+  * 'fastpm'    : cubic box, redshift-space only (RSD baked in), choose fNL in {0, -100, 100}.
+  * 'pngunit'   : cut-sky catalog, choose fNL in {0, 20, -20}, tracer, region.
+  * 'pngunitbox': PNG-UNITsim-XL cubic box (3000 Mpc/h) rockstar halos, choose fNL in {0, 20},
+                  z_obs, Mvir cut, field in {realspace, redshiftspace} (RSD from km/s vel along z).
 
 Run on a GPU node with the `montenv` env:
     export XLA_PYTHON_CLIENT_MEM_FRACTION='1.'
@@ -37,6 +39,7 @@ Run on a GPU node with the `montenv` env:
 """
 import os; os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '1.')
 import glob
+from functools import lru_cache
 from pathlib import Path
 import numpy as np
 
@@ -57,10 +60,11 @@ REGISTERED_DIR = Path("/pscratch/sd/h/hsimfroy/png/registered")
 PAINT = dict(paint_order=2, interlace_order=2, paint_deconv=True)
 PAINT_OVERSAMP, INIT_OVERSAMP = 7/4, 3/2
 
-# Cubic boxes (Mpc/h): size and geometric center (abacus in [-1000, 1000], fastpm in [0, 2760]).
-# register_catalog paints full-sky RSD along the z axis (flat sky).
+# Cubic boxes (Mpc/h): size and geometric center (abacus in [-1000, 1000], fastpm in [0, 2760],
+# pngunit in [0, 3000]). register_catalog paints full-sky RSD along the z axis (flat sky).
 ABACUS_BOX, ABACUS_CENTER = 2000., (0., 0., 0.)
 FASTPM_BOX, FASTPM_CENTER = 2760., (1380., 1380., 1380.)
+PNGUNIT_BOX, PNGUNIT_CENTER = 3000., (1500., 1500., 1500.)
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +181,7 @@ def get_abacus(cosmo=0, ic=0, z_obs=0.8, tracer='LRG', field='redshiftspace'):
         data['vel'] = np.column_stack([fits[c] for c in ['vx', 'vy', 'vz']]).astype(float)
         spec['los'] = (0, 0, 1)
     elif field == 'realspace':
-        spec['los'] = (0, 0, 1)
+        spec['los'] = (0, 0, 0)
     else:
         raise ValueError(f"unknown abacus field {field!r}")
     spec['data'] = data
@@ -213,6 +217,68 @@ def get_pngunit(fNL=0, tracer='LRG', region='NGC'):
                 tag=f"pngunit_fNL{fNL}_{tracer}_{region}")
 
 
+# PNG-UNITsim-XL rockstar catalog: pandas/PyTables frame_table, blosc-compressed. The 37 rockstar
+# float columns (Mvir, ..., X, Y, Z, VX, VY, VZ, ..., M200c, ...) live in the float64 sub-block of
+# /rockstar_catalog/table; that block's NAME differs across files (values_block_1 for fnl0,
+# values_block_0 for fnl20 -- pandas orders blocks by dtype at write time), so it is located by
+# dtype and its columns mapped by name via the pickled '<block>_kind' attr. Read with h5py +
+# hdf5plugin (montenv has no pandas/PyTables; hdf5plugin supplies the blosc HDF5 filter).
+_PNGUNIT_BOX_DIR = Path("/global/cfs/projectdirs/desi/mocks/UNIT/PNG-UNITsim-XL")
+
+
+@lru_cache(maxsize=1)  # one full pass reads ~200 GB (~10 min); cache across cell budgets
+def _load_pngunitbox(fNL: int, z_obs: float, mcut: float):
+    """
+    Stream the PNG-UNITsim-XL full-box rockstar halo catalog (~725-731M halos), keeping the
+    (pos, vel) of distinct+sub halos with Mvir >= mcut [Msun/h]. fNL in {0 -> fnl0/, 20 -> fnl20/}.
+    Returns (pos, vel): both (n, 3) float arrays in Mpc/h and km/s.
+    """
+    import pickle, hdf5plugin, h5py  # noqa: F401  (hdf5plugin registers the blosc filter on import)
+    # Filename prefix differs by fNL ('UNITsim_XL' vs 'PNG_UNITsim_XL') and the z separator is '_'
+    # except z1.83 uses '.'; '?' in the glob matches either. e.g. z_obs=1.12 -> 'z1?12' matches z1_12.
+    zint, zdec = f"{z_obs:.2f}".split('.')
+    fnl_dir = {0: 'fnl0', 20: 'fnl20'}[fNL]
+    matches = sorted((_PNGUNIT_BOX_DIR / fnl_dir).glob(f"*_fnl{fNL}_z{zint}?{zdec}.h5"))
+    assert len(matches) == 1, f"expected 1 PNGUNITXL file for fNL={fNL} z={z_obs}, got {matches}"
+
+    cols = ['Mvir', 'X', 'Y', 'Z', 'VX', 'VY', 'VZ']
+    poss, vels = [], []
+    with h5py.File(str(matches[0]), 'r') as f:
+        table = f['rockstar_catalog/table']
+        fname = next(n for n in table.dtype.names  # the float64 sub-block (name varies by file)
+                     if n != 'index' and np.issubdtype(table.dtype[n].base, np.floating))
+        names = pickle.loads(bytes(table.attrs[f'{fname}_kind']))  # column order within that block
+        idx = [names.index(c) for c in cols]
+        vb, n = table.fields(fname), table.shape[0]
+        for i in range(0, n, 20_000_000):  # ~6 GB transient per chunk
+            block = vb[i:i + 20_000_000][:, idx]  # (m, 7): Mvir, X, Y, Z, VX, VY, VZ
+            keep = block[:, 0] >= mcut
+            poss.append(block[keep, 1:4]); vels.append(block[keep, 4:7])
+    return np.concatenate(poss), np.concatenate(vels)
+
+
+def get_pngunitbox(fNL=0, z_obs=1.12, mcut=5e12, field='redshiftspace'):
+    """
+    Spec for a PNG-UNITsim-XL full-box rockstar halo mock (UNIT cosmology, 3000 Mpc/h periodic box).
+    fNL in {0, 20}; z_obs in {0.74, 0.82, 1.12, 1.48, 1.83}; Mvir >= mcut [Msun/h] (~5e-4 (h/Mpc)^3
+    at 5e12); field in {realspace, redshiftspace} (RSD applied in register_catalog from the km/s
+    peculiar velocity, plane-parallel along z). No real ICs available -> build_init uses white_fake.
+    """
+    pos, vel = _load_pngunitbox(fNL, z_obs, mcut)
+    data = {'pos': pos}
+    if field == 'redshiftspace':  # RSD applied in register_catalog from the peculiar velocity
+        data['vel'] = vel
+        los = (0, 0, 1)
+    elif field == 'realspace':
+        los = (0, 0, 0)
+    else:
+        raise ValueError(f"unknown pngunit field {field!r}")
+    return dict(data=data, cosmo_fid=unit_cosmo(),  # UNIT simulation cosmology (PNGUNIT fiducial)
+                a_obs=1 / (1 + z_obs), los=los,
+                box_size=np.full(3, PNGUNIT_BOX), box_center=PNGUNIT_CENTER,
+                tag=f"pngunitbox_fNL{fNL}_z{z_obs:.3f}_m{mcut:.1e}_{field}")
+
+
 # ---------------------------------------------------------------------------
 # Registration (one HDF5 written in a single pass)
 # ---------------------------------------------------------------------------
@@ -229,7 +295,7 @@ def register(spec, cell_budget, padding=0.):
     obs = FieldLevelModel.register_catalog(
         cell_budget, cosmo_jax, spec['data'], random=spec.get('random'),
         box_size=spec.get('box_size'), box_center=spec.get('box_center'), box_rotvec=spec.get('box_rotvec'),
-        a_obs=spec.get('a_obs'), padding=padding,
+        a_obs=spec.get('a_obs'), los=spec.get('los'), padding=padding,
         init_oversamp=INIT_OVERSAMP, paint_oversamp=PAINT_OVERSAMP, **PAINT)
 
     final_shape = obs['count_mesh'].shape # tuple
@@ -250,10 +316,11 @@ def register(spec, cell_budget, padding=0.):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import traceback
-    cell_budgets = [32**3, 64**3, 96**3, 128**3]
+    cell_budgets = [32**3, 48**3, 64**3, 96**3, 128**3]
     paddings = [0.]
 
-    # 9 mocks x 4 budgets = 36 files. Light jobs first, heavy abacus matter (~71 GB I/O) last.
+    # Light jobs first, heavy abacus matter (~71 GB I/O) and pngunitbox (~200 GB/read) last.
+    # _load_pngunitbox is lru-cached, so each pngunitbox fNL reads the file once across cell budgets.
     jobs = [
         lambda: get_fastpm(fNL=-100),
         lambda: get_fastpm(fNL=0),
@@ -264,6 +331,8 @@ if __name__ == "__main__":
         lambda: get_pngunit(fNL=20, tracer='LRG', region='NGC'),
         lambda: get_pngunit(fNL=-20, tracer='LRG', region='NGC'),
         lambda: get_abacus(cosmo=0, ic=0, z_obs=0.8, tracer='LRG', field='matter'),  # heavy, last
+        lambda: get_pngunitbox(fNL=0, z_obs=1.12, field='redshiftspace'),   # heavy, last
+        lambda: get_pngunitbox(fNL=20, z_obs=1.12, field='redshiftspace'),  # heavy, last
     ]
 
     n_ok, n_fail = 0, 0

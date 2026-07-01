@@ -16,7 +16,7 @@ from jax.scipy.spatial.transform import Rotation
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, white2lin, lin2white, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
-                               lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, fNL_bias,
+                               lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, b1_E2L, b2_E2L, fNL_bias,
                                top_hat_selection, gen_gauss_selection, los_scalefactor_mesh, los_scalefactor_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                cutsky2count, cutsky2config, cutsky2selection, fullsky2count, get_mesh_shape, pos_mesh, regular_pos, sobol_pos, set_radial_count, count2delta)
@@ -245,10 +245,10 @@ default_config={
                                 'scale':1e1,
                                 'scale_fid':3e-3,
                                 },
-                's_phi': {'group':'stoch',
-                                'label':r'{s}_{\phi}',
+                's_ep': {'group':'stoch',
+                                'label':r'{s}_{\epsilon\phi}',
                                 'loc':0.,
-                                'scale':1e3,
+                                'scale':1e5,
                                 'scale_fid':1e2,
                                 },
                 'white_mesh': {'group':'init',
@@ -738,10 +738,20 @@ class FieldLevelModel(Model):
             pos = regular_pos(self.evol_shape, self.ptcl_shape)
             _, a = los_scalefactor_pos(pos, self.box_center, self.box_rot, self.box_size, self.evol_shape, 
                                     cosmology, self.a_obs, self.curved_sky)
+            
+            # if self.png_type is not None: #XXX XXX XXX XXX XXX
+            #     # init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
+            #     # init_mesh = chreshape(chreshape(init_mesh, r2chshape(self.init_shape)), r2chshape(self.evol_shape))
+                
+            #     init_mesh = chreshape(init_mesh, r2chshape(self.init_shape))
+            #     init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
+            #     init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
 
             # Lagrangian bias expansion weights (based on initial particules positions)
-            lbe_weights, dvel, phi_pos = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
+            lbe_weights, dvel, phi = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
                                                 png_type=self.png_type, read_order=1)
+            if self.bias_type == 'eulerian':
+                phi_pos = read(pos, phi, order=1)
             
             if self.png_type is not None:
                 init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
@@ -813,7 +823,7 @@ class FieldLevelModel(Model):
 
                 phi_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=phi_pos, 
                                 paint_order=self.paint_order, interlace_order=self.interlace_order, 
-                                kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
+                                kernel_type=self.kernel_type, paint_deconv=self.paint_deconv) # advected phi
                 phi_mesh *= np.divide(self.paint_shape, self.ptcl_shape).prod()
                 phi_mesh = chreshape(phi_mesh, r2chshape(self.paint_shape))
                 print(jnp.fft.irfftn(phi_mesh).mean(), jnp.fft.irfftn(phi_mesh).std())
@@ -824,7 +834,7 @@ class FieldLevelModel(Model):
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
         # debug.print("biased mesh: {i}", i=(biased_mesh.mean(), biased_mesh.std(), biased_mesh.min(), biased_mesh.max()))
         # debug.print("frac of weights < 0: {i}", i=(lbe_weights < 0).sum()/len(lbe_weights))
-        return gxy_mesh, stoch, syst # NOTE: mesh is 1+delta_obs
+        return gxy_mesh, phi, stoch, syst # NOTE: mesh is 1+delta_obs
 
 
     def likelihood(self, params:tuple, temp=1.):
@@ -833,7 +843,7 @@ class FieldLevelModel(Model):
 
         Return an observed mesh sampled from a location mesh with observational variance.
         """
-        gxy_mesh, stoch, syst = params
+        gxy_mesh, phi, stoch, syst = params
 
         if self.observable == 'field':
             # print("mesh", mesh.mean(), mesh.std(), mesh.min(), mesh.max())
@@ -855,12 +865,15 @@ class FieldLevelModel(Model):
             else:
                 selec_mesh = jnp.mean(rcounts)
 
+            if self.png_type is not None:
+                phi = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(phi), r2chshape(self.final_shape)))
+
 
             if self.lik_type == 'poisson':
                 count_mesh = sample('count_mesh', dist.Poisson(posit_fn(count_mesh)**(1 / temp)))
 
             elif self.lik_type == 'fourier_gauss':
-                assert self.mask_mesh is ..., "Fourier likelihood not implemented for cut-sky."
+                assert self.mask_mesh is None, "Fourier likelihood not implemented for cut-sky."
                 kvec = rfftk(self.final_shape, self.box_size) # in h/Mpc
                 kmesh = sum(ki**2 for ki in kvec)**.5
                 mumesh = sum(ki * losi for ki, losi in zip(kvec, self.los_fid))
@@ -877,7 +890,8 @@ class FieldLevelModel(Model):
                 # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
                 
-                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
+                # scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
+                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta + stoch['s_ep'] * phi) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5
@@ -888,7 +902,7 @@ class FieldLevelModel(Model):
 
             elif self.lik_type == 'two_quad_gauss':
                 delta = count_mesh / selec_mesh - 1
-                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
+                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta + stoch['s_ep'] * phi) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5
@@ -899,7 +913,8 @@ class FieldLevelModel(Model):
                 # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
                       
-                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
+                # scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta) + 1e-9
+                scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta + stoch['s_ep'] * phi) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5 
@@ -993,7 +1008,7 @@ class FieldLevelModel(Model):
         else:
             b1 /= alpha
         if not eulerian:
-            b1 = b1_L2E(b1, inv=True)
+            b1 = b1_E2L(b1)
         return b1
 
     def reparam_b2(self, b2, b1L, sigma8, eulerian=False, inv=False):
@@ -1009,7 +1024,7 @@ class FieldLevelModel(Model):
         else:
             b2 /= alpha**2
         if not eulerian:
-            b2 = b2_L2E(b2, b1L, inv=True)
+            b2 = b2_E2L(b2, b1L)
         return b2
 
     def reparam_bias(self, params:dict, eulerian=False, inv=False):
@@ -1026,7 +1041,7 @@ class FieldLevelModel(Model):
 
             if 'b2' in out:
                 b1u = b1_ if inv else b1 # unscaled b1
-                b1L = b1_L2E(b1u, inv=True) if eulerian else b1u # unscaled b1L
+                b1L = b1_E2L(b1u) if eulerian else b1u # unscaled b1L
                 out['b2'] = self.reparam_b2(out['b2'], b1L, sigma8, eulerian=eulerian, inv=inv)
         
         # Do not return data, and potentially cast into Chains

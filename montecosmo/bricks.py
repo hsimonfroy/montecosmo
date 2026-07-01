@@ -138,8 +138,7 @@ def add_png(cosmo:Cosmology, fNL, lin_mesh, box_size, kpow=None):
     phi = jnp.fft.irfftn(safe_div(lin_mesh, trans_phi2delta))
     phi2 = phi**2
     phi += fNL * (phi2 - phi2.mean())
-    lin_mesh = trans_phi2delta * jnp.fft.rfftn(phi)
-    return lin_mesh
+    return trans_phi2delta * jnp.fft.rfftn(phi)
 
 def white_noise(seed, mesh_shape, box_size):
     """
@@ -441,7 +440,7 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png,
         phi_nab2_pos = read(pos, phi_nab2, read_order)
         weights += fNL_bn2p * phi_nab2_pos
     else: 
-        phi_pos = 0. ###XXX
+        phi = 0. ###XXX
 
     # Compute separately bnablapar, higher-derivative velocity term 
     # similar but better than a (kmu)^2 delta higher-derivative term.
@@ -450,22 +449,25 @@ def lagrangian_bias(cosmo:Cosmology, pos, a, box_size, lin_mesh, bias, png,
                 for i in range(len(kvec))], axis=-1) # in h/Mpc 
     dvel = bnpar * delta_nabpar_pos * growths
 
-    return weights, dvel, phi_pos
+    return weights, dvel, phi
 
+def b1_L2E(b1):
+    return 1 + b1
 
-def b1_L2E(b1, inv=False):
-    if not inv:
-        b1 = 1 + b1
-    else:
-        b1 = b1 - 1
-    return b1
+def b1_E2L(b1):
+    return b1 - 1
 
-def b2_L2E(b2, b1L, inv=False):
-    if not inv:
-        b2 = b2 + 8 / 21 * b1L
-    else:
-        b2 = b2 - 8 / 21 * b1L
-    return b2
+def b2_L2E(b2, b1L):
+    return b2 + 8 / 21 * b1L
+
+def b2_E2L(b2, b1L):
+    return b2 - 8 / 21 * b1L
+
+def bpd_L2E(bpd, bp):
+    return bpd + bp / 2
+
+def bpd_E2L(bpd, bp):
+    return bpd - bp / 2
 
 def b_phi(b1, p=1., delta_c=1.686):
     """
@@ -517,6 +519,8 @@ def eulerian_bias(matter_mesh, phi_mesh, box_size,
     
     b1, b2, bs2, bn2 = bias['b1'], bias['b2'], bias['bs2'], bias['bn2']
     fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
+    b1, b2 = b1_L2E(b1), b2_L2E(b2, b1)
+    fNL_bpd = fNL * bpd_L2E(fNL_bpd / fNL, fNL_bp / fNL)
     
 
     matter_mesh = matter_mesh.at[0,0,0].set(0.) # ensure zero mean

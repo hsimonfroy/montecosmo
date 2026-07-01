@@ -676,7 +676,7 @@ growth_log10_amin: float = -3.
 growth_steps: int = 128
 
 # Growth from scale factor
-def _growth_factor_ODE(cosmo, a, log10_amin=growth_log10_amin, steps=growth_steps):
+def _growth_factor_ODE(cosmo: Cosmology, a, log10_amin=growth_log10_amin, steps=growth_steps):
     """
     Compute linear growth factor D(a) at a given scale factor,
     normalised such that D(a=1) = 1.

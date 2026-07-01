@@ -88,7 +88,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
         'b1': 1., 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
         'fNL': 0, 'fNL_bp': 0, 'fNL_bpd': 0., 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
         's_e': 1., 's_k2e': 0., 's_kmu2e': 0.,
-        's_ed': 0., 's_e2': 0.,
+        's_ed': 0., 's_e2': 0., 's_ep': 0.,
         'alpha_iso': 1., 'alpha_ap': 1.,
         }
     latents = FieldLevelModel.new_latents_from_loc(default_config['latents'], fiduc, update_prior=True)
@@ -123,8 +123,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     print(f"SAVE DIR: {save_dir}")
     sys.stdout = sys.stderr = open(save_dir / "run.out", "a", buffering=1)
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
-    print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')}")
-    print(f"Job id: {os.environ.get('SLURM_JOB_ID')}")
+    print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')} as job {os.environ.get('SLURM_JOB_ID')}")
     print(f"SAVE DIR: {save_dir}")
     import shutil, subprocess
     shutil.copy(__file__, save_dir / Path(__file__).name) # snapshot the exact driver next to outputs
@@ -215,11 +214,11 @@ if __name__ == '__main__':
                 'fNL_bn2p', # PNG higher-derivative (any order)
                 's_e',
                  's_ed', 's_e2',
-                's_phi',
+                's_ep',
                 #  'ngbars',
                 ]
     # Some automatic handling just in case
-    obs_names += ['s_ed', 's_e2'] if lik_type == 'fourier_gauss' else ['s_k2e', 's_kmu2e']
+    obs_names += ['s_ed', 's_e2', 's_ep'] if lik_type == 'fourier_gauss' else ['s_k2e', 's_kmu2e']
     obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else [] # universal mass relation: fNL determines fNL_bp and fNL_bpd
     obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
 

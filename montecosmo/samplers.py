@@ -358,8 +358,8 @@ def mclmc_run(seed, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
         n_dim = len(ravel_pytree(state.position)[0])
         transform = lambda state, info: (state.position,
                                     {'logdensity': state.logdensity, 
-                                     'mse_per_dim': jnp.mean(info.energy_change**2) / n_dim})
-
+                                     'mse_per_dim': info.energy_change**2 / n_dim})
+                                    #  'mse_per_dim': jnp.mean(info.energy_change**2) / n_dim})
 
     if isinstance(config, dict):
         L = config['L']
@@ -376,26 +376,24 @@ def mclmc_run(seed, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
                             inverse_mass_matrix=inverse_mass_matrix,
                             integrator=integrator,)
 
+    # Thin the sample, adequately aggregating energy_change
+    if thinning!=1:
+        sampler = thin_algorithm(
+            sampler,
+            thinning=thinning,
+            info_transform=lambda info: info._replace(energy_change=jnp.mean(info.energy_change**2)**.5),
+            )
+        
     # Run the sampler
-    if thinning==1:
-        state, history = run_inference_algorithm(
-            rng_key=seed,
-            initial_state=state,
-            inference_algorithm=sampler,
-            num_steps=n_samples,
-            transform=transform,
-            progress_bar=progress_bar,
-        )
-    else:
-        state, history = run_with_thinning(
-            seed=seed,
-            inference_algorithm=sampler,
-            num_steps=n_samples,
-            initial_state=state,
-            transform=transform,
-            progress_bar=progress_bar,
-            thinning=thinning
-        )
+    state, history = run_inference_algorithm(
+        rng_key=seed,
+        initial_state=state,
+        inference_algorithm=sampler,
+        num_steps=n_samples,
+        transform=transform,
+        progress_bar=progress_bar,
+    )
+
     samples, infos = history
     
     # Register number of evaluations
@@ -515,8 +513,10 @@ def mams_run(seed, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
     if transform is None:
         transform = lambda state, info: (state.position, 
                                     {'logdensity': state.logdensity,
-                                     'acceptance_rate': jnp.mean(info.acceptance_rate), 
-                                     'n_evals': jnp.sum(info.num_integration_steps) * n_eval_per_steps})
+                                     'acceptance_rate': info.acceptance_rate, 
+                                     'n_evals': info.num_integration_steps * n_eval_per_steps})
+                                    #  'acceptance_rate': jnp.mean(info.acceptance_rate), 
+                                    #  'n_evals': jnp.sum(info.num_integration_steps) * n_eval_per_steps})
 
     if isinstance(config, dict):
         L = config['L']
@@ -539,26 +539,26 @@ def mams_run(seed, state, config:dict|MCLMCAdaptationState, logdf, n_samples,
         integrator=integrator,
     )
 
-     # Run the sampler
-    if thinning==1:
-        state, history = run_inference_algorithm(
-            rng_key=seed,
-            initial_state=state,
-            inference_algorithm=sampler,
-            num_steps=n_samples,
-            transform=transform,
-            progress_bar=progress_bar,
-        )
-    else:
-        state, history = run_with_thinning(
-            seed=seed,
-            inference_algorithm=sampler,
-            num_steps=n_samples,
-            initial_state=state,
-            transform=transform,
-            progress_bar=progress_bar,
-            thinning=thinning
-        )
+    # Thin the sample, adequately aggregating acceptance_rate and num_integration_steps
+    if thinning!=1:
+        sampler = thin_algorithm(
+            sampler,
+            thinning=thinning,
+            info_transform=lambda info: info._replace(
+                acceptance_rate=jnp.mean(info.acceptance_rate),
+                num_integration_steps=jnp.sum(info.num_integration_steps)
+                ),
+            )
+        
+    # Run the sampler
+    state, history = run_inference_algorithm(
+        rng_key=seed,
+        initial_state=state,
+        inference_algorithm=sampler,
+        num_steps=n_samples,
+        transform=transform,
+        progress_bar=progress_bar,
+    )
     samples, infos = history
 
     return state, samples | infos
@@ -581,100 +581,6 @@ def get_mams_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True
                    transform=transform,
                    thinning=thinning,    
                    progress_bar=progress_bar)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-from functools import partial
-from typing import Callable, Union
-
-from blackjax.base import SamplingAlgorithm, VIAlgorithm
-from blackjax.progress_bar import progress_bar_scan
-from blackjax.types import ArrayLikeTree, PRNGKey
-
-# TODO: wait for blackjax > 1.3
-def run_with_thinning(
-    seed: PRNGKey,
-    inference_algorithm: SamplingAlgorithm|VIAlgorithm,
-    num_steps: int,
-    initial_state: ArrayLikeTree = None,
-    initial_position: ArrayLikeTree = None,
-    progress_bar: bool = False,
-    thinning: int = 1,
-    transform: Callable = lambda state, info: (state, info),
-) -> tuple:
-    """
-    Wrapper to run an inference algorithm.
-
-    Note that this utility function does not work for Stochastic Gradient MCMC samplers
-    like sghmc, as SG-MCMC samplers require additional control flow for batches of data
-    to be passed in during each sample.
-
-    Parameters
-    ----------
-    seed
-        The random state used by JAX's random numbers generator.
-    initial_state
-        The initial state of the inference algorithm.
-    initial_position
-        The initial position of the inference algorithm. This is used when the initial
-        state is not provided.
-    inference_algorithm
-        One of blackjax's sampling algorithms or variational inference algorithms.
-    num_steps
-        Number of MCMC steps.
-    progress_bar
-        Whether to display a progress bar.
-    transform
-        A transformation of the trace of states to be returned. This is useful for
-        computing determinstic variables, or returning a subset of the states.
-        By default, the states are returned as is.
-    thinning
-        The thinning factor, meaning a state is returned every `thinning` steps.
-    """
-
-    if initial_state is None and initial_position is None:
-        raise ValueError(
-            "Either `initial_state` or `initial_position` must be provided."
-        )
-    if initial_state is not None and initial_position is not None:
-        raise ValueError(
-            "Only one of `initial_state` or `initial_position` must be provided."
-        )
-
-    if initial_state is None:
-        seed, init_seed = jr.split(seed, 2)
-        initial_state = inference_algorithm.init(initial_position, init_seed)
-
-
-    def one_sub_step(state, seed):
-        state, info = inference_algorithm.step(seed, state)
-        return state, info
-    
-    def one_step(state, xs):
-        _, seed = xs
-        seeds = jr.split(seed, thinning)
-        state, info = lax.scan(one_sub_step, state, seeds)
-        return state, transform(state, info)
-
-    seeds = jr.split(seed, num_steps)
-    xs = jnp.arange(num_steps), seeds
-    
-    scan_fn = gen_scan_fn(num_steps, progress_bar)
-    final_state, history = scan_fn(one_step, initial_state, xs)
-
-    return final_state, history
 
 
 
