@@ -346,6 +346,164 @@ def make_logdf_mesh(save_dir, start=1, end=100, thinning=1, prefix="", site='cou
 
 
 
+def make_posterior_pred(save_dir, start=1, end=100, thinning=1, n_chunk=32, prefix=""):
+    """
+    Posterior predictive of the observed counts over the chains.
+
+    Reload the model and condition it as during sampling EXCEPT on 'count_mesh', so the likelihood
+    draws fresh counts. For each (chain, sample), rerun the model conditioned on the chain latents
+    (sample space), exposing only 'intens_mesh' (the expected counts) and 'count_mesh' (a fresh
+    likelihood draw), and save both mesh chains to chains/{prefix}pred_mesh.h5. Thin the chains by
+    `thinning` (the file grows fast: 2 x final_shape meshes per kept sample) and predict by chunks
+    of `n_chunk` samples to bound memory.
+    """
+    from montecosmo.chains import Chains
+    import sys
+    save_dir = Path(save_dir)
+    sys.stdout = sys.stderr = open(save_dir / "run.out", "a", buffering=1)
+    chains_dir = save_dir / "chains"
+
+    model = FieldLevelModel.load(save_dir / "model.yaml")
+    obs = h5load(save_dir / "obs.h5")
+
+    model.reset()
+    # condition as during sampling but do NOT observe the counts: count_mesh is resampled.
+    # No model.block() here: blocking the instance would hide sites from predict's conditioning.
+    model.substitute({k: v for k, v in obs.items() if k != 'count_mesh'}, from_base=True)
+
+    chains = model.load_runs(chains_dir, start, end,
+                             transforms=[partial(Chains.thin, thinning=thinning)], batch_ndim=2)
+    samp_names = set().union(*model.groups_.values()) # sample-space latent site names
+    params = {k: chains.data[k] for k in samp_names if k in chains.data} # drop diagnostics (logdensity, ...)
+    print(f"posterior_pred on { {k: jnp.shape(v) for k, v in params.items()} }")
+
+    n_samples = jnp.shape(next(iter(params.values())))[1]
+    preds = []
+    for i in range(0, n_samples, n_chunk):
+        chunk = {k: v[:, i:i + n_chunk] for k, v in params.items()}
+        pred = model.predict(seed=jr.fold_in(jr.key(46), i), samples=chunk, batch_ndim=2,
+                             expose=['intens_mesh', 'count_mesh'])
+        preds.append({k: np.asarray(v) for k, v in pred.items()})
+    preds = {k: np.concatenate([p[k] for p in preds], axis=1) for k in preds[0]}
+    h5save(chains_dir / f"{prefix}pred_mesh.h5", preds)
+    print(f"saved {prefix}pred_mesh.h5: intens/count shape {np.shape(preds['count_mesh'])}\n")
+    sys.stdout.flush()
+
+
+def plot_posterior_pred(save_dir, prefix="", prob=(0.68, 0.95), n_max_pdf=2**13):
+    """
+    Posterior-predictive checks from chains/{prefix}pred_mesh.h5 (see make_posterior_pred)
+    against the observed counts:
+
+    * {prefix}pred_count.png : posterior count_mesh draws vs observed counts, as delta
+      (count2delta). Row 1: power / transfer / coherence (plot_powtranscoh, fill over draws,
+      observed spectrum dotted). Row 2: quadrupole and hexadecapole (fill, observed dotted)
+      and value pdf (kde, fill, observed dotted).
+    * {prefix}pred_noise.png : data noise intens_mesh - observed count_mesh (draws over the
+      intens_mesh posterior), compared with the model's own noise intens_mesh - predicted
+      count_mesh. Subplots: noise power (mse_wave), density-dependence (mse_value binned by
+      intens_mesh value, Poisson reference dotted), and noise pdf (kde, fill).
+    """
+    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, plot_pdf, SetDark2
+    from montecosmo.bdec import credint
+    import sys
+    save_dir = Path(save_dir)
+    sys.stdout = sys.stderr = open(save_dir / "run.out", "a", buffering=1)
+    chains_dir = save_dir / "chains"
+
+    model = FieldLevelModel.load(save_dir / "model.yaml")
+    obs = h5load(save_dir / "obs.h5")
+    count_obs = obs['count_mesh']
+    pred = h5load(chains_dir / f"{prefix}pred_mesh.h5")
+    # flatten (chain, sample) into a single draw axis
+    intens = pred['intens_mesh'].reshape(-1, *pred['intens_mesh'].shape[2:])
+    count = pred['count_mesh'].reshape(-1, *pred['count_mesh'].shape[2:])
+    print(f"posterior pred plots on {len(count)} draws")
+
+    delta_obs = model.count2delta(count_obs)
+    deltas = jit(vmap(model.count2delta))(jnp.asarray(count))
+
+    # 1. Posterior predictive counts vs observed counts
+    kptcs = jit(vmap(lambda m: model.powtranscoh(delta_obs, m)))(deltas)
+    kpow_obs = model.spectrum(delta_obs)
+    kpoles_obs = model.spectrum(delta_obs, ells=(0, 2, 4))
+    kpoles = jit(vmap(lambda m: model.spectrum(m, ells=(0, 2, 4))))(deltas)
+    vlim = tuple(np.quantile(delta_obs, [5e-5, 1 - 5e-5]))
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8), layout='constrained')
+    plot_powtranscoh(*kptcs, fill=prob, color=SetDark2(0), axes=axes[0])
+    plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=SetDark2(0), label='post pred', axes=axes[0])
+    plt.sca(axes[0, 0])
+    plot_pow(*kpow_obs, 'k:', label='obs')
+    plt.legend()
+    plt.sca(axes[0, 1]), plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+    plt.sca(axes[0, 2]), plt.axhline(1., linestyle=':', color='k', alpha=0.5)
+
+    kpoles_med = tree.map(lambda x: jnp.median(x, 0), kpoles[1]) # spectrum with ells returns {ell: pow}
+    for i_ell, ell in enumerate((2, 4)):
+        plt.sca(axes[1, i_ell])
+        plot_pow(kpoles[0], kpoles[1], ell=ell, fill=prob, color=SetDark2(0))
+        plot_pow(kpoles[0][0], kpoles_med, ell=ell, color=SetDark2(0), label='post pred')
+        plot_pow(kpoles_obs[0], kpoles_obs[1], 'k:', ell=ell, label='obs')
+        if i_ell == 0:
+            plt.legend()
+    plt.sca(axes[1, 2])
+    plot_pdf(deltas, fill=prob, vlim=vlim, n_max=n_max_pdf, color=SetDark2(0))
+    plot_pdf(delta_obs, 'k:', vlim=vlim, n_max=n_max_pdf)
+    plt.xlabel(r"$\delta$"), plt.ylabel("pdf")
+    plt.savefig(save_dir / f"{prefix}pred_count.png", dpi=300)
+    plt.close()
+
+    # 2. Noise: intens_mesh - counts, for observed counts (data noise) vs predicted counts
+    # (the noise the likelihood assumes). Both binned/evaluated per intens_mesh draw.
+    noise_obs = intens - count_obs   # (n_draws, *final_shape)
+    noise_pred = intens - count
+
+    kmses = {}
+    kmses['obs'] = jit(vmap(lambda m1: model.mse_wave(count_obs, m1)[1:]))(jnp.asarray(intens))
+    kmses['pred'] = jit(vmap(lambda m0, m1: model.mse_wave(m0, m1)[1:]))(jnp.asarray(count), jnp.asarray(intens))
+
+    # common value-space bin edges from the pooled intens draws (quantile-spaced)
+    vedges = np.quantile(intens, np.linspace(0, 1, 32)[1:-1])
+    vmses = {}
+    for lab, ms0 in [('obs', len(intens) * [count_obs]), ('pred', count)]:
+        vcurves = [model.mse_value(m1, m0, vedges=list(vedges), min_count=1)[1:]
+                   for m0, m1 in zip(ms0, intens)]
+        vmses[lab] = tree.map(lambda *xs: np.stack(xs), *vcurves)
+    vlim = tuple(np.quantile(noise_obs, [5e-5, 1 - 5e-5]))
+
+    plt.figure(figsize=(12, 4), layout='constrained')
+    plt.subplot(131)
+    for i, lab in enumerate(kmses):
+        plot_pow(*kmses[lab], log=True, fill=prob, color=SetDark2(i))
+        plot_pow(kmses[lab][0][0], jnp.median(kmses[lab][1], 0), log=True, color=SetDark2(i), label=lab)
+    plt.ylabel(r"$P_\mathrm{noise}(k)$ [Mpc/$h$]$^3$")
+    plt.legend()
+
+    plt.subplot(132)
+    for i, lab in enumerate(vmses):
+        vmean, mse = vmses[lab]
+        xs = vmean.mean(0)
+        for f in np.atleast_1d(prob):
+            plt.fill_between(xs, *credint(mse, f, axis=0).T, alpha=(1 - f)**.5, color=SetDark2(i))
+        plt.plot(xs, np.median(mse, 0), color=SetDark2(i), label=lab)
+    plt.plot(xs, xs * model.cell_length**3, 'k:', label='Poisson')
+    plt.xscale('log'), plt.yscale('log')
+    plt.xlabel("intens value"), plt.ylabel(r"MSE [Mpc/$h$]$^3$")
+    plt.legend()
+
+    plt.subplot(133)
+    for i, (lab, noise) in enumerate([('obs', noise_obs), ('pred', noise_pred)]):
+        plot_pdf(noise, fill=prob, vlim=vlim, n_max=n_max_pdf, color=SetDark2(i))
+        plt.plot([], [], color=SetDark2(i), label=lab)
+    plt.xlabel("noise"), plt.ylabel("pdf")
+    plt.legend()
+    plt.savefig(save_dir / f"{prefix}pred_noise.png", dpi=300)
+    plt.close()
+    print(f"saved {prefix}pred_count.png and {prefix}pred_noise.png\n")
+    sys.stdout.flush()
+
+
 def compare_chains(load_dirs, labels, save_dir="./"):
     from montecosmo.chains import Chains
     from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, theme, SetDark2

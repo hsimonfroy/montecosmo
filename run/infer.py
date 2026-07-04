@@ -47,7 +47,7 @@ PNG_DIR = Path("/pscratch/sd/h/hsimfroy/png")
 
 # @tm.python_app
 def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
-          self_data=False, fnl=0., expe='', overwrite=False,
+          self_data=False, fnl=None, expe='', overwrite=False,
           obs_names=[],
           n_chains=4, tune_mass=True,
           n_steps_field=2**12, dev_field=1e-5,
@@ -57,12 +57,15 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     """
     Run inference for the mock registered in `<REGISTERED_DIR>/<register_name>`.
 
-    register_name : register HDF5 filename, e.g. 'register_abacus_c0_ph0_z0.800_LRG_redshiftspace_b32_p0.h5'.
+    register_name : register HDF5 filename, e.g. 'register_abacus_c0_ph0_z0.800_LRG_redshiftspace_N32_pad0.h5'
+                    (N<n> = mesh_length, pad<pad> = padding). mesh_length and the fiducial f_NL are
+                    parsed from the name (f_NL from the '_fNL<value>' piece, else 0).
     png_type      : None, 'fNL' (universal mass relation -> infer fNL, fix fNL_bp/fNL_bpd),
                     or 'fNL_bias' (infer fNL_bp/fNL_bpd, fix fNL).
     lik_type      : likelihood, e.g. 'shash', 'quad_gauss', 'fourier_gauss' (adds '_fourier' to the dir).
     self_data     : if True, infer synthetic data self-predicted from the fiducial loc + true ICs.
-    fnl           : fiducial f_NL location (and folder2 label).
+    fnl           : fiducial f_NL location (and folder2 label). If None, parsed from the register
+                    name '_fNL<value>' piece (else 0); pass a value to override (e.g. for self_data).
     expe          : extra experiment-name suffix for folder2.
     overwrite     : redo phases whose files already exist (else they are loaded/resumed).
     obs_names     : base latents to observe; every other base latent is fixed to its fiducial value.
@@ -79,37 +82,16 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     from montecosmo.utils import h5save
     from montecosmo.script import field_warmup, plot_field_warmup, full_warmup, full_run, make_chains, make_logdf_mesh
 
-    ###############################################
-    # Fiducial location and model (from register) #
-    ###############################################
-    # Fiducial location of the inferred bias/png/stoch/AP params (cosmology + ngbars come from
-    # the register file). Update prior locs too, so the model is centered on these values.
-    fiduc = {
-        'b1': 1., 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
-        'fNL': 0, 'fNL_bp': 0, 'fNL_bpd': 0., 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
-        's_e': 1., 's_k2e': 0., 's_kmu2e': 0.,
-        's_ed': 0., 's_e2': 0., 's_ep': 0.,
-        'alpha_iso': 1., 'alpha_ap': 1.,
-        }
-    latents = FieldLevelModel.new_latents_from_loc(default_config['latents'], fiduc, update_prior=True)
-    for name in fiduc:
-        latents[name] |= {'scale_fid': latents[name]['scale_fid'] * scale_fid_fac}
-
-    register = REGISTERED_DIR / register_name
-    model = FieldLevelModel(**default_config | {
-        'evolution': evolution,
-        'lik_type': lik_type,
-        'png_type': png_type,
-        'register': register, # overrides geometry/painting/cosmo/ngbars + loads the meshes
-        'latents': latents,
-        'n_rbins': 1,
-        })
-
     ############
     # Saving   #
     ############
-    mesh_length = int(round(np.prod(model.final_shape)**(1/3)))
-    tag = re.match(r"register_(.+)_b\d+_p[\d.]+", Path(register_name).stem).group(1)
+    # Name schema: register_<tag>_N<mesh_length>_pad<padding>.h5 (see run/register.py).
+    stem = Path(register_name).stem
+    tag = re.match(r"register_(.+)_N\d+_pad[\d.]+", stem).group(1)
+    mesh_length = int(re.search(r"_N(\d+)_pad", stem).group(1))  # cells per side
+    if fnl is None:  # fiducial f_NL from the '_fNL<value>' piece of the name, else 0
+        m = re.search(r"_fNL(-?\d+)", stem)
+        fnl = float(m.group(1)) if m else 0.
     # tag = re.sub(r"_fNL-?\d+", "", tag) # remove fNL from tag
     png_suffix = {'fNL': '_fNL', 'fNL_bias': '_fNLb'}.get(png_type, '')
     folder1 = tag + png_suffix
@@ -132,11 +114,38 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     print(f"montecosmo commit: {commit}")
     print('\n', jdevices())
 
-
     jconfig.update("jax_compilation_cache_dir", str(save_dir / "jax_cache/"))
     jconfig.update("jax_persistent_cache_min_entry_size_bytes", -1)
     jconfig.update("jax_persistent_cache_min_compile_time_secs", 10)
     jconfig.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+
+    ###############################################
+    # Fiducial location and model (from register) #
+    ###############################################
+    # Fiducial location of the inferred bias/png/stoch/AP params (cosmology + ngbars come from
+    # the register file). Update prior locs too, so the model is centered on these values.
+    fiduc = {
+        'b1': 1., 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
+        'fNL': fnl, 'fNL_bp': fnl, 'fNL_bpd': fnl, 'pp': 1., 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
+        's_e': 1., 's_k2e': 0., 's_kmu2e': 0.,
+        's_ed': 0., 's_e2': 0., 's_ep': 0.,
+        'alpha_iso': 1., 'alpha_ap': 1.,
+        }
+    latents = FieldLevelModel.new_latents_from_loc(default_config['latents'], fiduc, update_prior=True)
+    for name in fiduc:
+        latents[name] |= {'scale_fid': latents[name]['scale_fid'] * scale_fid_fac}
+
+    register = REGISTERED_DIR / register_name
+    model = FieldLevelModel(**default_config | {
+        'evolution': evolution,
+        'lik_type': lik_type,
+        'png_type': png_type,
+        'register': register, # overrides geometry/painting/cosmo/ngbars + loads the meshes
+        'latents': latents,
+        'n_rbins': 1,
+        'evol_oversamp': 2.,
+        'ptcl_oversamp': 2.,
+        })
 
     print(model)
 
@@ -194,6 +203,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
 
 if __name__ == '__main__':
+    import sys
     print("Demat")
     # infer = tm.python_app(infer) # uncomment to submit with desipipe
 
@@ -209,7 +219,7 @@ if __name__ == '__main__':
                 #  'b2', 'bs2', # 2nd order
                 'b3', 'bds2', 'bs3', # 3rd order
                 'bn2', 'bnpar', # higher-derivative (any order)
-                # 'fNL', 'fNL_bp', 'fNL_bpd' # PNG 1st and 2nd order (all 3 if png_type='fNL_bias', fNL only if png_type='fNL')
+                #  'fNL', 'fNL_bp', 'fNL_bpd', 'pp', # PNG 1st+2nd order (sampled fNL, fNL_bp, fNL_bpd, if png_type='fNL_bias', else fNL and pp)
                 'fNL_bpd2', 'fNL_bps2', # PNG 3rd order
                 'fNL_bn2p', # PNG higher-derivative (any order)
                 's_e',
@@ -219,14 +229,14 @@ if __name__ == '__main__':
                 ]
     # Some automatic handling just in case
     obs_names += ['s_ed', 's_e2', 's_ep'] if lik_type == 'fourier_gauss' else ['s_k2e', 's_kmu2e']
-    obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else [] # universal mass relation: fNL determines fNL_bp and fNL_bpd
+    obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else ['pp'] # universal mass relation: fNL and pp determines fNL_bp and fNL_bpd
     obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
 
     # abacus c0 ph0 z0.800 LRG, 32^3, redshift-space, self-predicted data, kaiser evolution,
     # quad_gauss likelihood, no PNG, EH ICs; infer Omega_m, sigma8, b1 only.
-    infer(register_name='register_abacus_c0_ph0_z0.800_LRG_redshiftspace_b32_p0.h5',
+    infer(register_name='register_abacus_c0_ph0_z0.800_LRG_redshiftspace_N32_pad0.h5',
         png_type=None, lik_type='quad_gauss', evolution='kaiser',
-        self_data=True, fnl=0., overwrite=False,
+        self_data=True, overwrite=False,
         obs_names=obs_names, expe='')
 
     # spawn(queue, spawn=True) # uncomment to submit with desipipe

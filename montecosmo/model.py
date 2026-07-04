@@ -111,31 +111,31 @@ default_config={
                 'b2': {'group':'bias',
                             'label':r'{b}_2',
                             'loc':0.,
-                            'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':3e-2,
                             },
                 'bs2': {'group':'bias',
                             'label':r'{b}_{s^2}',
                             'loc':0.,
-                            'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':1e-1,
                             },
                 'b3': {'group':'bias',
                             'label':r'{b}_{3}',
                             'loc':0.,
-                            'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':1e0,
                             },
                 'bds2': {'group':'bias',
                             'label':r'{b}_{\delta s^2}',
                             'loc':0.,
-                            'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':1e0,
                             },
                 'bs3': {'group':'bias',
                             'label':r'{b}_{s^3}',
                             'loc':0.,
-                            'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':1e0,
                             },
                 'bn2': {'group':'bias',
@@ -147,20 +147,26 @@ default_config={
                 'bnpar': {'group':'bias',
                             'label':r'{b}_{\nabla_\parallel}',
                             'loc':0.,
-                            'scale':1e2,
+                            'scale':1e3,
                             'scale_fid':1e0,
                             },
                 'fNL': {'group':'png',
                             'label':r'{f}_\mathrm{NL}',
                             'loc':0.,
-                            'scale':1e4,
+                            'scale':1e3,
                             'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_\phi',
                             'loc':0.,
-                            'scale':1e4,
+                            'scale':1e3,
                             'scale_fid':3e1,
+                            },
+                'pp': {'group':'png',
+                            'label':r'p_\phi',
+                            'loc':1.,
+                            'scale':1.,
+                            'scale_fid':1.,
                             },
                 'fNL_bpd': {'group':'png',
                             'label':r'{f}_\mathrm{NL} b_{\phi\delta}',
@@ -297,12 +303,31 @@ class Model():
                 hide_fn = lambda site: False
         return handlers.block(model, hide_fn=hide_fn)
 
-    def predict(self, seed=42, samples:int|tuple|dict=None, batch_ndim=0, hide_base=True, hide_det=True, hide_samp=True, from_base=False):
+    def predict(self, seed=42, samples:int|tuple|dict=None, batch_ndim=0, expose:list=None, hide_base=True, hide_det=True, hide_samp=True, from_base=False):
         """
         Run model conditioned on samples.
-        * If samples is None, return a single prediction.
-        * If samples is an int or tuple, return a prediction of such shape.
-        * If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
+
+        Parameters
+        ----------
+        seed : int or jr.key
+            Random seed for the model.
+        samples : int, tuple, or dict
+            * If samples is None, return a single prediction.
+            * If samples is an int or tuple, return a prediction of such shape.
+            * If samples is a dict, return a prediction for each sample, assuming batch_ndim batch dimensions.
+        
+        batch_ndim : int
+            Number of batch dimensions in the samples dict.
+        expose : list
+            List of site names to expose in the model, priorize over hide_base and hide_det.
+        hide_base : bool
+            Whether to hide base sites
+        hide_det : bool
+            Whether to hide deterministic sites
+        hide_samp : bool
+            Whether to hide sample sites
+        from_base : bool
+            Whether to reparametrize base sites into sample sites, for conditioning.
         """
         if isinstance(seed, int):
             seed = jr.key(seed)
@@ -310,14 +335,14 @@ class Model():
         def single_prediction(seed, sample={}):
             # Optionally reparametrize base to sample params
             if from_base:
-                sample = self.reparam(sample, inv=True) 
+                sample = self.reparam(sample, inv=True)
                 # NOTE: deterministic sites have no effects with handlers.condition, but do with handlers.subsitute
 
             # Condition then block
             model = handlers.condition(self.model, data=sample)
             if hide_samp:
                 model = handlers.block(model, hide=sample.keys())
-            model = self._block_det(model, hide_base=hide_base, hide_det=hide_det)
+            model = self.block(model, expose=expose, hide_base=hide_base, hide_det=hide_det)
 
             # Trace and return values
             tr = handlers.trace(handlers.seed(model, rng_seed=seed)).get_trace()
@@ -685,7 +710,7 @@ class FieldLevelModel(Model):
 
         init_mesh = white2lin(cosmology, init['white_mesh'], self.init_shape, self.box_size, self.lin_kpow)
         init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
-        png = fNL_bias(png, bias, p=1., png_type=self.png_type)
+        png = fNL_bias(png, bias, png_type=self.png_type)
 
         if self.evolution=='kaiser':
             los, a = los_scalefactor_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
@@ -740,21 +765,21 @@ class FieldLevelModel(Model):
                                     cosmology, self.a_obs, self.curved_sky)
             
             # if self.png_type is not None: #XXX XXX XXX XXX XXX
-            #     # init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
+            #     # init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size, kpow=self.lin_kpow)
             #     # init_mesh = chreshape(chreshape(init_mesh, r2chshape(self.init_shape)), r2chshape(self.evol_shape))
                 
             #     init_mesh = chreshape(init_mesh, r2chshape(self.init_shape))
-            #     init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
+            #     init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size, kpow=self.lin_kpow)
             #     init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
 
             # Lagrangian bias expansion weights (based on initial particules positions)
             lbe_weights, dvel, phi = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
-                                                png_type=self.png_type, read_order=1)
+                                                png_type=self.png_type, kpow=self.lin_kpow, read_order=1)
             if self.bias_type == 'eulerian':
                 phi_pos = read(pos, phi, order=1)
             
             if self.png_type is not None:
-                init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size)
+                init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size, kpow=self.lin_kpow)
                 init_mesh = chreshape(chreshape(init_mesh, r2chshape(self.init_shape)), r2chshape(self.evol_shape))
 
             if self.evolution=='lpt':
@@ -852,10 +877,11 @@ class FieldLevelModel(Model):
             # posit_fn = lambda x: jnp.log(1 + jnp.exp(x))
             posit_fn = lambda x: jnp.abs(x)
 
-            count_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
-            count_mesh = mesh2masked(count_mesh, self.mask_mesh)
-            count_mesh = set_radial_count(count_mesh, self.rmasked, self.redges, rcounts)
-            # count_mesh = posit_fn(count_mesh)
+            intens_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh * self.selec_mesh), r2chshape(self.final_shape)))
+            intens_mesh = mesh2masked(intens_mesh, self.mask_mesh)
+            intens_mesh = set_radial_count(intens_mesh, self.rmasked, self.redges, rcounts)
+            intens_mesh = deterministic('intens_mesh', intens_mesh)
+            # intens_mesh = posit_fn(intens_mesh)
 
             if self.selec_mesh.ndim == 3:
                 selec_mesh = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(self.selec_mesh), r2chshape(self.final_shape)))
@@ -870,7 +896,7 @@ class FieldLevelModel(Model):
 
 
             if self.lik_type == 'poisson':
-                count_mesh = sample('count_mesh', dist.Poisson(posit_fn(count_mesh)**(1 / temp)))
+                count_mesh = sample('count_mesh', dist.Poisson(posit_fn(intens_mesh)**(1 / temp)))
 
             elif self.lik_type == 'fourier_gauss':
                 assert self.mask_mesh is None, "Fourier likelihood not implemented for cut-sky."
@@ -882,11 +908,11 @@ class FieldLevelModel(Model):
                 scale = posit_fn(stoch['s_e'] + stoch['s_k2e'] * kmesh**2 + stoch['s_kmu2e'] * (kmesh * mumesh)**2)
                 scale *= selec_mesh**.5 * temp**.5
                 scale = cgh2rg(scale, norm="amp")
-                count_mesh = cgh2rg(jnp.fft.rfftn(count_mesh))
-                count_mesh = sample('count_mesh', dist.Normal(count_mesh, scale))
+                intens_mesh = cgh2rg(jnp.fft.rfftn(intens_mesh))
+                count_mesh = sample('count_mesh', dist.Normal(intens_mesh, scale))
             
             elif self.lik_type == 'quad_gauss':
-                delta = count_mesh / selec_mesh - 1
+                delta = intens_mesh / selec_mesh - 1
                 # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
                 
@@ -898,18 +924,18 @@ class FieldLevelModel(Model):
 
                 # NOTE: QuadGaussian has a variable-dependent bounded support
                 # that can make evaluations venture outside easily. 
-                count_mesh = sample("count_mesh", QuadGaussian(count_mesh, scale1, scale2))
+                count_mesh = sample("count_mesh", QuadGaussian(intens_mesh, scale1, scale2))
 
             elif self.lik_type == 'two_quad_gauss':
-                delta = count_mesh / selec_mesh - 1
+                delta = intens_mesh / selec_mesh - 1
                 scale1 = posit_fn(stoch['s_e'] + stoch['s_ed'] * delta + stoch['s_ep'] * phi) + 1e-9
                 scale1 *= selec_mesh**.5 * temp**.5
                 scale2 = stoch['s_e2']
                 scale2 *= selec_mesh**.5
-                count_mesh = sample("count_mesh", TwoQuadGaussian(count_mesh, scale1, scale2))
+                count_mesh = sample("count_mesh", TwoQuadGaussian(intens_mesh, scale1, scale2))
                 
             elif self.lik_type == 'shash':
-                delta = count_mesh / selec_mesh - 1
+                delta = intens_mesh / selec_mesh - 1
                 # delta = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(gxy_mesh), r2chshape(self.final_shape))) - 1
                 # debug.print("delta down {i}", i=(delta.mean(), delta.std(), delta.min(), delta.max()))
                       
@@ -926,7 +952,7 @@ class FieldLevelModel(Model):
                 #   skewness   = 3.540 * (scale2/scale1)         (first-order skew match)
                 #   tailweight = 1 + 5.884 * (scale2/scale1)**2  (first-order excess-kurtosis match)
                 ratio = scale2 / scale1
-                count_mesh = sample("count_mesh", SinhArcsinh(count_mesh,
+                count_mesh = sample("count_mesh", SinhArcsinh(intens_mesh,
                                                 (scale1**2 + 2 * scale2**2)**.5,
                                                 3.540 * ratio,
                                                 1 + 5.884 * ratio**2))
@@ -1208,7 +1234,7 @@ class FieldLevelModel(Model):
         for name, val in self.latents.items():
             lab = val['label']
             labs[name] = lab
-            labs[name+'_'] = "\\tilde"+lab
+            labs[name+'_'] = "\\tilde{"+lab+"}" # braces: labels like 'p_\phi' would break bare \tilde
         return labs
     
     def _fiduc(self):

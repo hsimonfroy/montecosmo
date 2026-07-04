@@ -121,7 +121,7 @@ def plot_mesh(mesh, box_size=None, ids:float|slice|np.ndarray=1.,
     xx, yy = np.meshgrid(xs, ys, indexing='ij')
     if transpose:
         xx, yy = yy, xx
-    quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, **kwargs)
+    quad = plt.pcolormesh(xx, yy, mesh2d, vmin=vmin, vmax=vmax, rasterized=True, **kwargs)
     plt.gca().set_aspect(1)
     return quad
 
@@ -389,8 +389,12 @@ c2 = plt.get_cmap('Set2').colors
 
 colors = alternate(c2, c1)
 colors[np.array([0,2])] = colors[np.array([2,0])]
+# colors[np.array([1,3,5])] = colors[np.array([3,5,1])]
 SetDark2 = ListedColormap(colors)
-DarkSet2 = ListedColormap(alternate(c1, c2))
+
+colors = alternate(c1, c2)
+colors[np.array([0,2])] = colors[np.array([2,0])]
+DarkSet2 = ListedColormap(colors)
 # SetDark2_k = ListedColormap(alternate(1-np.array(c2), 1-np.array(c1)))
 # DarkSet2_k = ListedColormap(alternate(1-np.array(c1), 1-np.array(c2)))
 

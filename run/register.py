@@ -5,7 +5,7 @@ Register mock data ready to be inferred with `montecosmo.model.FieldLevelModel`.
 For each mock configuration and (cell_budget, padding), this writes ONE self-describing
 HDF5 file in ``png/registered`` (loadable via the model's ``register`` config):
 
-  register_<tag>_b<n>_p<pad>.h5   (schema of FieldLevelModel.register_catalog + init data)
+  register_<tag>_N<n>_pad<pad>.h5   (schema of FieldLevelModel.register_catalog + init data)
     cell_length, box_center, box_rotvec                 # geometry (final_shape = count_mesh.shape)
     init_oversamp, paint_oversamp                       # mesh oversampling (-> model config)
     cosmo_fid/{Omega_m, sigma8}                         # mock fiducial cosmology (-> latents loc/loc_fid)
@@ -30,7 +30,10 @@ Sources, each via a getter returning a uniform spec:
   * 'abacus'    : cubic box, choose cosmo, ic, z_obs, tracer, field in {matter, realspace, redshiftspace}.
   * 'fastpm'    : cubic box, redshift-space only (RSD baked in), choose fNL in {0, -100, 100}.
   * 'pngunit'   : cut-sky catalog, choose fNL in {0, 20, -20}, tracer, region.
-  * 'pngunitbox': PNG-UNITsim-XL cubic box (3000 Mpc/h) rockstar halos, choose fNL in {0, 20},
+  * 'pngunitbox': v1.0 PNG-UNIT N-body HOD box (UNIT cosmology, 3000 Mpc/h), fNL in {0, 20, -20},
+                  tracer in {LRG z0.74, QSO z1.83}, field in {realspace, redshiftspace}. True white_mesh
+                  from the reproduced NGenIC ICs (FastPM/NGenIC only for ICs; seed per fNL; run/gen_pngunit_ic.py).
+  * 'pngunitboxhalos': PNG-UNITsim-XL cubic box (3000 Mpc/h) rockstar halos, choose fNL in {0, 20},
                   z_obs, Mvir cut, field in {realspace, redshiftspace} (RSD from km/s vel along z).
 
 Run on a GPU node with the `montenv` env:
@@ -58,7 +61,11 @@ REGISTERED_DIR = Path("/pscratch/sd/h/hsimfroy/png/registered")
 
 # Painting defaults (stored in the file and applied by the loader).
 PAINT = dict(paint_order=2, interlace_order=2, paint_deconv=True)
-PAINT_OVERSAMP, INIT_OVERSAMP = 7/4, 3/2
+PAINT_OVERSAMP, INIT_OVERSAMP = 2, 3/2
+
+# # Smoothed
+# PAINT = dict(paint_order=2, interlace_order=1, paint_deconv=False)
+# PAINT_OVERSAMP, INIT_OVERSAMP = 1., 3/2
 
 # Cubic boxes (Mpc/h): size and geometric center (abacus in [-1000, 1000], fastpm in [0, 2760],
 # pngunit in [0, 3000]). register_catalog paints full-sky RSD along the z axis (flat sky).
@@ -137,18 +144,40 @@ def downsample_ic(real_mesh, init_shape):
     return np.asarray(chreshape(fmesh, r2chshape(init_shape)))
 
 
+def compute_lin_kpow_from_pk(pk_fn, n_interp: int = 256, kmin: float = 1e-4, kmax: float = 1e1):
+    """
+    Return (k, P(k)/sigma8^2) as a (2, n_interp) array from a 'k P(k)' text file (z=0 linear power,
+    k in h/Mpc, P in (Mpc/h)^3): the tabulated power normalized to sigma8=1 (tophat R=8 Mpc/h), same
+    convention as `compute_lin_kpow` but from the mock's own input P(k) instead of cosmoprimo.
+    """
+    kk, pk = np.loadtxt(pk_fn, unpack=True)
+    lk, lp = np.log(kk), np.log(pk)
+    kf = np.logspace(np.log10(kk.min()), np.log10(kk.max()), 8192)  # fine grid for sigma8
+    pf = np.exp(np.interp(np.log(kf), lk, lp))
+    x = kf * 8.
+    w = 3. * (np.sin(x) - x * np.cos(x)) / x**3
+    sigma8sq = np.trapz(kf**3 * pf * w**2 / (2 * np.pi**2), np.log(kf))
+    ks = np.logspace(np.log10(kmin), np.log10(kmax), n_interp)
+    pows = np.exp(np.interp(np.log(ks), lk, lp)) / sigma8sq
+    return np.stack((ks, pows))
+
+
 def build_init(spec, init_shape, cosmo_jax, box_size):
     """
-    Return the init dict: lin_kpow (always, from the cosmoprimo `cosmo_fid`) + the whitened initial
-    conditions. The linear ICs (real abacus field, or a synthetic Gaussian drawn at the mock
-    cosmology `cosmo_jax` when no real ICs exist -> `white_fake`) are whitened with `lin2white` at
-    the fiducial cosmology + lin_kpow, so the model recovers them via `white2lin` (white_mesh).
+    Return the init dict: lin_kpow (from the mock's `lin_pk_fn` P(k) file if given, else the cosmoprimo
+    `cosmo_fid`) + the whitened initial conditions. The linear ICs -- a real abacus density field
+    (`ic_fn`), a generic real-space linear-delta mesh (`ic_real_fn`, e.g. reproduced FastPM ICs), or a
+    synthetic Gaussian at the mock cosmology when no real ICs exist (`white_fake`) -- are whitened with
+    `lin2white` at the fiducial cosmology + lin_kpow, so the model recovers them via `white2lin`.
     """
-    lin_kpow = compute_lin_kpow(spec['cosmo_fid'])
+    lin_kpow = (compute_lin_kpow_from_pk(spec['lin_pk_fn']) if spec.get('lin_pk_fn')
+                else compute_lin_kpow(spec['cosmo_fid']))
     init = {'lin_kpow': lin_kpow}
-    if spec.get('ic_fn'):
-        whiten = lambda lin: np.asarray(lin2white(cosmo_jax, lin, init_shape, box_size, kpow=lin_kpow))
+    whiten = lambda lin: np.asarray(lin2white(cosmo_jax, lin, init_shape, box_size, kpow=lin_kpow))
+    if spec.get('ic_fn'):                                   # abacus ic_dens_N*.asdf density mesh
         init['white_mesh'] = whiten(downsample_ic(read_abacus_ic(spec['ic_fn']), init_shape))
+    elif spec.get('ic_real_fn'):                            # real-space linear delta mesh .npy (z=0)
+        init['white_mesh'] = whiten(downsample_ic(np.load(spec['ic_real_fn']), init_shape))
     else:
         init['white_fake'] = np.asarray(white_noise(42, init_shape, box_size))
     return init
@@ -217,17 +246,64 @@ def get_pngunit(fNL=0, tracer='LRG', region='NGC'):
                 tag=f"pngunit_fNL{fNL}_{tracer}_{region}")
 
 
+# PNG-UNIT N-body HOD box mocks (v1.0): full-box HOD galaxy catalogs from a 3000 Mpc/h UNIT-cosmology
+# N-body box (FastPM/NGenIC used only for the fixed-amplitude ICs). 15-col ascii: X Y Z VX VY VZ Mhalo n_sat 0x6 id
+# (X,Y,Z Mpc/h in [0,3000]; VX,VY,VZ peculiar km/s). Each fNL is an INDEPENDENT realization (seed):
+# fnl0 -> seed 1, fnl+-20 -> seed 4 (fnl+-20 made as a same-seed pair). The true linear ICs are
+# reproduced by `pmesh.generate_whitenoise(seed, unitary=True)` + the matterpower P(k) (verified:
+# corr ~0.98 with the mocks, no rotation); pre-generated as real delta_lin meshes by run/gen_pngunit_ic.py
+# (cosmodesi env has pmesh; montenv does not) and whitened here into white_mesh.
+PNGUNITBOX_DIR = Path("/global/cfs/cdirs/desicollab/users/adrigut/PNGxHOD/boxes/catalogs/v1.0")
+PNGUNITBOX_MATTERPOWER = REGISTERED_DIR / "adrian_Planck2015Table4LastColumn_matterpower.dat"
+_PNGUNITBOX_SEED = {0: 1, 20: 4, -20: 4}       # fNL -> FastPM/NGenIC white-noise seed
+_PNGUNITBOX_Z = {'LRG': 0.74, 'QSO': 1.83}     # tracer -> snapshot redshift
+
+
+@lru_cache(maxsize=1)  # multi-GB ascii read (~1-5 min); cache across cell budgets
+def _load_pngunitbox(fNL: int, tracer: str):
+    """Read a v1.0 PNG-UNIT N-body HOD galaxy catalog. Returns (pos, vel): (n, 3) Mpc/h and km/s."""
+    fnl = {0: 'fnl0', 20: 'fnl20', -20: 'fnlm20'}[fNL]
+    fn = PNGUNITBOX_DIR / f"PNGUNIT_{fnl}_{tracer}_box_z{_PNGUNITBOX_Z[tracer]}.txt"
+    arr = np.fromfile(str(fn), dtype=float, sep=' ').reshape(-1, 15)  # 15 cols, see block comment
+    return arr[:, 0:3].copy(), arr[:, 3:6].copy()
+
+
+def get_pngunitbox(fNL=0, tracer='LRG', field='redshiftspace'):
+    """
+    Spec for a v1.0 PNG-UNIT N-body HOD box mock (UNIT cosmology, 3000 Mpc/h periodic box). fNL in
+    {0, 20, -20}; tracer in {LRG (z=0.74), QSO (z=1.83)}; field in {realspace, redshiftspace} (RSD
+    applied in register_catalog from the km/s peculiar velocity, plane-parallel along z). white_mesh
+    is the TRUE reproduced linear IC field (seed per fNL); lin_kpow from the mock's matterpower.dat.
+    """
+    seed, z_obs = _PNGUNITBOX_SEED[fNL], _PNGUNITBOX_Z[tracer]
+    pos, vel = _load_pngunitbox(fNL, tracer)
+    data = {'pos': pos}
+    if field == 'redshiftspace':  # RSD applied in register_catalog from the peculiar velocity
+        data['vel'] = vel
+        los = (0, 0, 1)
+    elif field == 'realspace':
+        los = (0, 0, 0)
+    else:
+        raise ValueError(f"unknown pngunitbox field {field!r}")
+    return dict(data=data, cosmo_fid=unit_cosmo(),  # UNIT simulation cosmology (PNGUNIT fiducial)
+                a_obs=1 / (1 + z_obs), los=los,
+                box_size=np.full(3, PNGUNIT_BOX), box_center=PNGUNIT_CENTER,
+                ic_real_fn=str(REGISTERED_DIR / f"ic_fastpm_pngunit_seed{seed}_N192_z0.npy"),
+                lin_pk_fn=str(PNGUNITBOX_MATTERPOWER),
+                tag=f"pngunitbox_fNL{fNL}_{tracer}_z{z_obs}_{field}")
+
+
 # PNG-UNITsim-XL rockstar catalog: pandas/PyTables frame_table, blosc-compressed. The 37 rockstar
 # float columns (Mvir, ..., X, Y, Z, VX, VY, VZ, ..., M200c, ...) live in the float64 sub-block of
 # /rockstar_catalog/table; that block's NAME differs across files (values_block_1 for fnl0,
 # values_block_0 for fnl20 -- pandas orders blocks by dtype at write time), so it is located by
 # dtype and its columns mapped by name via the pickled '<block>_kind' attr. Read with h5py +
 # hdf5plugin (montenv has no pandas/PyTables; hdf5plugin supplies the blosc HDF5 filter).
-_PNGUNIT_BOX_DIR = Path("/global/cfs/projectdirs/desi/mocks/UNIT/PNG-UNITsim-XL")
+_PNGUNITBOXHALOS_DIR = Path("/global/cfs/projectdirs/desi/mocks/UNIT/PNG-UNITsim-XL")
 
 
 @lru_cache(maxsize=1)  # one full pass reads ~200 GB (~10 min); cache across cell budgets
-def _load_pngunitbox(fNL: int, z_obs: float, mcut: float):
+def _load_pngunitboxhalos(fNL: int, z_obs: float, mcut: float):
     """
     Stream the PNG-UNITsim-XL full-box rockstar halo catalog (~725-731M halos), keeping the
     (pos, vel) of distinct+sub halos with Mvir >= mcut [Msun/h]. fNL in {0 -> fnl0/, 20 -> fnl20/}.
@@ -238,7 +314,7 @@ def _load_pngunitbox(fNL: int, z_obs: float, mcut: float):
     # except z1.83 uses '.'; '?' in the glob matches either. e.g. z_obs=1.12 -> 'z1?12' matches z1_12.
     zint, zdec = f"{z_obs:.2f}".split('.')
     fnl_dir = {0: 'fnl0', 20: 'fnl20'}[fNL]
-    matches = sorted((_PNGUNIT_BOX_DIR / fnl_dir).glob(f"*_fnl{fNL}_z{zint}?{zdec}.h5"))
+    matches = sorted((_PNGUNITBOXHALOS_DIR / fnl_dir).glob(f"*_fnl{fNL}_z{zint}?{zdec}.h5"))
     assert len(matches) == 1, f"expected 1 PNGUNITXL file for fNL={fNL} z={z_obs}, got {matches}"
 
     cols = ['Mvir', 'X', 'Y', 'Z', 'VX', 'VY', 'VZ']
@@ -257,14 +333,14 @@ def _load_pngunitbox(fNL: int, z_obs: float, mcut: float):
     return np.concatenate(poss), np.concatenate(vels)
 
 
-def get_pngunitbox(fNL=0, z_obs=1.12, mcut=5e12, field='redshiftspace'):
+def get_pngunitboxhalos(fNL=0, z_obs=1.12, mcut=5e12, field='redshiftspace'):
     """
     Spec for a PNG-UNITsim-XL full-box rockstar halo mock (UNIT cosmology, 3000 Mpc/h periodic box).
     fNL in {0, 20}; z_obs in {0.74, 0.82, 1.12, 1.48, 1.83}; Mvir >= mcut [Msun/h] (~5e-4 (h/Mpc)^3
     at 5e12); field in {realspace, redshiftspace} (RSD applied in register_catalog from the km/s
     peculiar velocity, plane-parallel along z). No real ICs available -> build_init uses white_fake.
     """
-    pos, vel = _load_pngunitbox(fNL, z_obs, mcut)
+    pos, vel = _load_pngunitboxhalos(fNL, z_obs, mcut)
     data = {'pos': pos}
     if field == 'redshiftspace':  # RSD applied in register_catalog from the peculiar velocity
         data['vel'] = vel
@@ -276,15 +352,15 @@ def get_pngunitbox(fNL=0, z_obs=1.12, mcut=5e12, field='redshiftspace'):
     return dict(data=data, cosmo_fid=unit_cosmo(),  # UNIT simulation cosmology (PNGUNIT fiducial)
                 a_obs=1 / (1 + z_obs), los=los,
                 box_size=np.full(3, PNGUNIT_BOX), box_center=PNGUNIT_CENTER,
-                tag=f"pngunitbox_fNL{fNL}_z{z_obs:.3f}_m{mcut:.1e}_{field}")
+                tag=f"pngunitboxhalos_fNL{fNL}_z{z_obs:.3f}_m{mcut:.1e}_{field}")
 
 
 # ---------------------------------------------------------------------------
 # Registration (one HDF5 written in a single pass)
 # ---------------------------------------------------------------------------
 def _register_path(spec, cell_budget, padding):
-    n = int(round(cell_budget ** (1 / 3)))
-    return REGISTERED_DIR / f"register_{spec['tag']}_b{n}_p{padding:g}.h5"
+    n = int(round(cell_budget ** (1 / 3)))  # N<n> = mesh_length (cells per side), pad<pad> = padding
+    return REGISTERED_DIR / f"register_{spec['tag']}_N{n}_pad{padding:g}.h5"
 
 
 def register(spec, cell_budget, padding=0.):
@@ -319,8 +395,8 @@ if __name__ == "__main__":
     cell_budgets = [32**3, 48**3, 64**3, 96**3, 128**3]
     paddings = [0.]
 
-    # Light jobs first, heavy abacus matter (~71 GB I/O) and pngunitbox (~200 GB/read) last.
-    # _load_pngunitbox is lru-cached, so each pngunitbox fNL reads the file once across cell budgets.
+    # Light jobs first, heavy abacus matter (~71 GB I/O) and pngunitboxhalos (~200 GB/read) last.
+    # _load_pngunitboxhalos is lru-cached, so each pngunitboxhalos fNL reads the file once across cell budgets.
     jobs = [
         lambda: get_fastpm(fNL=-100),
         lambda: get_fastpm(fNL=0),
@@ -331,8 +407,8 @@ if __name__ == "__main__":
         lambda: get_pngunit(fNL=20, tracer='LRG', region='NGC'),
         lambda: get_pngunit(fNL=-20, tracer='LRG', region='NGC'),
         lambda: get_abacus(cosmo=0, ic=0, z_obs=0.8, tracer='LRG', field='matter'),  # heavy, last
-        lambda: get_pngunitbox(fNL=0, z_obs=1.12, field='redshiftspace'),   # heavy, last
-        lambda: get_pngunitbox(fNL=20, z_obs=1.12, field='redshiftspace'),  # heavy, last
+        lambda: get_pngunitboxhalos(fNL=0, z_obs=1.12, field='redshiftspace'),   # heavy, last
+        lambda: get_pngunitboxhalos(fNL=20, z_obs=1.12, field='redshiftspace'),  # heavy, last
     ]
 
     n_ok, n_fail = 0, 0
@@ -345,6 +421,6 @@ if __name__ == "__main__":
                     n_ok += 1
                 except Exception:
                     n_fail += 1
-                    print(f"FAILED job at b{round(cell_budget**(1/3))} p{padding:g}:")
+                    print(f"FAILED job at N{round(cell_budget**(1/3))} pad{padding:g}:")
                     traceback.print_exc()
     print(f"\nDONE: {n_ok} registered, {n_fail} failed.")

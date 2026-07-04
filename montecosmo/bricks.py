@@ -16,7 +16,7 @@ from montecosmo.metrics import naive_mu2_delta, optim_mu2_delta
 # [Planck2015 XIII](https://arxiv.org/abs/1502.01589) Table 4 final column (best fit)
 Planck15 = partial(Cosmology,
     Omega_c=0.2589,
-    Omega_b=0.04860,
+    Omega_b=0.0486,
     Omega_k=0.0,
     h=0.6774,
     n_s=0.9667,
@@ -469,7 +469,7 @@ def bpd_L2E(bpd, bp):
 def bpd_E2L(bpd, bp):
     return bpd - bp / 2
 
-def b_phi(b1, p=1., delta_c=1.686):
+def b_phi(b1, pp=1., delta_c=1.686):
     """
     Primordial scale-dependant bias parameter.
     See [Giannantonio&Porciani](http://arxiv.org/abs/0911.0017), [Barreira2022](https://arxiv.org/pdf/2107.06887).
@@ -478,7 +478,7 @@ def b_phi(b1, p=1., delta_c=1.686):
     # b1E = 1 + b1
     # bpE = bp = 2 dc (b1E - p)
     # p=1 for halos, p=1+1/dc~1.6 for recent mergers, maybe p=0.55 for stellar mass selected samples.
-    return 2 * delta_c * (b1 + 1 - p)
+    return 2 * delta_c * (b1 + 1 - pp)
 
 def b_phi_delta(b1, b2, delta_c=1.686):
     """
@@ -490,12 +490,12 @@ def b_phi_delta(b1, b2, delta_c=1.686):
     # bpdE = bp + bpd / 2 = bpE + dc (b2E - 8/21 (b1E - 1)) - (b1E - 1)
     return 2 * (delta_c * b2 - b1)
 
-def fNL_bias(png, bias, p=1., png_type=None):
+def fNL_bias(png, bias, png_type=None):
     fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
     b1, b2 = bias['b1'], bias['b2']
     
     if png_type == 'fNL':
-        fNL_bp = fNL * b_phi(b1, p)
+        fNL_bp = fNL * b_phi(b1, pp=png['pp'])
         fNL_bpd = fNL * b_phi_delta(b1, b2)
 
     elif png_type == 'bias':
