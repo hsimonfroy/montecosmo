@@ -498,12 +498,15 @@ def fNL_bias(png, bias, png_type=None):
         fNL_bp = fNL * b_phi(b1, pp=png['pp'])
         fNL_bpd = fNL * b_phi_delta(b1, b2)
 
-    elif png_type == 'bias':
-        fNL_bp = fNL * fNL_bp
-        fNL_bpd = fNL * fNL_bpd
 
-    # fNL_bpd = fNL_bpd - 2 * fNL * b1 ##### XXX
-    # print("====== fNL_bp repramed ======")
+    else:
+        assert png_type == 'fNL_bias', "png_type must be 'fNL' or 'fNL_bias'"
+        # Absorb the fNL <-> fNL_bpd degeneracy: the matter PNG (add_png enters the displacement only,
+        # the Lagrangian weights use the Gaussian field) contributes a squeezed 2*fNL*(phi delta)
+        # We are thus sampling fNL_bpd + 2*fNL = fNL*(bpd + 2)
+        fNL_bpd = fNL_bpd - 2 * fNL # XXX
+        # fNL_bpd = fNL_bpd - 2 * fNL * b1E # XXX # if expansion is based on PNGed fields
+
     png['fNL_bp'], png['fNL_bpd'] = fNL_bp, fNL_bpd
     return png
 
@@ -1074,7 +1077,7 @@ def fullsky2count(data, cosmo:Cosmology, a_obs:float, los:tuple,
                 final_shape:tuple, paint_shape:tuple|float,
                 paint_order:int=2, interlace_order:int=2, paint_deconv:bool=True,):
     """
-    Return painted count mesh @ final_shape and weighted object number from cartesian particle
+    Return painted count mesh at final_shape and weighted object number from cartesian particle
     positions (full-sky periodic box). `data` is a dict with a cartesian 'pos' (and optional 'vel',
     'WEIGHT'), or an iterable of such dicts streamed and accumulated in Fourier space (e.g. the
     abacus matter field over many files). If 'vel' is present, redshift-space distortion is applied

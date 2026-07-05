@@ -154,7 +154,7 @@ def full_warmup(model, obs, state_field, chains_dir, n_steps, desired_energy_var
 
 
 def full_run(model, state, config, chains_dir, n_samples, n_runs, n_chains,
-             thinning=64, seed=42, overwrite=False):
+             thinning=32, seed=42, overwrite=False):
     """
     Full run: sample `n_runs` runs of `n_samples` (thinned) samples each, saving each run as
     `run_{i}.h5` and the latest state as `run_last_state.h5`. If a previous `run_last_state.h5`

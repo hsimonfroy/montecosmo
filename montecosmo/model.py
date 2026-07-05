@@ -153,7 +153,8 @@ default_config={
                 'fNL': {'group':'png',
                             'label':r'{f}_\mathrm{NL}',
                             'loc':0.,
-                            'scale':1e3,
+                            # 'scale':1e3,
+                            'scale':1e2,
                             'scale_fid':1e2,
                             },
                 'fNL_bp': {'group':'png',
@@ -342,7 +343,10 @@ class Model():
             model = handlers.condition(self.model, data=sample)
             if hide_samp:
                 model = handlers.block(model, hide=sample.keys())
-            model = self.block(model, expose=expose, hide_base=hide_base, hide_det=hide_det)
+            if expose is not None:
+                model = handlers.block(model, expose=expose)
+            else:
+                model = self._block_det(model, hide_base=hide_base, hide_det=hide_det)
 
             # Trace and return values
             tr = handlers.trace(handlers.seed(model, rng_seed=seed)).get_trace()
