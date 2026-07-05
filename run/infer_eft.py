@@ -52,8 +52,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
           n_chains=4, tune_mass=True,
           n_steps_field=2**12, dev_field=1e-5,
           n_steps_full=2**13, dev_full=1e-7,
-          n_samples=None, n_runs=4, thinning=32,
-          scale_fid_fac=1.):
+          n_samples=None, n_runs=6, thinning=32,
+          scale_fid_fac=1., pred_thinning=64):
     """
     Run inference for the mock registered in `<REGISTERED_DIR>/<register_name>`.
 
@@ -67,6 +67,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     expe          : extra experiment-name suffix for folder2.
     overwrite     : redo phases whose files already exist (else they are loaded/resumed).
     obs_names     : base latents to observe; every other base latent is fixed to its fiducial value.
+    pred_thinning : chain thinning for the posterior-predictive meshes (file grows fast).
     """
     import os; os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.99' # NOTE: jax preallocates GPU (default 75%)
     import re
@@ -78,7 +79,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
     from montecosmo.model import FieldLevelModel, default_config
     from montecosmo.utils import h5save
-    from montecosmo.script import field_warmup, plot_field_warmup, full_warmup, full_run, make_chains, make_logdf_mesh
+    from montecosmo.script import (field_warmup, plot_field_warmup, full_warmup, full_run,
+                                   make_chains, make_logdf_mesh, make_posterior_pred, plot_posterior_pred)
 
     ############
     # Saving   #
@@ -98,7 +100,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"SAVE DIR: {save_dir}")
+    print(f"\nSAVE DIR: {save_dir}")
     sys.stdout = sys.stderr = open(save_dir / "run.out", "a", buffering=1)
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
     print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')} as job {os.environ.get('SLURM_JOB_ID')}")
@@ -120,9 +122,10 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     ###############################################
     # Fiducial location of the inferred bias/png/stoch/AP params (cosmology + ngbars come from
     # the register file). Update prior locs too, so the model is centered on these values.
+    pp = 1. if fnl in (-20., 0.) else 1.4 # PNGUnit-XL fNL20 was run with low-passed PNGs, inducing higher p_phi.
     fiduc = {
         'b1': 1., 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
-        'fNL': fnl, 'fNL_bp': fnl, 'fNL_bpd': 0., 'pp': 1., 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
+        'fNL': fnl, 'fNL_bp': fnl, 'fNL_bpd': 0., 'pp':pp, 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
         's_e': 1., 's_k2e': 0., 's_kmu2e': 0.,
         's_ed': 0., 's_e2': 0., 's_ep': 0.,
         'alpha_iso': 1., 'alpha_ap': 1.,
@@ -194,6 +197,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
 
     make_chains(save_dir, start=1, end=100)
     # make_logdf_mesh(save_dir, start=1, end=100, thinning=4)
+    make_posterior_pred(save_dir, start=1, end=100, thinning=pred_thinning)
+    plot_posterior_pred(save_dir)
     print(f"Finished running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
     # sys.stdout.flush()
 
@@ -202,36 +207,33 @@ if __name__ == '__main__':
     import sys
     print("Demat")
 
-    # EFT order comparison (2nd vs 3rd order bias+png terms) on fastpm fNL0 mocks.
-    #   usage: python infer_eft.py <order:o2|o3> <budget:32|64>
-    # png_type='fNL_bias' (sample fNL, fNL_bp, fNL_bpd), quad_gauss likelihood, lpt evolution,
-    # fixed cosmology + AP, freeIC (infer white_mesh). Stochasticity: s_e=1 fixed, s_ed=0 fixed,
-    order = sys.argv[1] if len(sys.argv) > 1 else 'o2'   # 'o2' (2nd order) or 'o3' (3rd order)
-    # budget = sys.argv[2] if len(sys.argv) > 2 else '32'  # mesh length
-    # assert order in ('o2', 'o3') and budget in ('32', '48', '64', '96', '128')
+    # FixIC EFT order battery on the pngunitbox HOD mocks, N32.
+    #   usage: python infer_eft_fixic.py <order:o2|o3> [<tracers:LRG,QSO>] [<fnls:0,-20>] [<se:sefix|sefree>]
+    order = sys.argv[1] if len(sys.argv) > 1 else 'o3'    # 'o2' (2nd order) or 'o3' (3rd order)
+    assert order in ('o2', 'o3')
 
-    budgets = [32, 48]
-    png_type = 'fNL_bias'
-    # png_type = 'fNL'
-    # lik_type = 'fourier_gauss'
-    # lik_type = 'quad_gauss'
+    budgets = [96]
+    tracers = ['QSO'] # 'LRG', 'QSO'
+    fnls = [0., -20., 20.] # -20., 0., 20.
+    png_type = 'fNL'
     lik_type = 'shash'
-    # fnl = 100.
-    fnl = 20.
+    zs = {'LRG': 0.74, 'QSO': 1.83}
+
 
     # Observed (FIXED) parameters; everything else (incl. white_mesh) is inferred.
     obs_names = ['count_mesh',
-                 'white_mesh',         # freeIC vs. fixIC
+                #  'white_mesh',         # freeIC vs. fixIC
                 'alpha_iso', 'alpha_ap', # AP fixed
                 'Omega_m', 'sigma8',     # cosmology fixed
                 #  'b1',                 # 1st order bias (sampled)
                 #  'b2', 'bs2',          # 2nd order bias (sampled)
                 #  'b3', 'bds2', 'bs3',  # 3rd order bias: FIXED for o2, sampled for o3 (added below)
                 #  'bn2', 'bnpar',          # higher-derivative bias (any order)
-                #  'fNL', 'fNL_bp', 'fNL_bpd', 'pp', # PNG 1st+2nd order (sampled fNL, fNL_bp, fNL_bpd, if png_type='fNL_bias', else fNL and pp)
+                #  'fNL', 'fNL_bp', 'fNL_bpd', # PNG 1st+2nd order (sampled fNL, fNL_bp, fNL_bpd, if png_type='fNL_bias', else fNL and pp)
+                 'pp',
                 #  'fNL_bpd2', 'fNL_bps2',      # PNG 3rd order: FIXED for o2, sampled for o3 (added below)
-                'fNL_bn2p',              # PNG higher-derivative (any order)
-                's_e',                   # s_e = 1 for shot noise
+                'fNL_bn2p',              # PNG higher-derivative (any order, on large scales degenerated with b1)
+                # 's_e',                   # s_e = 1 for shot noise
                 # 's_ed',                  
                 # 's_e2',
                 # 's_ep',
@@ -240,28 +242,23 @@ if __name__ == '__main__':
                 ]
     # Some automatic handling just in case
     obs_names += ['s_ed', 's_e2', 's_ep'] if lik_type == 'fourier_gauss' else ['s_k2e', 's_kmu2e']
-    obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else ['pp'] # universal mass relation: fNL and pp determines fNL_bp and fNL_bpd
+    obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else ['pp'] # if fNL mode, fNL and pp determines fNL_bp and fNL_bpd, otherwise pp is unused
     obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
 
     if order == 'o2':  # 2nd order: also fix the 3rd-order bias and PNG terms
         obs_names += ['b3', 'bds2', 'bs3', 'fNL_bpd2', 'fNL_bps2']
 
-    for budget in budgets:
-        budget = str(budget)
-        # register_name = f'register_fastpm_fNL{fnl:.0f}_z1.000_LRG_N{budget}_pad0.h5'
-        # register_name = f'register_abacus_c0_ph0_z0.800_LRG_redshiftspace_N{budget}_pad0.h5'
-        # register_name = f'register_pngunit_fNL{fnl:.0f}_LRG_NGC_N{budget}_pad0.h5'
-        # register_name = f'register_pngunitbox_fNL{fnl:.0f}_z1.120_m5.0e+12_redshiftspace_N{budget}_pad0.h5'
-        # register_name = f'register_pngunitbox_fNL{fnl:.0f}_z1.120_m5.0e+12_redshiftspace_smooth_N{budget}_pad0.h5'
-        register_name = f'register_pngunitbox_fNL{fnl:.0f}_QSO_z1.83_redshiftspace_N{budget}_pad0.h5'
-        # register_name = f'register_pngunitbox_fNL{fnl:.0f}_QSO_z1.83_redshiftspace_smooth_N{budget}_pad0.h5'
-        infer(register_name=register_name,
-            png_type=png_type, lik_type=lik_type, evolution='lpt',
-            self_data=False, overwrite=False,
-        #     n_steps_field=2**13, dev_field=3e-6,
-        #   n_steps_full=2**14, dev_full=3e-8,
-            obs_names=obs_names, expe=order+'_'+lik_type+'')
-
-
+    # expe = order + '_' + lik_type + '_fixic_ppprior0.3'
+    # expe = order + '_' + lik_type + '_fixic_pp0'
+    expe = order + '_' + lik_type + '_pp0'
+    for tracer in tracers:
+        for budget in budgets:
+            for fnl in fnls:
+                register_name = f'register_pngunitbox_fNL{fnl:.0f}_{tracer}_z{zs[tracer]}_redshiftspace_N{budget}_pad0.h5'
+                infer(register_name=register_name,
+                    png_type=png_type, lik_type=lik_type, evolution='lpt',
+                    self_data=False, overwrite=False,
+                    obs_names=obs_names, expe=expe,
+                    scale_fid_fac=1.)
 
     print("Kenavo")

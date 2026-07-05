@@ -309,14 +309,15 @@ def plot_powtranscoh(ks, pow1, trans, coh, *args,
     return outs
 
 
-def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]=1e-4, type='kde', **kwargs):
+def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]=1e-4,
+             type='kde', bins=100, fill=None, **kwargs):
     """
-    Plot the probability density function of a mesh.
+    Plot the probability density function of a mesh, or of an ensemble of meshes.
 
     Parameters
     ----------
     mesh : ndarray
-        The input mesh.
+        The input mesh. If `fill` is provided, an ensemble of meshes with a leading batch axis.
     args : tuple
         Additional positional arguments passed to plotting function.
     seed : int or jr.key, optional
@@ -324,40 +325,66 @@ def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]
     n_max : int, optional
         Maximum subsample size.
     vlim : float or tuple of float, optional
-        The limit values for colormap. 
-        * If float, specifies the proportion of values discarded bilateraly. 
+        The limit values for colormap.
+        * If float, specifies the proportion of values discarded bilateraly.
         * If tuple, specifies (vmin, vmax).
     type : str, optional
-        The type of plot to create.
-        * 'kde' : plot kernel density estimate.
-        * 'hist' : plot histogram.
-        * 'gauss' : plot Gaussian fit.
+        The type of density estimate.
+        * 'kde' : kernel density estimate.
+        * 'hist' : histogram (step style).
+        * 'gauss' : Gaussian fit.
+    bins : int, optional
+        Number of bins if `type` is 'hist'.
+    fill : float or array_like of float, optional
+        If provided, the credible interval probability(ies) to fill between (as in `plot_pow`):
+        `mesh` is treated as an ensemble over its leading axis and the pointwise credible
+        interval of the pdfs over the ensemble is filled.
     kwargs : dict
         Additional keyword arguments passed to plotting function.
     """
-    mesh = mesh.ravel()
-    n_samples = min(n_max, len(mesh))
-
     if isinstance(seed, int):
         seed = jr.key(seed)
 
+    # Common grid from vlim (quantiles over the whole ensemble if float)
+    meshes = np.reshape(mesh, (len(mesh), -1) if fill is not None else (1, -1))
     if vlim is None:
-        vlim = mesh.min(), mesh.max()
+        vlim = meshes.min(), meshes.max()
     elif isinstance(vlim, float):
-        vlim = np.quantile(mesh, [vlim/2, 1-vlim/2])
+        vlim = np.quantile(meshes, [vlim/2, 1-vlim/2])
+    edges = np.linspace(*vlim, bins + 1)
+    xs = (edges[1:] + edges[:-1]) / 2 if type == 'hist' else np.linspace(*vlim, 200)
 
-    if type == 'kde':
-        kde = gaussian_kde(jr.choice(seed, mesh, (n_samples,), replace=False))
-        xs = np.linspace(*vlim, 200)
-        out = plt.plot(xs, kde(xs), *args, **kwargs)
-    elif type == 'hist':
-        out = plt.hist(jr.choice(seed, mesh, (n_samples,), replace=False), *args,
-             **{'range': vlim, 'bins': 100, 'density': True, 'histtype':'step'} | kwargs)
+    # Evaluate all pdfs on the common grid.
+    # NOTE: loop instead of vmap because kde/hist are scipy/numpy; fine for thinned ensembles.
+    pdfs = []
+    for s, m in zip(jr.split(seed, len(meshes)), meshes):
+        if type == 'gauss':
+            pdfs.append(norm.pdf(xs, loc=m.mean(), scale=m.std()))
+        else:
+            m = jr.choice(s, m, (min(n_max, len(m)),), replace=False)
+            if type == 'kde':
+                pdfs.append(gaussian_kde(m)(xs))
+            else:
+                assert type == 'hist', "type must be 'kde', 'hist' or 'gauss'"
+                pdfs.append(np.histogram(m, bins=edges, density=True)[0])
+            #      out = plt.hist(jr.choice(seed, mesh, (n_samples,), replace=False), *args,
+            #  **{'range': vlim, 'bins': 100, 'density': True, 'histtype':'step'} | kwargs)
+    pdfs = np.stack(pdfs)
+
+    # Plot: single curve, or credible-interval band(s) over the ensemble
+    step = {'drawstyle': 'steps-mid'} if type == 'hist' else {}
+    fstep = {'step': 'mid'} if type == 'hist' else {}
+    if fill is None:
+        out = plt.plot(xs, pdfs[0], *args, **step | kwargs)
     else:
-        assert type == 'gauss', "type must be 'kde', 'hist' or 'gauss'"
-        xs = np.linspace(*vlim, 200)
-        pdfs = norm.pdf(xs, loc=mesh.mean(), scale=mesh.std())
-        out = plt.plot(xs, pdfs, *args, **kwargs)
+        out = []
+        fill = np.atleast_1d(fill)
+        color = plt.gca()._get_patches_for_fill.get_next_color()
+        for f in fill:
+            scis = credint(pdfs, f, axis=0)
+            collec = plt.fill_between(xs, *scis.T, *args, **fstep | {'alpha':(1-f)**.5, 'color': color} | kwargs)
+            color = collec.get_facecolor()
+            out.append(collec)
     return out
 
 

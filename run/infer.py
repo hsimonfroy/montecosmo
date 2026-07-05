@@ -98,7 +98,7 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     chains_dir = save_dir / "chains"
     chains_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"SAVE DIR: {save_dir}")
+    print(f"\nSAVE DIR: {save_dir}")
     sys.stdout = sys.stderr = open(save_dir / "run.out", "a", buffering=1)
     print(f"Started running on {os.environ.get('HOSTNAME')} at {datetime.now().astimezone().isoformat()}")
     print(f"Submitted from host {os.environ.get('SLURM_SUBMIT_HOST')} to node(s) {os.environ.get('SLURM_JOB_NODELIST')} as job {os.environ.get('SLURM_JOB_ID')}")
