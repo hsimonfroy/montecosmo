@@ -16,7 +16,7 @@ from jax.scipy.spatial.transform import Rotation
 from jax_cosmo import Cosmology
 from montecosmo.bricks import (samp2base, samp2base_mesh, get_cosmology, lin_power_mesh, white2lin, lin2white, add_png,
                                kaiser_boost, kaiser_model, kaiser_posterior,
-                               lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, b1_E2L, b2_E2L, fNL_bias,
+                               lagrangian_bias, eulerian_bias, b1_L2E, b2_L2E, b1_E2L, b2_E2L, fNL_bias, lin2phi,
                                top_hat_selection, gen_gauss_selection, los_scalefactor_mesh, los_scalefactor_pos, radius_mesh, phys2cell_pos, cell2phys_pos, phys2cell_vel, cell2phys_vel,
                                rsd, ap_auto, ap_param, rsd_ap_auto, ap_auto_absdetjac,
                                cutsky2count, cutsky2config, cutsky2selection, fullsky2count, get_mesh_shape, pos_mesh, regular_pos, sobol_pos, set_radial_count, count2delta)
@@ -65,7 +65,9 @@ default_config={
         'register':None, # if None then no data; if str or Path then path to a register HDF5 file
         'n_rbins':None, # if None then set to maximum number of radial bins
         'lik_type': 'quad_gauss', # poisson, fourier_gauss, quad_gauss
+        'lik_kmin': 0., # in h/Mpc; if > 0, fourier_gauss drops the modes with k < lik_kmin
         'bias_type': 'lagrangian', # lagrangian, eulerian
+        'eul_renorm_mod': True, # eulerian_bias: modulated renorm (68/21 delta + 4 fNL phi); False = constant sigma2 only (Stopyra+2026)
         # Latents
         'precond':'kaiser', # real, fourier, kaiser
         'latents': {
@@ -715,7 +717,7 @@ class FieldLevelModel(Model):
 
         init_mesh = white2lin(cosmology, init['white_mesh'], self.init_shape, self.box_size, self.lin_kpow)
         init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
-        png = fNL_bias(png, bias, png_type=self.png_type)
+        png = fNL_bias(png, bias, png_type=self.png_type, bias_type=self.bias_type)
 
         if self.evolution=='kaiser':
             los, a = los_scalefactor_mesh(self.box_center, self.box_rot, self.box_size, self.evol_shape,
@@ -777,12 +779,17 @@ class FieldLevelModel(Model):
             #     init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size, kpow=self.lin_kpow)
             #     init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
 
-            # Lagrangian bias expansion weights (based on initial particules positions)
-            lbe_weights, dvel, phi = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
-                                                png_type=self.png_type, kpow=self.lin_kpow, read_order=1)
-            if self.bias_type == 'eulerian':
+            if self.bias_type == 'lagrangian':
+                # Lagrangian bias expansion weights (based on initial particules positions)
+                lbe_weights, dvel, phi = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
+                                                    png_type=self.png_type, kpow=self.lin_kpow, read_order=1)
+            elif self.bias_type == 'eulerian':
+                # Gaussian primordial potential read in Lagrangian space, advected by the paint below
+                phi = jnp.fft.irfftn(lin2phi(cosmology, init_mesh, self.box_size, kpow=self.lin_kpow))
                 phi_pos = read(pos, phi, order=1)
-            
+                dvel = 0. # bnpar applies as a (k.los)^2 term in eulerian_bias
+
+
             if self.png_type is not None:
                 init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size, kpow=self.lin_kpow)
                 init_mesh = chreshape(chreshape(init_mesh, r2chshape(self.init_shape)), r2chshape(self.evol_shape))
@@ -843,22 +850,21 @@ class FieldLevelModel(Model):
                 # gxy_mesh = 1 + (gxy_mesh - 1) * (1 + bias['b1']) ###XXX
 
             elif self.bias_type == 'eulerian':
-                pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.init_shape)
-                matter_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=1., 
-                                paint_order=self.paint_order, interlace_order=self.interlace_order, 
+                # Paint matter and advected phi, band-limited to the final band (sharp-k cut)
+                pos = phys2cell_pos(pos, self.box_center, self.box_rot, self.box_size, self.final_shape)
+                matter_mesh = nufft(pos, self.final_shape, self.paint_shape, weights=1.,
+                                paint_order=self.paint_order, interlace_order=self.interlace_order,
                                 kernel_type=self.kernel_type, paint_deconv=self.paint_deconv)
-                matter_mesh *= np.divide(self.paint_shape, self.ptcl_shape).prod()
-                matter_mesh = chreshape(matter_mesh, r2chshape(self.paint_shape))
-                print(jnp.fft.irfftn(matter_mesh).mean(), jnp.fft.irfftn(matter_mesh).std())
+                matter_mesh *= np.divide(self.final_shape, self.ptcl_shape).prod()
 
-                phi_mesh = nufft(pos, self.init_shape, self.paint_shape, weights=phi_pos, 
-                                paint_order=self.paint_order, interlace_order=self.interlace_order, 
+                phi_mesh = nufft(pos, self.final_shape, self.paint_shape, weights=phi_pos,
+                                paint_order=self.paint_order, interlace_order=self.interlace_order,
                                 kernel_type=self.kernel_type, paint_deconv=self.paint_deconv) # advected phi
-                phi_mesh *= np.divide(self.paint_shape, self.ptcl_shape).prod()
-                phi_mesh = chreshape(phi_mesh, r2chshape(self.paint_shape))
-                print(jnp.fft.irfftn(phi_mesh).mean(), jnp.fft.irfftn(phi_mesh).std())
+                phi_mesh *= np.divide(self.final_shape, self.ptcl_shape).prod()
 
-                gxy_mesh = eulerian_bias(matter_mesh, phi_mesh, self.box_size, bias, png, png_type=self.png_type)
+                cell_los = self.box_rot.apply(los, inverse=True) # NOTE: flat-sky only
+                gxy_mesh = eulerian_bias(matter_mesh, phi_mesh, self.box_size, bias, png,
+                                         png_type=self.png_type, los=cell_los)
 
         gxy_mesh = deterministic('gxy_mesh', gxy_mesh)
         # debug.print("lbe_weights: {i}", i=(lbe_weights.mean(), lbe_weights.std(), lbe_weights.min(), lbe_weights.max()))
@@ -912,6 +918,9 @@ class FieldLevelModel(Model):
                 
                 scale = posit_fn(stoch['s_e'] + stoch['s_k2e'] * kmesh**2 + stoch['s_kmu2e'] * (kmesh * mumesh)**2)
                 scale *= selec_mesh**.5 * temp**.5
+                lik_kmin = 0.
+                if lik_kmin > 0.: # drop k < lik_kmin modes (incl. monopole): ~zero weight, constant logpdf offset
+                    scale = jnp.where(kmesh >= lik_kmin, scale, 1e12)
                 scale = cgh2rg(scale, norm="amp")
                 intens_mesh = cgh2rg(jnp.fft.rfftn(intens_mesh))
                 count_mesh = sample('count_mesh', dist.Normal(intens_mesh, scale))

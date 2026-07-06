@@ -207,7 +207,7 @@ def make_chains(save_dir, start=1, end=100, thinning=1, reparb=False, prefix="")
     obs = h5load(save_dir / "obs.h5")
     white_mesh = model.white_mesh
     infer_init = 'white_mesh' not in obs # init field sampled (self) vs fixed (fixedic)
-    markers = {k: float(v) for k, v in model.fiduc.items() if np.ndim(v) == 0}
+    markers = {k: float(np.squeeze(v)) for k, v in model.fiduc.items() if np.ndim(np.squeeze(v)) == 0}
     model.substitute(obs, from_base=True) # reparam override the sampled ones
     # mask_chains = np.array([0,2,3])
     mask_chains = ...

@@ -52,7 +52,8 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
           n_chains=4, tune_mass=True,
           n_steps_field=2**12, dev_field=1e-5,
           n_steps_full=2**13, dev_full=1e-7,
-          n_samples=None, n_runs=6, thinning=32,
+          n_samples=None, n_runs=10, thinning=64,
+        #   n_samples=None, n_runs=6, thinning=32,
           scale_fid_fac=1., pred_thinning=64):
     """
     Run inference for the mock registered in `<REGISTERED_DIR>/<register_name>`.
@@ -212,10 +213,11 @@ if __name__ == '__main__':
     order = sys.argv[1] if len(sys.argv) > 1 else 'o3'    # 'o2' (2nd order) or 'o3' (3rd order)
     assert order in ('o2', 'o3')
 
-    budgets = [96]
+    budgets = [64] # 32, 48, 64, 96, 128
     tracers = ['QSO'] # 'LRG', 'QSO'
-    fnls = [0., -20., 20.] # -20., 0., 20.
-    png_type = 'fNL'
+    fnls = [0.] # -20., 0., 20.
+    # png_type = 'fNL'
+    png_type = 'fNL_bias'
     lik_type = 'shash'
     zs = {'LRG': 0.74, 'QSO': 1.83}
 
@@ -234,9 +236,9 @@ if __name__ == '__main__':
                 #  'fNL_bpd2', 'fNL_bps2',      # PNG 3rd order: FIXED for o2, sampled for o3 (added below)
                 'fNL_bn2p',              # PNG higher-derivative (any order, on large scales degenerated with b1)
                 # 's_e',                   # s_e = 1 for shot noise
-                # 's_ed',                  
-                # 's_e2',
-                # 's_ep',
+                's_ed',                  
+                's_e2',
+                's_ep',
                 # 's_k2e','s_kmu2e'
                 #  'ngbars',
                 ]
@@ -250,7 +252,8 @@ if __name__ == '__main__':
 
     # expe = order + '_' + lik_type + '_fixic_ppprior0.3'
     # expe = order + '_' + lik_type + '_fixic_pp0'
-    expe = order + '_' + lik_type + '_pp0'
+    # expe = order + '_' + lik_type + '_pp0se0'
+    expe = order + '_' + lik_type + 'osto1'
     for tracer in tracers:
         for budget in budgets:
             for fnl in fnls:

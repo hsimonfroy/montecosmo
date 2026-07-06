@@ -128,7 +128,7 @@ def trans_phi2delta_interp(cosmo:Cosmology, a=1.,kpow=None, n_interp=256):
 
 def add_png(cosmo:Cosmology, fNL, lin_mesh, box_size, kpow=None):
     """
-    Add Primordial Non-Gaussianity (PNG) to the linear matter density field.
+    Add Primordial Non-Gaussianity (PNG) to the linear matter density field (Fourier spaces).
     """
     mesh_shape = ch2rshape(lin_mesh.shape)
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
@@ -151,17 +151,37 @@ def white_noise(seed, mesh_shape, box_size):
 
 def white2lin(cosmo:Cosmology, white_mesh, init_shape, box_size, kpow=None):
     """
-    Transform a white noise mesh into a linear matter mesh.
+    Transfer a white noise mesh into a linear matter mesh (Fourier spaces).
     """
     pmesh = lin_power_mesh(cosmo, init_shape, box_size, kpow=kpow)
     return white_mesh * pmesh**.5
     
 def lin2white(cosmo:Cosmology, lin_mesh, init_shape, box_size, kpow=None):
     """
-    Transform a linear matter mesh into a white noise mesh.
+    Transfer a linear matter mesh into a white noise mesh (Fourier spaces).
     """
     pmesh = lin_power_mesh(cosmo, init_shape, box_size, kpow=kpow)
     return safe_div(lin_mesh, pmesh**.5)
+
+def lin2phi(cosmo:Cosmology, lin_mesh, box_size, kpow=None):
+    """
+    Transfer a linear matter mesh into a primordial potential mesh (Fourier spaces).
+    """
+    mesh_shape = ch2rshape(lin_mesh.shape)
+    kvec = rfftk(mesh_shape, box_size) # in h/Mpc
+    kmesh = sum(ki**2 for ki in kvec)**.5
+    trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
+    return safe_div(lin_mesh, trans_phi2delta)
+
+def phi2lin(cosmo:Cosmology, phi_mesh, box_size, kpow=None):
+    """
+    Transfer a primordial potential mesh into a linear matter mesh (Fourier spaces).
+    """
+    mesh_shape = ch2rshape(phi_mesh.shape)
+    kvec = rfftk(mesh_shape, box_size) # in h/Mpc
+    kmesh = sum(ki**2 for ki in kvec)**.5
+    trans_phi2delta = trans_phi2delta_interp(cosmo, kpow=kpow)(kmesh)
+    return phi_mesh * trans_phi2delta
 
 
 ##########
@@ -463,6 +483,12 @@ def b2_L2E(b2, b1L):
 def b2_E2L(b2, b1L):
     return b2 - 8 / 21 * b1L
 
+def bs2_L2E(bs2, b1L):
+    return bs2 - 2 / 7 * b1L
+
+def bs2_E2L(bs2, b1L):
+    return bs2 + 2 / 7 * b1L
+
 def bpd_L2E(bpd, bp):
     return bpd + bp / 2
 
@@ -490,10 +516,10 @@ def b_phi_delta(b1, b2, delta_c=1.686):
     # bpdE = bp + bpd / 2 = bpE + dc (b2E - 8/21 (b1E - 1)) - (b1E - 1)
     return 2 * (delta_c * b2 - b1)
 
-def fNL_bias(png, bias, png_type=None):
+def fNL_bias(png, bias, png_type=None, bias_type='lagrangian'):
     fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
     b1, b2 = bias['b1'], bias['b2']
-    
+
     if png_type == 'fNL':
         fNL_bp = fNL * b_phi(b1, pp=png['pp'])
         fNL_bpd = fNL * b_phi_delta(b1, b2)
@@ -501,11 +527,14 @@ def fNL_bias(png, bias, png_type=None):
 
     else:
         assert png_type == 'fNL_bias', "png_type must be 'fNL' or 'fNL_bias'"
-        # Absorb the fNL <-> fNL_bpd degeneracy: the matter PNG (add_png enters the displacement only,
-        # the Lagrangian weights use the Gaussian field) contributes a squeezed 2*fNL*(phi delta)
-        # We are thus sampling fNL_bpd + 2*fNL = fNL*(bpd + 2)
-        fNL_bpd = fNL_bpd - 2 * fNL # XXX
-        # fNL_bpd = fNL_bpd - 2 * fNL * b1E # XXX # if expansion is based on PNGed fields
+        # Absorb the fNL <-> fNL_bpd degeneracy:
+        # - lagrangian: the matter PNG (add_png) enters the displacement only, the weights use the
+        #   Gaussian field, contributing a squeezed 2*fNL*(phi delta) -> sampling fNL_bpd + 2*fNL
+        #   (coefficient ~2 verified independent of b1 by FD operator regression at N32).
+        # - eulerian: the expansion is based on the PNGed evolved field, so the squeezed matter
+        #   coupling comes with b1E -> sampling fNL_bpd + 2*b1E*fNL (coefficient to be FD-verified).
+        fNL_bpd = fNL_bpd - 2 * fNL * (b1_L2E(b1) if bias_type == 'eulerian' else 1.) # XXX
+        # fNL_bpd = fNL_bpd - 2 * fNL * b1E # XXX # if lagrangian expansion is based on PNGed fields
 
     png['fNL_bp'], png['fNL_bpd'] = fNL_bp, fNL_bpd
     return png
@@ -513,51 +542,64 @@ def fNL_bias(png, bias, png_type=None):
 
 
 
-def eulerian_bias(matter_mesh, phi_mesh, box_size, 
-                    bias, png, png_type=None):
+def eulerian_bias(matter_mesh, phi_mesh, box_size,
+                    bias, png, png_type=None, los=(0.,0.,0.), oversamp=3/2):
     """
+    Return second-order Eulerian bias expansion weights based on the evolved
+    (redshift-space) matter field, as in [Stopyra+2026](http://arxiv.org/abs/2603.20855).
     Renormalization of Eulerian operators in eq. 3.38, 7.10, 7.11
-    of http://arxiv.org/abs/1611.09787
+    of [Desjacques+2016](http://arxiv.org/abs/1611.09787).
+
+    .. math::
+
+        1 + \\delta_g = 1 + b_1^E \\delta_m + \\frac{b_2^E}{2} [\\delta_m^2] + b_{s^2}^E [s^2]
+        + b_{\\nabla^2} \\nabla^2 \\delta_m + b_{\\nabla_\\parallel} (\\vec k \\cdot \\hat n)^2 \\delta_m
+        + b_{\\phi} f_\\mathrm{NL} \\tilde\\phi + b_{\\phi \\delta} f_\\mathrm{NL} [\\tilde\\phi \\delta_m]
+
+    Both input meshes are in Fourier space, band-limited to the final band:
+    * `matter_mesh`: PNGed evolved (redshift-space) matter field.
+    * `phi_mesh`: advected mass-weighted primordial potential, i.e. phi is evaluated in
+      Lagrangian space. Its second-order part phi*delta_m carries the +b_phi contribution
+      to b_phidelta of the L->E conversion, so fNL_bp and fNL_bpd need no conversion.
+    Quadratic products are computed on an `oversamp`-padded grid (3/2 Orszag rule),
+    so they are alias-free on the final band.
+    Since the evolved field is already in redshift space, bnablapar applies as the
+    first-order equivalent (k.los)^2 term (velocity-like higher-derivative term).
+
+    NOTE: in redshift space this scheme boosts the Kaiser mu^2 term by b1E instead of
+    leaving it at f (b1E*(1+f mu^2)delta vs (b1E + f mu^2)delta)
     """
-    
-    b1, b2, bs2, bn2 = bias['b1'], bias['b2'], bias['bs2'], bias['bn2']
-    fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd']
-    b1, b2 = b1_L2E(b1), b2_L2E(b2, b1)
-    fNL_bpd = fNL * bpd_L2E(fNL_bpd / fNL, fNL_bp / fNL)
-    
+    b1, b2, bs2 = bias['b1'], bias['b2'], bias['bs2'] # 1st, 2nd
+    bn2, bnpar = bias['bn2'], bias['bnpar'] # higher-derivative
+    fNL, fNL_bp, fNL_bpd = png['fNL'], png['fNL_bp'], png['fNL_bpd'] # PNG 1st, 2nd
+    # Lagrangian to Eulerian conversion (phi operators unchanged, cf. advected phi above)
+    # fNL_bpd = fNL * bpd_L2E(fNL_bpd / fNL, fNL_bp / fNL) # if unadvected phi
+    b1, b2, bs2 = b1_L2E(b1), b2_L2E(b2, b1), bs2_L2E(bs2, b1)
 
-    matter_mesh = matter_mesh.at[0,0,0].set(0.) # ensure zero mean
+    # Zero-pad to the product grid (Orszag rule) and ensure zero mean
+    final_shape = ch2rshape(matter_mesh.shape)
+    mesh_shape = scale_shape(final_shape, oversamp)
+    matter_mesh = chreshape(matter_mesh, r2chshape(mesh_shape)).at[0,0,0].set(0.)
+    phi_mesh = chreshape(phi_mesh, r2chshape(mesh_shape)).at[0,0,0].set(0.)
     delta = jnp.fft.irfftn(matter_mesh)
-    phi_mesh = jnp.fft.irfftn(phi_mesh)
-    print(delta.mean(), delta.std())
+    phi = jnp.fft.irfftn(phi_mesh)
 
-    mesh_shape = delta.shape
     kvec = rfftk(mesh_shape, box_size) # in h/Mpc
     kmesh = sum(ki**2 for ki in kvec)**.5
 
     # Init weights
     weights = 1.
-    
-    # Apply b1, punctual term
+
+    # Apply b1, local term
     weights += b1 * delta
 
-    if png_type is not None:
-        # Apply bphi, primordial term
-        weights += fNL_bp * phi_mesh
-        
-        # Apply bphidelta, primordial term
-        phi_delta = phi_mesh * delta
-        weights += fNL_bpd * (phi_delta - phi_delta.mean())
-
-
-    # Apply b2, punctual term
+    # Apply b2, local term
     delta2 = delta**2
     sigma2 = delta2.mean()
-    # delta2 -= sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh) # if expansion is based on PNGed fields
-    delta2 -= sigma2
+    delta2 -= sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi) # expansion is based on the PNGed field
     weights += b2 * delta2 / 2
 
-    # Apply bshear2, non-punctual term
+    # Apply bshear2, non-local term
     pot = matter_mesh * invlaplace_hat(kvec)
     dims = range(len(kvec))
     shear2 = 0.
@@ -571,22 +613,27 @@ def eulerian_bias(matter_mesh, phi_mesh, box_size,
             nabj = gradient_hat(kvec, j)
             shear2 += 2 * jnp.fft.irfftn(nabi * nabj * pot)**2
 
-    # shear2 -= 2 / 3 * sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi_mesh) # if expansion is based on PNGed fields
-    shear2 -= 2 / 3 * sigma2 # <s^2> = 2/3 <delta^2>
+    shear2 -= 2 / 3 * sigma2 * (1 + 68 / 21 * delta + 4 * fNL * phi) # <s^2> = 2/3 <delta^2>
     weights += bs2 * shear2
 
-    # Apply bnabla2, higher-order term
+    if png_type is not None:
+        # Apply bphi, primordial local term
+        weights += fNL_bp * phi
+
+        # Apply bphidelta, primordial local term
+        phi_delta = phi * delta
+        weights += fNL_bpd * (phi_delta - phi_delta.mean())
+
+    # Apply bnabla2, higher-derivative term
     delta_nab2 = jnp.fft.irfftn( - kmesh**2 * matter_mesh)
     weights += bn2 * delta_nab2
 
-    # # Compute separately bnablapar, velocity bias term
-    # delta_nabpar = jnp.stack([
-    #             jnp.fft.irfftn(gradient_hat(kvec, i) * (m / b) * evol_mesh) 
-    #             for i, (m, b) in enumerate(zip(mesh_shape, box_size))], axis=-1) # in h/Mpc 
-    # dvel = bnp * delta_nabpar
-    dvel = 0.
+    # Apply bnablapar, higher-derivative velocity term: first-order equivalent of the
+    # lagrangian_bias dvel term, since the evolved field is already in redshift space.
+    kpar = sum(ki * losi for ki, losi in zip(kvec, jnp.asarray(los)))
+    weights += bnpar * jnp.fft.irfftn(kpar**2 * matter_mesh)
 
-    return weights, dvel
+    return weights
 
 
 

@@ -293,6 +293,49 @@ def get_pngunitbox(fNL=0, tracer='LRG', field='redshiftspace'):
                 tag=f"pngunitbox_fNL{fNL}_{tracer}_z{z_obs}_{field}")
 
 
+# PNG-UNIT fastPM calibration HOD boxes: 30 phase-matched seeds x fNL {0, 20, -20}, 3000 Mpc/h box,
+# 4096^3 PM (same UNIT cosmology, matterpower and pmesh/NGenIC IC generator as the main sims -- the
+# seed in the file name is the literal generate_whitenoise seed; validated by cross-coherence of the
+# painted galaxies with the reproduced seed white at k<=0.027: 0.94-0.97). Same 15-col ascii format
+# as v1.0. Symlinks into jmen_a's PURGEABLE pscratch; LRG (z0.82) mostly purged, QSO complete.
+FASTPMBOX_DIR = Path("/global/cfs/cdirs/desicollab/users/adrigut/PNGxHOD/boxes/catalogs/fastpm")
+_FASTPMBOX_Z = {'LRG': 0.82, 'QSO': 1.83}   # tracer -> snapshot redshift
+_FASTPMBOX_B = {'LRG': 2.1, 'QSO': 2.674}   # tracer -> target bias (file-name piece)
+
+
+@lru_cache(maxsize=1)  # multi-GB ascii read; cache across cell budgets
+def _load_fastpmbox(fNL: int, tracer: str, seed: int):
+    """Read a fastPM calibration HOD galaxy catalog. Returns (pos, vel): (n, 3) Mpc/h and km/s."""
+    fnl = {0: 'fnl0', 20: 'fnl20', -20: 'fnlm20'}[fNL]
+    fn = FASTPMBOX_DIR / fnl / f"{tracer}_fastpm_{fnl}_b{_FASTPMBOX_B[tracer]}_z{_FASTPMBOX_Z[tracer]}_seed{seed}.dat"
+    arr = np.fromfile(str(fn), dtype=float, sep=' ').reshape(-1, 15)  # 15 cols, as v1.0
+    return arr[:, 0:3].copy(), arr[:, 3:6].copy()
+
+
+def get_fastpmbox(fNL=0, tracer='QSO', seed=1, field='realspace'):
+    """
+    Spec for a PNG-UNIT fastPM calibration HOD box (see FASTPMBOX_DIR block comment). Same
+    conventions as get_pngunitbox; white_mesh is the TRUE reproduced linear IC of the literal
+    `seed` (run/gen_pngunit_ic.py must have written ic_fastpm_pngunit_seed<seed>_N192_z0.npy).
+    """
+    z_obs = _FASTPMBOX_Z[tracer]
+    pos, vel = _load_fastpmbox(fNL, tracer, seed)
+    data = {'pos': pos}
+    if field == 'redshiftspace':  # RSD applied in register_catalog from the peculiar velocity
+        data['vel'] = vel
+        los = (0, 0, 1)
+    elif field == 'realspace':
+        los = (0, 0, 0)
+    else:
+        raise ValueError(f"unknown fastpmbox field {field!r}")
+    return dict(data=data, cosmo_fid=unit_cosmo(),
+                a_obs=1 / (1 + z_obs), los=los,
+                box_size=np.full(3, PNGUNIT_BOX), box_center=PNGUNIT_CENTER,
+                ic_real_fn=str(REGISTERED_DIR / f"ic_fastpm_pngunit_seed{seed}_N192_z0.npy"),
+                lin_pk_fn=str(PNGUNITBOX_MATTERPOWER),
+                tag=f"fastpmbox_fNL{fNL}_{tracer}_z{z_obs}_s{seed}_{field}")
+
+
 # PNG-UNITsim-XL rockstar catalog: pandas/PyTables frame_table, blosc-compressed. The 37 rockstar
 # float columns (Mvir, ..., X, Y, Z, VX, VY, VZ, ..., M200c, ...) live in the float64 sub-block of
 # /rockstar_catalog/table; that block's NAME differs across files (values_block_1 for fnl0,
