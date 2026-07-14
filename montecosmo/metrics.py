@@ -213,7 +213,9 @@ def powtranscoh(mesh0, mesh1, box_size, kedges:int|float|list=None, include_corn
 
 def bin_and_aggregate(targets, values, vedges:int|float|list, min_count=1, aggr_fn=None):
     """
-    bin and aggregate target based on value.
+    Bin and aggregate target based on value.
+
+    If vedges is an int, number of edges, if float, bin width, if list, bin edges.
     If min_count is None, vedges is interpreted in quantile space.
     If aggr_fn is None, aggregate by averaging.
     """

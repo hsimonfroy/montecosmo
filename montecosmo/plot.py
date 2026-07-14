@@ -199,7 +199,7 @@ def anim_scan(mesh, box_size=None, n:int|float=1/16, vlim:float|tuple[float,floa
 ##################
 # Power Spectrum #
 ##################
-def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
+def plot_pow(ks, pow, *args, ell=None, log=False, fill:float|list=None, **kwargs):
     """
     Plot power spectrum `pow` as a function of wavenumber `ks`.
 
@@ -217,8 +217,8 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
     log : bool, optional
         If True, plot spectrum $P(k)$ in loglog scale, 
         else plot $k P(k)$ in linlin scale.
-    fill : float, optional
-        If provided, the credible interval probability to fill between.
+    fill : float, list, optional
+        If provided, the credible interval probabilities to fill between.
     kwargs : dict
         Additional keyword arguments passed to `plt.plot` or `plt.fill_between`.
 
@@ -255,7 +255,7 @@ def plot_pow(ks, pow, *args, ell=None, log=False, fill=None, **kwargs):
     return out
 
 
-def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
+def plot_trans(ks, trans, *args, log=False, fill:float|list=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, trans, *args, **kwargs)
     else:
@@ -273,7 +273,7 @@ def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
     return out
 
 
-def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
+def plot_coh(ks, coh, *args, log=False, fill:float|list=None, **kwargs):
     if fill is None:
         out = plt.plot(ks, coh, *args, **kwargs)
     else:
@@ -292,7 +292,7 @@ def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
 
 
 def plot_powtranscoh(ks, pow1, trans, coh, *args, 
-                     log=False, fill:float=None, axes:list=None, **kwargs):
+                     log=False, fill:float|list=None, axes:list=None, **kwargs):
     outs = []
 
     plt.subplot(131) if axes is None else plt.sca(axes[0])
@@ -310,7 +310,7 @@ def plot_powtranscoh(ks, pow1, trans, coh, *args,
 
 
 def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]=1e-4,
-             type='kde', bins=100, fill=None, **kwargs):
+             type='kde', bins=100, fill:float|list=None, **kwargs):
     """
     Plot the probability density function of a mesh, or of an ensemble of meshes.
 
@@ -325,7 +325,7 @@ def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]
     n_max : int, optional
         Maximum subsample size.
     vlim : float or tuple of float, optional
-        The limit values for colormap.
+        The limit values.
         * If float, specifies the proportion of values discarded bilateraly.
         * If tuple, specifies (vmin, vmax).
     type : str, optional
@@ -335,10 +335,8 @@ def plot_pdf(mesh, *args, seed=42, n_max=int(1e5), vlim:float|tuple[float,float]
         * 'gauss' : Gaussian fit.
     bins : int, optional
         Number of bins if `type` is 'hist'.
-    fill : float or array_like of float, optional
-        If provided, the credible interval probability(ies) to fill between (as in `plot_pow`):
-        `mesh` is treated as an ensemble over its leading axis and the pointwise credible
-        interval of the pdfs over the ensemble is filled.
+    fill : float, list, optional
+        If provided, the credible interval probabilities to fill between.
     kwargs : dict
         Additional keyword arguments passed to plotting function.
     """

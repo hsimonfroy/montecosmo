@@ -2,9 +2,11 @@
 import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
+from scipy.stats import norm
 from jax import numpy as jnp, random as jr, jit, vmap, pmap, tree, local_device_count
 from pathlib import Path
 import os
+
 
 from montecosmo.model import FieldLevelModel
 from montecosmo.utils import h5save, h5load, h5save_tree, h5load_tree
@@ -404,37 +406,37 @@ def plot_posterior_pred(save_dir, prefix="", prob=(0.68, 0.95), n_max_pdf=2**13)
       count_mesh. Subplots: noise power (mse_wave), density-dependence (mse_value binned by
       intens_mesh value, Poisson reference dotted), and noise pdf (kde, fill).
     """
-    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, plot_pdf, SetDark2
+    from montecosmo.plot import plot_pow, plot_trans, plot_coh, plot_powtranscoh, plot_pdf, SetDark2, theme
     from montecosmo.bdec import credint
     import sys
+    theme(usetex=True, font_size=15)
     save_dir = Path(save_dir)
     sys.stdout = sys.stderr = open(save_dir / "run.out", "a", buffering=1)
     chains_dir = save_dir / "chains"
 
     model = FieldLevelModel.load(save_dir / "model.yaml")
     obs = h5load(save_dir / "obs.h5")
-    count_obs = obs['count_mesh']
+    delta_obs = obs['count_mesh']
     pred = h5load(chains_dir / f"{prefix}pred_mesh.h5")
     # flatten (chain, sample) into a single draw axis
-    intens = pred['intens_mesh'].reshape(-1, *pred['intens_mesh'].shape[2:])
-    count = pred['count_mesh'].reshape(-1, *pred['count_mesh'].shape[2:])
-    print(f"posterior pred plots on {len(count)} draws")
-
-    delta_obs = model.count2delta(count_obs)
-    deltas = jit(vmap(model.count2delta))(jnp.asarray(count))
+    delta_intens = pred['intens_mesh'].reshape(-1, *pred['intens_mesh'].shape[2:])
+    delta = pred['count_mesh'].reshape(-1, *pred['count_mesh'].shape[2:])
+    delta_obs = model.count2delta(delta_obs)
+    delta = jit(vmap(model.count2delta))(delta)
+    delta_intens = jit(vmap(model.count2delta))(delta_intens)
+    print(f"posterior pred plots on {len(delta)} draws")
 
     # 1. Posterior predictive counts vs observed counts
-    kptcs = jit(vmap(lambda m: model.powtranscoh(delta_obs, m)))(deltas)
+    kptcs = jit(vmap(lambda m: model.powtranscoh(delta_obs, m)))(delta)
     kpow_obs = model.spectrum(delta_obs)
     kpoles_obs = model.spectrum(delta_obs, ells=(0, 2, 4))
-    kpoles = jit(vmap(lambda m: model.spectrum(m, ells=(0, 2, 4))))(deltas)
-    vlim = tuple(np.quantile(delta_obs, [5e-5, 1 - 5e-5]))
+    kpoles = jit(vmap(lambda m: model.spectrum(m, ells=(0, 2, 4))))(delta)
 
     fig, axes = plt.subplots(2, 3, figsize=(12, 8), layout='constrained')
     plot_powtranscoh(*kptcs, fill=prob, color=SetDark2(0), axes=axes[0])
-    plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=SetDark2(0), label='post pred', axes=axes[0])
+    plot_powtranscoh(*tree.map(lambda x: jnp.median(x, 0), kptcs), color=SetDark2(0), label='Pred', axes=axes[0])
     plt.sca(axes[0, 0])
-    plot_pow(*kpow_obs, 'k:', label='obs')
+    plot_pow(*kpow_obs, 'k:', label='Obs')
     plt.legend()
     plt.sca(axes[0, 1]), plt.axhline(1., linestyle=':', color='k', alpha=0.5)
     plt.sca(axes[0, 2]), plt.axhline(1., linestyle=':', color='k', alpha=0.5)
@@ -443,66 +445,71 @@ def plot_posterior_pred(save_dir, prefix="", prob=(0.68, 0.95), n_max_pdf=2**13)
     for i_ell, ell in enumerate((2, 4)):
         plt.sca(axes[1, i_ell])
         plot_pow(kpoles[0], kpoles[1], ell=ell, fill=prob, color=SetDark2(0))
-        plot_pow(kpoles[0][0], kpoles_med, ell=ell, color=SetDark2(0), label='post pred')
-        plot_pow(kpoles_obs[0], kpoles_obs[1], 'k:', ell=ell, label='obs')
-        if i_ell == 0:
-            plt.legend()
+        plot_pow(kpoles[0][0], kpoles_med, ell=ell, color=SetDark2(0), label='Pred')
+        plot_pow(kpoles_obs[0], kpoles_obs[1], 'k:', ell=ell, label='Obs')
+        # if i_ell == 0:
+        #     plt.legend()
     plt.sca(axes[1, 2])
-    plot_pdf(deltas, fill=prob, vlim=vlim, n_max=n_max_pdf, color=SetDark2(0))
-    plot_pdf(delta_obs, 'k:', vlim=vlim, n_max=n_max_pdf)
+    plot_pdf(delta, fill=prob, vlim=1e-4, n_max=n_max_pdf, color=SetDark2(0))
+    plot_pdf(delta_obs, 'k:', vlim=1e-4, n_max=n_max_pdf)
     plt.yscale('log'),
-    plt.xlabel(r"$\delta$"), plt.ylabel("pdf")
-    plt.savefig(save_dir / f"{prefix}pred_count.png", dpi=300)
+    plt.xlabel(r"$\delta$"), plt.ylabel(r"$\mathrm{p}(\delta)$")
+    plt.savefig(save_dir / f"{prefix}pred_count.pdf", dpi=300)
     plt.close()
+
 
     # 2. Noise: intens_mesh - counts, for observed counts (data noise) vs predicted counts
     # (the noise the likelihood assumes). Both binned/evaluated per intens_mesh draw.
-    noise_obs = intens - count_obs   # (n_draws, *final_shape)
-    noise_pred = intens - count
+    noise_obs = delta_intens - delta_obs   # (n_draws, *final_shape)
+    noise_pred = delta_intens - delta
 
     kmses = {}
-    kmses['obs'] = jit(vmap(lambda m1: model.mse_wave(count_obs, m1)[1:]))(jnp.asarray(intens))
-    kmses['pred'] = jit(vmap(lambda m0, m1: model.mse_wave(m0, m1)[1:]))(jnp.asarray(count), jnp.asarray(intens))
+    kmses['Obs'] = jit(vmap(lambda m1: model.mse_wave(delta_obs, m1)[1:]))(jnp.asarray(delta_intens))
+    kmses['Pred'] = jit(vmap(lambda m0, m1: model.mse_wave(m0, m1)[1:]))(jnp.asarray(delta), jnp.asarray(delta_intens))
 
     # common value-space bin edges from the pooled intens draws (quantile-spaced)
-    vedges = np.quantile(intens, np.linspace(0, 1, 32)[1:-1])
     vmses = {}
-    for lab, ms0 in [('obs', len(intens) * [count_obs]), ('pred', count)]:
-        vcurves = [model.mse_value(m1, m0, vedges=list(vedges), min_count=1)[1:]
-                   for m0, m1 in zip(ms0, intens)]
+    for lab, ms0 in [('Obs', len(delta_intens) * [delta_obs]), ('Pred', delta)]:
+        vcurves = [model.mse_value(m1, m0, vedges=32, min_count=None)[1:]
+                   for m0, m1 in zip(ms0, delta_intens)]
         vmses[lab] = tree.map(lambda *xs: np.stack(xs), *vcurves)
-    vlim = tuple(np.quantile(noise_obs, [5e-5, 1 - 5e-5]))
 
     plt.figure(figsize=(12, 4), layout='constrained')
     plt.subplot(131)
     for i, lab in enumerate(kmses):
-        plot_pow(*kmses[lab], log=True, fill=prob, color=SetDark2(i))
-        plot_pow(kmses[lab][0][0], jnp.median(kmses[lab][1], 0), log=True, color=SetDark2(i), label=lab)
-    plt.ylabel(r"$P_\mathrm{noise}(k)$ [Mpc/$h$]$^3$")
+        plot_trans(*kmses[lab], fill=prob, color=SetDark2(i))
+        plt.plot(kmses[lab][0][0], jnp.median(kmses[lab][1], 0), color=SetDark2(i), label=lab)
+    plt.axhline(model.cell_length**3 / model.count_fid, linestyle=':', color='k', label='Shot')
+    plt.ylabel(r"$\sigma^2[\Delta](k)$ [Mpc/$h$]$^3$")
+    plt.yscale('log')
     plt.legend()
 
     plt.subplot(132)
     for i, lab in enumerate(vmses):
         vmean, mse = vmses[lab]
-        xs = vmean.mean(0)
-        for f in np.atleast_1d(prob):
-            plt.fill_between(xs, *credint(mse, f, axis=0).T, alpha=(1 - f)**.5, color=SetDark2(i))
-        plt.plot(xs, np.median(mse, 0), color=SetDark2(i), label=lab)
-    plt.plot(xs, xs * model.cell_length**3, 'k:', label='Poisson')
-    plt.xscale('log'), plt.yscale('log')
-    plt.xlabel("intens value"), plt.ylabel(r"MSE [Mpc/$h$]$^3$")
-    plt.legend()
+        plot_trans(vmean, mse, fill=prob, color=SetDark2(i))
+        plt.plot(vmean[0], np.median(mse, 0), color=SetDark2(i), label=lab)
+    plt.ylim(plt.ylim())
+    plt.plot(vmean[0], (1 + vmean[0]) * model.cell_length**3 / model.count_fid, 'k:', label='Shot')
+    # plt.xscale('log'), 
+    plt.yscale('log')
+    plt.xlabel(r"$\delta$"), plt.ylabel(r"$\sigma^2[\Delta](\delta)$ [Mpc/$h$]$^3$")
+    # plt.legend()
 
     plt.subplot(133)
-    for i, (lab, noise) in enumerate([('obs', noise_obs), ('pred', noise_pred)]):
-        plot_pdf(noise, fill=prob, vlim=vlim, n_max=n_max_pdf, color=SetDark2(i))
-        plt.plot([], [], color=SetDark2(i), label=lab)
-    plt.xlabel("noise"), plt.ylabel("pdf")
+    for i, (lab, noise) in enumerate([('Obs', noise_obs), ('Pred', noise_pred)]):
+        plot_pdf(noise, fill=prob, vlim=1e-4, n_max=n_max_pdf, color=SetDark2(i))
+    xlim = plt.xlim()
+    plt.xlim(xlim)
+    xs = np.linspace(*xlim, 100)
+    pdfs = norm.pdf(xs, loc=0., scale=(1 / model.count_fid)**.5)
+    plt.plot(xs, pdfs, 'k:', label='Shot')
+    plt.xlabel(r"$\Delta$"), plt.ylabel(r"$\mathrm{p}(\Delta)$")
     plt.yscale('log')
-    plt.legend()
-    plt.savefig(save_dir / f"{prefix}pred_noise.png", dpi=300)
+    # plt.legend()
+    plt.savefig(save_dir / f"{prefix}pred_noise.pdf", dpi=300)
     plt.close()
-    print(f"saved {prefix}pred_count.png and {prefix}pred_noise.png\n")
+    print(f"saved {prefix}pred_count.pdf and {prefix}pred_noise.pdf\n")
     sys.stdout.flush()
 
 

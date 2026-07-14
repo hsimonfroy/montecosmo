@@ -85,7 +85,7 @@ def abacus_cosmo(cosmo: int = 0):
 
 def unit_cosmo():
     """
-    cosmoprimo UNIT simulation cosmology (Chuang+2019, arXiv:1811.01892), the PNGUNIT fiducial:
+    cosmoprimo UNIT simulation cosmology (Chuang+2019, https://doi.org/10.1093/mnras/stz1233), the PNGUNIT fiducial:
     flat LCDM Omega_m=0.3089, Omega_b=0.0486, h=0.6774, n_s=0.9667, sigma8=0.8147 (Planck 2015).
     (The cosmology is not stored in the PNGUNIT catalogs; it comes from the UNIT sim it is built on.)
     """

@@ -65,9 +65,7 @@ default_config={
         'register':None, # if None then no data; if str or Path then path to a register HDF5 file
         'n_rbins':None, # if None then set to maximum number of radial bins
         'lik_type': 'quad_gauss', # poisson, fourier_gauss, quad_gauss
-        'lik_kmin': 0., # in h/Mpc; if > 0, fourier_gauss drops the modes with k < lik_kmin
         'bias_type': 'lagrangian', # lagrangian, eulerian
-        'eul_renorm_mod': True, # eulerian_bias: modulated renorm (68/21 delta + 4 fNL phi); False = constant sigma2 only (Stopyra+2026)
         # Latents
         'precond':'kaiser', # real, fourier, kaiser
         'latents': {
@@ -640,7 +638,6 @@ class FieldLevelModel(Model):
         self.los_fid = self.box_rot.apply(los, inverse=True) # cell los
         self.selec_fid = (self.selec_mesh**2).mean()**.5 / self.selec_mesh.mean()
 
-
         # TODO: cell_length_init, cell_length_final, count_fid_init, count_fid_final 
 
 
@@ -716,7 +713,6 @@ class FieldLevelModel(Model):
         cosmology, bias, png, stoch, ap, syst, init = params
 
         init_mesh = white2lin(cosmology, init['white_mesh'], self.init_shape, self.box_size, self.lin_kpow)
-        init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
         png = fNL_bias(png, bias, png_type=self.png_type, bias_type=self.bias_type)
 
         if self.evolution=='kaiser':
@@ -726,6 +722,9 @@ class FieldLevelModel(Model):
             gxy_mesh = kaiser_model(cosmology, a, init_mesh, box_size=self.box_size, b1E=b1_L2E(bias['b1']), 
                                     fNL_bp=png['fNL_bp'], png_type=self.png_type, los=cell_los, kpow=self.lin_kpow)
             # NOTE: Kaiser model does not need any oversampling, even for curved-sky
+
+            if self.png_type is not None:
+                phi = jnp.fft.irfftn(lin2phi(cosmology, init_mesh, self.box_size, kpow=self.lin_kpow))
 
             # print("kaiser:", gxy_mesh.mean(), gxy_mesh.std(), gxy_mesh.min(), gxy_mesh.max(), (gxy_mesh < 0).sum()/len(gxy_mesh.reshape(-1)))
             # gxy_mesh = jnp.abs(gxy_mesh)
@@ -779,6 +778,7 @@ class FieldLevelModel(Model):
             #     init_mesh = add_png(cosmology, png['fNL'], init_mesh, self.box_size, kpow=self.lin_kpow)
             #     init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
 
+            init_mesh = chreshape(init_mesh, r2chshape(self.evol_shape))
             if self.bias_type == 'lagrangian':
                 # Lagrangian bias expansion weights (based on initial particules positions)
                 lbe_weights, dvel, phi = lagrangian_bias(cosmology, pos, a, self.box_size, init_mesh, bias, png,
@@ -904,6 +904,7 @@ class FieldLevelModel(Model):
 
             if self.png_type is not None:
                 phi = jnp.fft.irfftn(chreshape(jnp.fft.rfftn(phi), r2chshape(self.final_shape)))
+                phi = mesh2masked(phi, self.mask_mesh)
 
 
             if self.lik_type == 'poisson':
@@ -918,9 +919,10 @@ class FieldLevelModel(Model):
                 
                 scale = posit_fn(stoch['s_e'] + stoch['s_k2e'] * kmesh**2 + stoch['s_kmu2e'] * (kmesh * mumesh)**2)
                 scale *= selec_mesh**.5 * temp**.5
-                lik_kmin = 0.
-                if lik_kmin > 0.: # drop k < lik_kmin modes (incl. monopole): ~zero weight, constant logpdf offset
-                    scale = jnp.where(kmesh >= lik_kmin, scale, 1e12)
+                lik_klim = (0.002, 0.08)
+                # lik_klim = None
+                if lik_klim is not None:
+                    scale = jnp.where((lik_klim[0] < kmesh) & (kmesh < lik_klim[1]), scale, 1e12)
                 scale = cgh2rg(scale, norm="amp")
                 intens_mesh = cgh2rg(jnp.fft.rfftn(intens_mesh))
                 count_mesh = sample('count_mesh', dist.Normal(intens_mesh, scale))
@@ -1129,7 +1131,7 @@ class FieldLevelModel(Model):
         Validate radial density and setup radial bins quantities. 
         """
         rmesh = np.array(self.radius_mesh())
-        rmasked = mesh2masked(rmesh, self.mask_mesh)
+        rmasked = np.array(mesh2masked(rmesh, self.mask_mesh))
         rmin, rmax = rmasked.min(), rmasked.max()
         dr = 3**.5 * self.cell_length # minimum dr to guarantee connected shell bins
 

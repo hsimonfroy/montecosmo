@@ -52,9 +52,9 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
           n_chains=4, tune_mass=True,
           n_steps_field=2**12, dev_field=1e-5,
           n_steps_full=2**13, dev_full=1e-7,
-          n_samples=None, n_runs=10, thinning=64,
-        #   n_samples=None, n_runs=6, thinning=32,
-          scale_fid_fac=1., pred_thinning=64):
+        #   n_samples=None, n_runs=10, thinning=64,
+          n_samples=None, n_runs=6, thinning=32,
+          scale_fid_fac=1., pred_thinning=128):
     """
     Run inference for the mock registered in `<REGISTERED_DIR>/<register_name>`.
 
@@ -123,11 +123,16 @@ def infer(register_name, png_type=None, lik_type='shash', evolution='lpt',
     ###############################################
     # Fiducial location of the inferred bias/png/stoch/AP params (cosmology + ngbars come from
     # the register file). Update prior locs too, so the model is centered on these values.
-    pp = 1. if fnl in (-20., 0.) else 1.4 # PNGUnit-XL fNL20 was run with low-passed PNGs, inducing higher p_phi.
+
+    # pp = 1. if fnl in (-20., 0.) else 1.4 # PNGUnit-XL fNL20 was run with low-passed PNGs, inducing higher p_phi.
+    # NOTE: PNGUnit-XL fNL20 was run with low-passed PNGs, inducing higher p_phi.
+    PPS = {'LRG': {-20: 0.80, 0: 0.80, 20: 1.13}, 'QSO': {-20: 0.83, 0: 0.83, 20: 1.55}}
+    pp = PPS[tracer][fnl]
+
     fiduc = {
         'b1': 1., 'b2': 0., 'bs2': 0., 'b3': 0., 'bds2': 0., 'bs3': 0., 'bn2': 0., 'bnpar': 0.,
-        'fNL': fnl, 'fNL_bp': fnl, 'fNL_bpd': 0., 'pp':pp, 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
-        's_e': 1., 's_k2e': 0., 's_kmu2e': 0.,
+        'fNL': fnl, 'fNL_bp': 0, 'fNL_bpd': 0., 'pp':pp, 'fNL_bpd2': 0., 'fNL_bps2': 0., 'fNL_bn2p': 0.,
+        's_e': 1.0, 's_k2e': 0., 's_kmu2e': 0.,
         's_ed': 0., 's_e2': 0., 's_ep': 0.,
         'alpha_iso': 1., 'alpha_ap': 1.,
         }
@@ -209,17 +214,20 @@ if __name__ == '__main__':
     print("Demat")
 
     # FixIC EFT order battery on the pngunitbox HOD mocks, N32.
-    #   usage: python infer_eft_fixic.py <order:o2|o3> [<tracers:LRG,QSO>] [<fnls:0,-20>] [<se:sefix|sefree>]
-    order = sys.argv[1] if len(sys.argv) > 1 else 'o3'    # 'o2' (2nd order) or 'o3' (3rd order)
-    assert order in ('o2', 'o3')
+    #   usage: python infer_eft_fixic.py <order:1|2|3> [<tracers:LRG,QSO>] [<fnls:0,-20>] [<se:sefix|sefree>]
+    order = int(sys.argv[1]) if len(sys.argv) > 1 else 3    # 1, 2, or 3
+    assert order in [1,2,3]
 
     budgets = [64] # 32, 48, 64, 96, 128
     tracers = ['QSO'] # 'LRG', 'QSO'
-    fnls = [0.] # -20., 0., 20.
+    fnls = [0., -20., 20.] # -20., 0., 20.
     # png_type = 'fNL'
     png_type = 'fNL_bias'
-    lik_type = 'shash'
-    zs = {'LRG': 0.74, 'QSO': 1.83}
+    # lik_type = 'shash'
+    lik_type = 'fourier_gauss'
+    evolution = 'lpt'
+    # evolution = 'kaiser'
+    ZS = {'LRG': 0.74, 'QSO': 1.83}
 
 
     # Observed (FIXED) parameters; everything else (incl. white_mesh) is inferred.
@@ -234,12 +242,12 @@ if __name__ == '__main__':
                 #  'fNL', 'fNL_bp', 'fNL_bpd', # PNG 1st+2nd order (sampled fNL, fNL_bp, fNL_bpd, if png_type='fNL_bias', else fNL and pp)
                  'pp',
                 #  'fNL_bpd2', 'fNL_bps2',      # PNG 3rd order: FIXED for o2, sampled for o3 (added below)
-                'fNL_bn2p',              # PNG higher-derivative (any order, on large scales degenerated with b1)
-                # 's_e',                   # s_e = 1 for shot noise
+                'fNL_bn2p',              # PNG higher-derivative (any order, degenerated on large scales with b1, on small with bn2)
+                's_e',                   # s_e = 1 for shot noise
                 's_ed',                  
                 's_e2',
                 's_ep',
-                # 's_k2e','s_kmu2e'
+                's_k2e','s_kmu2e'
                 #  'ngbars',
                 ]
     # Some automatic handling just in case
@@ -247,19 +255,22 @@ if __name__ == '__main__':
     obs_names += ['fNL_bp', 'fNL_bpd'] if png_type == 'fNL' else ['pp'] # if fNL mode, fNL and pp determines fNL_bp and fNL_bpd, otherwise pp is unused
     obs_names += ['fNL', 'fNL_bp', 'fNL_bpd', 'fNL_bpd2', 'fNL_bps2', 'fNL_bn2p'] if png_type is None else [] # no png inference
 
-    if order == 'o2':  # 2nd order: also fix the 3rd-order bias and PNG terms
+    if evolution == 'kaiser':
+        obs_names += ['bn2', 'bnpar', 'fNL_bn2p'] # no higher-derivative bias
+        order = 1
+    if order <= 2:  # nth order: fix the <nth-order bias and PNG terms
         obs_names += ['b3', 'bds2', 'bs3', 'fNL_bpd2', 'fNL_bps2']
+    if order <= 1:
+        obs_names += ['b2', 'bs2', 'fNL_bpd']
 
-    # expe = order + '_' + lik_type + '_fixic_ppprior0.3'
-    # expe = order + '_' + lik_type + '_fixic_pp0'
-    # expe = order + '_' + lik_type + '_pp0se0'
-    expe = order + '_' + lik_type + 'osto1'
+    # expe = 'o'+str(order) + '_' + lik_type + '_fixic_ppprior0.3'
+    expe = 'o'+str(order) + '_' + lik_type + '_ppunit_s0'
     for tracer in tracers:
         for budget in budgets:
             for fnl in fnls:
-                register_name = f'register_pngunitbox_fNL{fnl:.0f}_{tracer}_z{zs[tracer]}_redshiftspace_N{budget}_pad0.h5'
+                register_name = f'register_pngunitbox_fNL{fnl:.0f}_{tracer}_z{ZS[tracer]}_redshiftspace_N{budget}_pad0.h5'
                 infer(register_name=register_name,
-                    png_type=png_type, lik_type=lik_type, evolution='lpt',
+                    png_type=png_type, lik_type=lik_type, evolution=evolution,
                     self_data=False, overwrite=False,
                     obs_names=obs_names, expe=expe,
                     scale_fid_fac=1.)

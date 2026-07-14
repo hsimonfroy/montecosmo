@@ -524,7 +524,6 @@ def fNL_bias(png, bias, png_type=None, bias_type='lagrangian'):
         fNL_bp = fNL * b_phi(b1, pp=png['pp'])
         fNL_bpd = fNL * b_phi_delta(b1, b2)
 
-
     else:
         assert png_type == 'fNL_bias', "png_type must be 'fNL' or 'fNL_bias'"
         # Absorb the fNL <-> fNL_bpd degeneracy:
@@ -534,7 +533,6 @@ def fNL_bias(png, bias, png_type=None, bias_type='lagrangian'):
         # - eulerian: the expansion is based on the PNGed evolved field, so the squeezed matter
         #   coupling comes with b1E -> sampling fNL_bpd + 2*b1E*fNL (coefficient to be FD-verified).
         fNL_bpd = fNL_bpd - 2 * fNL * (b1_L2E(b1) if bias_type == 'eulerian' else 1.) # XXX
-        # fNL_bpd = fNL_bpd - 2 * fNL * b1E # XXX # if lagrangian expansion is based on PNGed fields
 
     png['fNL_bp'], png['fNL_bpd'] = fNL_bp, fNL_bpd
     return png
@@ -983,7 +981,7 @@ def count2delta(mesh, selec_mesh):
     # mesh = (mesh / mesh.mean() - mesh2masked(selec_mesh))
     # return masked2mesh(mesh) / (selec_mesh**2).mean()**.5
 
-    alpha_selec = selec_mesh * mesh.mean() / selec_mesh.mean()
+    alpha_selec = selec_mesh * mesh.mean(axis=(-3, -2, -1)) / selec_mesh.mean()
     return (mesh - alpha_selec) / (alpha_selec**2).mean()**.5
 
 
@@ -1164,7 +1162,8 @@ def set_radial_count(mesh, rmesh, redges, rcounts):
     def step(carry, x):
         count, low, high = x
         rmask = (low < rmesh) & (rmesh <= high)
-        # carry = carry.at[rmask].multiply(count)
+        # carry = carry.at[rmask].multiply(count / (carry * rmask).mean())
+        # carry = jnp.where(rmask, carry / (carry * rmask).mean() * count, carry) # Could divide by zero for small shells?
         carry = jnp.where(rmask, carry * count, carry)
         return carry, None
 
